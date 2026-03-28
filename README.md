@@ -160,9 +160,7 @@ python run.py
 
 程序启动后将自动弹出 Web 控制台，按照首页的**「快速开始」**卡片引导完成配置即可。
 
-> ```bash
-> python -m uvicorn app.main:app --host 0.0.0.0 --port 28472
-> ```
+
 
 ### 引导流程（约 3 分钟）
 
