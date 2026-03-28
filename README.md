@@ -149,7 +149,7 @@ cd AetherSwap
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 安装内嵌浏览器（用于自动化 Steam 登录）
-playwright install chromium
+python -m playwright install chromium
 ```
 
 **第 3 步：启动程序**
