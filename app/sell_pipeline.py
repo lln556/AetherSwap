@@ -194,6 +194,11 @@ def _build_listing_plan(
         if not market_hash_name:
             ctx.log(f"[出售] 跳过无名物品 assetid={aid}", "info", category="steam")
             continue
+        
+        buy_record = _find_buy_record(purchases_snapshot, aid, market_hash_name)
+        if not buy_record:
+            ctx.log(f"[出售] {name} assetid={aid} 不在本地购买记录中（非倒余额库>存），为保护个人物品跳过出售", "info", category="steam")
+            continue
 
         # Same-name in-steam cap check
         if ok_listings and listing_assetid_to_name:
