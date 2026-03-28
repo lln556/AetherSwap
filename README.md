@@ -138,7 +138,7 @@
 **第 1 步：克隆项目**
 
 ```bash
-git clone https://github.com/your-username/AetherSwap.git
+git clone https://github.com/VexedWilosn/AetherSwap.git
 cd AetherSwap
 ```
 
