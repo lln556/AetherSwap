@@ -37,7 +37,7 @@ DEFAULTS = {
         "max_discount": 0.9,
         "huge_profit_offset": 0.05,
         "iflow_top_n": 50,
-        "exclude_keywords": ["印花", "胶囊", "贴纸"],
+        "exclude_keywords": ["印花"],
         "sell_price_ratio": 1.0,
         "verbose_debug": False,
         "sell_strategy": 4,
@@ -91,7 +91,7 @@ DEFAULTS = {
         "device_id": "",
     },
     "system": {
-        "exchange_rate_refresh_hours": 0,
+        "exchange_rate_refresh_hours": 24,
     },
     "proxy_pool": {
         "enabled": False,
