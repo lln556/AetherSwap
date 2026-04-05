@@ -6,6 +6,7 @@ import time
 from typing import Dict, List, Tuple, Union
 import requests
 import urllib3
+import urllib.parse
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 def _cookies_to_dict(cookie_str: str) -> dict:
     """将 Cookie 字符串转换为字典"""
@@ -23,7 +24,7 @@ class SteamConfirmer:
         raw_secret = raw_secret.replace("\u002B", "+").replace("\u002b", "+")
         raw_secret = raw_secret.replace("\\/", "/")
         self.identity_secret = raw_secret
-        self.device_id = (device_id or "").strip()
+        self.device_id = urllib.parse.unquote((device_id or "").strip())
         self.steam_id = str(steam_id or "").strip()
         self.session = requests.Session()
         self.session.verify = False
