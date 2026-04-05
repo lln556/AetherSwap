@@ -241,7 +241,14 @@ async function refreshInventory(forceRefresh = true) {
         `<span class="${it.can_trade ? "text-ok" : "text-bad"}">${it.can_trade ? "是" : "否"}</span>` +
         (it.tradable ? "" : ' <span class="text-bad">(不可交易)</span>');
       const rawTime = it.cooldown_at_iso || it.cooldown_text || "";
-      const timeHtml = rawTime ? `<span class="text-bad">${escapeHtml(rawTime)}</span>` : "—";
+      let displayTime = rawTime;
+      if (it.cooldown_at_iso) {
+        const d = new Date(it.cooldown_at_iso);
+        if (!isNaN(d.getTime())) {
+          displayTime = d.toLocaleString();
+        }
+      }
+      const timeHtml = displayTime ? `<span class="text-bad">${escapeHtml(displayTime)}</span>` : "—";
       const lowest = Number(it.lowest_price) || 0;
       totalValue += lowest;
       const lowestStr = lowest > 0 ? lowest.toFixed(2) : "—";
