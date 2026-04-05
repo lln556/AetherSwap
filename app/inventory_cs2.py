@@ -1,6 +1,6 @@
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from config import get_steam
 from steam.inventory import CS2_APP_ID, fetch_cs2_inventory
@@ -26,7 +26,7 @@ def _parse_cooldown(owner_descriptions: List[dict]) -> Tuple[str, float]:
         raw = m.group(1)
         raw = raw.replace(" (", " ").replace(")", "")
         try:
-            dt = datetime.strptime(raw, "%b %d, %Y %H:%M:%S")
+            dt = datetime.strptime(raw, "%b %d, %Y %H:%M:%S").replace(tzinfo=timezone.utc)
             ts = dt.timestamp()
         except Exception:
             ts = 0.0
