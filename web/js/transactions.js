@@ -180,7 +180,7 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
           refreshTransactions();
           refreshStatus();
         } else {
-          toast("下架失败", r.error || "未知错误");
+          toast("下架失败", r.error || "接口未返回 error 字段");
         }
       } catch (e) {
         toast("下架失败", e.message || "请求异常");

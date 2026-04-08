@@ -103,6 +103,7 @@ DEFAULTS = {
         "proxies": [],
     },
     "steam_deals": {
+        "enabled": False,
         "auto_refresh_days": 7,
         "max_game_threads": 5,
         "max_region_threads": 16,

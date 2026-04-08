@@ -595,7 +595,7 @@ function bindEvents() {
         if (u || f) toast("同步成功", `售出更新 ${u} 条，填充 assetid ${f} 条`);
         else toast("同步成功", "无变更");
       } else {
-        toast("同步失败", r.error || "未知错误");
+        toast("同步失败", r.error || "接口请求未返回 error 字段");
       }
     } catch (e) {
       toast("同步失败", e.message || "请求异常");
@@ -619,7 +619,7 @@ function bindEvents() {
         if (missing === 0) toast("紧急修复成功", `已填入 ${filled}/${total} 条，状态已更新`);
         else toast("紧急修复完成", `填入 ${filled}/${total} 条，未填入 ${missing} 条`);
       } else {
-        toast("紧急修复失败", r.error || "未知错误");
+        toast("紧急修复失败", r.error || "接口未返回 error 字段");
       }
     } catch (e) {
       toast("紧急修复失败", e.message || "请求异常");

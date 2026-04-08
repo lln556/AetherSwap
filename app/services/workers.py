@@ -397,6 +397,7 @@ def _sync_account_profile_and_region(acc: dict) -> None:
                 log(f"account_sync: 已获取 Steam 资料 name={display_name or '(无)'} avatar={'(有)' if avatar_url else '(无)'}", "info", category="account")
         else:
             log("account_sync: 未能获取 Steam 资料（网络异常或 Cookie 失效）", "debug", category="account")
+
 def sync_account_region_worker() -> None:
     try:
         time.sleep(5)
@@ -410,12 +411,25 @@ def sync_account_region_worker() -> None:
             category="account",
         )
         _sync_account_profile_and_region(acc)
-        code = _detect_account_currency_from_history()
-        if not code:
-            log("account_region: 未能从历史页面解析币种（可能无权限/无历史/网络失败）", "error", category="account")
+        
+        try:
+            from app.gift_engine import get_wallet_balance, get_base_auth_status
+            from app.config_loader import get_steam_credentials
+            cred = get_steam_credentials()
+            cookies_str = cred.get("cookies", "")
+            
+            jwt_token, country_code, _ = get_base_auth_status(cookies_str)
+            wallet = get_wallet_balance(cookies_str)
+            code = wallet.get("currency_code")
+            region_code = country_code or ""
+        except Exception as e:
+            log(f"account_region: 尝试通过钱包/底层接口拉取币种和地区信息失败: {e}", "error", category="account")
             return
-        region_map = {"CNY": "CN", "HKD": "HK", "USD": "US", "INR": "IN", "RUB": "RU", "EUR": "EU"}
-        region_code = region_map.get(code, "")
+
+        if not code:
+            log("account_region: 最终解析币种失败", "error", category="account")
+            return
+
         log(f"account_region: 解析结果 币种={code} 地区={region_code or '未知'}", "debug", category="account")
         updated = update_account(acc.get("id"), currency_code=code, region_code=region_code)
         if not updated:

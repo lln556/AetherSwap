@@ -145,6 +145,8 @@ async function loadConfig() {
     });
   }
   const sd = c.steam_deals || {};
+  const gSdEnabled = el("cfg-steam-deals-enabled");
+  if (gSdEnabled) gSdEnabled.checked = !!sd.enabled;
   const gSdRefresh = el("cfg-steam-deals-auto-refresh-days");
   if (gSdRefresh) gSdRefresh.value = sd.auto_refresh_days ?? "";
   const gSdGameThreads = el("cfg-steam-deals-game-threads");
@@ -250,6 +252,7 @@ function formToConfig() {
       ui_scale: el("cfg-ui_scale") ? el("cfg-ui_scale").value : undefined,
     },
     steam_deals: {
+      enabled: !!el("cfg-steam-deals-enabled")?.checked,
       auto_refresh_days: el("cfg-steam-deals-auto-refresh-days") ? parseInt(el("cfg-steam-deals-auto-refresh-days").value, 10) : undefined,
       max_game_threads: el("cfg-steam-deals-game-threads") ? parseInt(el("cfg-steam-deals-game-threads").value, 10) || undefined : undefined,
       max_region_threads: el("cfg-steam-deals-region-threads") ? parseInt(el("cfg-steam-deals-region-threads").value, 10) || undefined : undefined,

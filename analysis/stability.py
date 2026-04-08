@@ -222,22 +222,41 @@ def analyze_by_time(
             ratio = (ref_for_cv - 15.0) / 85.0
             interpolated = 0.08 - ratio * 0.04
             actual_cv_threshold = interpolated
+    reasons = []
     if len(daily_last) < 5:
         status = STATUS_UNKNOWN
         is_stable = False
+        reasons.append(f"近{slope_days}天均价点仅{len(daily_last)}个(需>=5)")
     else:
         status = _analyze_market_status(
             slope, r_squared,
             r2_threshold=r2_threshold,
         )
         base_ok = count > (days * min_daily_trades)
+        if not base_ok:
+            reasons.append(f"总交易数{count}过低(要求>={int(days * min_daily_trades)})")
+
         if status == STATUS_STABLE:
             is_stable = base_ok and slope >= slope_stable_floor and cv <= actual_cv_threshold
+            if not is_stable:
+                if slope < slope_stable_floor:
+                    reasons.append(f"趋势下跌(斜率{slope:.4f}<{slope_stable_floor})")
+                if cv > actual_cv_threshold:
+                    reasons.append(f"波动过大(CV={cv:.4f}>{actual_cv_threshold:.4f})")
         elif status == STATUS_RISING:
             slope_pct = (slope / ref_price) if ref_price > 0 else 1.0
             is_stable = base_ok and r_squared > r2_rising_threshold and slope_pct <= slope_pct_ceil and cv <= actual_cv_threshold
+            if not is_stable:
+                if r_squared <= r2_rising_threshold:
+                    reasons.append(f"上涨趋势分散(R²={r_squared:.4f}<={r2_rising_threshold})")
+                if slope_pct > slope_pct_ceil:
+                    reasons.append(f"暴涨风险(斜率占比={slope_pct:.4f}>{slope_pct_ceil})")
+                if cv > actual_cv_threshold:
+                    reasons.append(f"波动过大(CV={cv:.4f}>{actual_cv_threshold:.4f})")
         else:
             is_stable = False
+            reasons.append(f"趋势异常({status})")
+
     price_min = min(clean_prices)
     price_max = max(clean_prices)
     percentile_ceil = price_percentile_ceil_rising if status == STATUS_RISING else price_percentile_ceil
@@ -246,8 +265,10 @@ def analyze_by_time(
         price_percentile = (current_price - price_min) / (price_max - price_min)
         if price_percentile > percentile_ceil:
             is_stable = False
+            reasons.append(f"当前价处于历史高位(分位={price_percentile:.2f}>{percentile_ceil})")
     elif current_price is not None and price_max == price_min:
         price_percentile = 0.5
+
     recent_percentile: Optional[float] = None
     cutoff_14 = datetime.now() - timedelta(days=14)
     recent_prices_cny = [p for dt, p in dt_prices_cny if dt >= cutoff_14]
@@ -260,10 +281,14 @@ def analyze_by_time(
                 recent_percentile = (current_price - recent_min) / (recent_max - recent_min)
                 if recent_percentile > percentile_ceil:
                     is_stable = False
+                    reasons.append(f"当前价处于近14天高位(分位={recent_percentile:.2f}>{percentile_ceil})")
             elif current_price is not None and recent_max == recent_min:
                 recent_percentile = 0.5
+
     if ma30 > 0 and ma7 > bb_upper:
         is_stable = False
+        reasons.append(f"近期均线暴涨(EMA7={ma7:.2f}>BB+={bb_upper:.2f})")
+
     last_price_ma30_ratio: Optional[float] = None
     last_price_ma30_ceil_exceeded = False
     if ma30 > 0 and last_price is not None:
@@ -272,6 +297,10 @@ def analyze_by_time(
             is_stable = False
             if last_price > bb_upper:
                 last_price_ma30_ceil_exceeded = True
+                reasons.append(f"最后成交价偏高({last_price:.2f}>BB+={bb_upper:.2f})")
+            else:
+                reasons.append(f"最后成交价偏低({last_price:.2f}<BB-={bb_lower:.2f})")
+
     if slope > 0:
         trend = "up"
     elif slope < slope_down_threshold:
@@ -294,6 +323,7 @@ def analyze_by_time(
         "trend": trend,
         "status": status,
         "is_stable": is_stable,
+        "msg": (" | ".join(reasons) or "未满足基础指标") if not is_stable else "验证通过",
         "currency": out_currency,
         "price_percentile": round(price_percentile, 4) if price_percentile is not None else None,
         "recent_percentile": round(recent_percentile, 4) if recent_percentile is not None else None,

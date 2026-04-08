@@ -223,7 +223,7 @@ def _do_steampy_login(username: str, password: str, steam_guard_dict: Optional[d
         return True, '', merged
     except Exception as e:
         err = str(e).lower()
-        if 'invalid' in err or 'incorrect' in err or 'wrong' in err or 'bad credentials' in err:
+        if 'invalid' in err or 'incorrect' in err or 'wrong' in err or 'bad credentials' in err or 'client_id' in err or 'client id' in err:
             return False, 'wrong_creds', {}
         if 'two-factor' in err or 'twofactor' in err or '2fa' in err or 'guard' in err:
             return False, 'need_2fa', {}
@@ -290,8 +290,7 @@ def _try_steam_auto_relogin_impl() -> tuple:
     ok, err_code, cookie_dict = _do_steampy_login(username, password, steam_guard_dict)
     if ok and cookie_dict.get("steamLoginSecure"):
         cookie_str, session_id, steam_id = _extract_creds_from_cookie_dict(cookie_dict)
-        if session_id:
-            update_steam_creds(cookie_str, session_id)
+        update_steam_creds(cookie_str, session_id or "")
         try:
             dn, av = fetch_steam_profile_via_api(steam_id or cur.get("steam_id", ""), cookie_str)
             update_account(account_id,
@@ -338,8 +337,7 @@ def verify_steam_auto_login(account_id: str) -> dict:
     ok, err_code, cookie_dict = _do_steampy_login(username, password, steam_guard_dict)
     if ok and cookie_dict.get("steamLoginSecure"):
         cookie_str, session_id, steam_id = _extract_creds_from_cookie_dict(cookie_dict)
-        if session_id:
-            update_steam_creds(cookie_str, session_id)
+        update_steam_creds(cookie_str, session_id or "")
         cur_acc = get_account(account_id)
         if cur_acc:
             try:

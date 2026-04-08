@@ -228,7 +228,7 @@ def _build_listing_plan(
             ctx.log(f"[出售] {name} assetid={aid} 拉取卖单异常: {type(e).__name__} - {e}", "error", category="steam")
             continue
         if not orders_data or not orders_data.get("sell_orders"):
-            ctx.log(f"[出售] {name} assetid={aid} 无法获取 Steam 卖单，跳过", "warn", category="steam")
+            ctx.log(f"[出售] {name} assetid={aid} 无法获取 Steam 卖单（可能是网络问题或限流），跳过", "warn", category="steam")
             continue
 
         list_price, reason = compute_smart_list_price(
@@ -473,7 +473,23 @@ def _run_sell_phase_impl(cfg: dict, state, flow_id: str, items: Optional[list] =
         # 工厂重置后账号列表为空，直接跳过出售避免以错误币种上架
         ctx.log("[出售] 无有效账号（可能刚执行了出厂重置），跳过本次出售", "warn", category="steam")
         return
-    account_currency = (account.get("currency_code") or "CNY").upper()
+    account_currency = (account.get("currency_code") or "").strip().upper()
+    if not account_currency:
+        ctx.log("[出售] 当前账号未配置 currency_code，尝试自动获取...", "info", category="steam")
+        try:
+            from app.gift_engine import get_wallet_balance
+            from app.accounts import update_account
+            wallet = get_wallet_balance(cred_steam.get("cookies", ""))
+            account_currency = wallet.get("currency_code", "").upper()
+            if account_currency:
+                update_account(account.get("id"), currency_code=account_currency)
+                ctx.log(f"[出售] 自动获取成功: {account_currency}，已保存至配置", "info", category="steam")
+        except Exception as e:
+            ctx.log(f"[出售] 自动获取 currency_code 失败: {e}", "warn", category="steam")
+
+        if not account_currency:
+            ctx.log("[出售] 无法获取 currency_code，为防止跨区汇率导致资产损失，已拒绝上架。", "error", category="steam")
+            return
     rate_map = _load_rate_map()
 
     assetid_to_name_map = {

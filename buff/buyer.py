@@ -24,8 +24,9 @@ def _is_auth_error(status_code: int, data: dict) -> bool:
     if status_code == 401:
         return True
     code = str(data.get("code", "")).lower()
-    msg = str(data.get("msg", data.get("error", ""))).lower()
-    if "login" in code or "login" in msg or "未登录" in str(data.get("msg", "")) or "登录" in str(data.get("msg", "")):
+    err_val = data.get("error") or data.get("msg") or ""
+    msg = str(err_val).lower()
+    if "login" in code or "login" in msg or "未登录" in msg or "登录" in msg:
         return True
     return False
 PAY_METHOD_ALIPAY = 51
@@ -86,7 +87,10 @@ class BuffBuyer:
             timeout=timeout,
             **kwargs
         )
-        data = r.json() if r.text else {}
+        try:
+            data = r.json() if r.text else {}
+        except ValueError:
+            data = {"code": "HTTP_" + str(r.status_code), "error": f"接口返回非预期的内容 (Status: {r.status_code})"}
         if _is_auth_error(r.status_code, data):
             raise BuffAuthExpired()
         return data
@@ -240,13 +244,14 @@ class BuffBuyer:
                     self._fetch_pay_url(game, new_order_id)
                 return "SUCCESS"
             error_code = str(res.get("code", ""))
-            msg = str(res.get("msg", ""))
+            err_msg = res.get("error") or res.get("msg") or f"接口返回异常 Code: {error_code}"
+            msg = str(err_msg)
             if "Cooling Down" in error_code or "Cooling Down" in msg:
                 return "COOLING_DOWN"
             if error_code == "Error":
                 logger.warning("卖家不支持当前支付方式 (Code: Error)")
                 return "FAIL"
-            logger.warning("锁单失败: %s", res.get('msg'))
+            logger.warning("锁单失败: %s", err_msg)
             return "FAIL"
         except Exception as e:
             logger.exception("锁单异常: %s", e)
@@ -279,7 +284,7 @@ class BuffBuyer:
                     return pay_url
                 logger.warning("接口返回 OK 但未找到 URL: %s", res)
             else:
-                err = res.get("error") or res.get("msg") or "未知错误"
+                err = res.get("error") or res.get("msg") or f"未返回 error 字段 (Code: {res.get('code', 'N/A')})"
                 logger.warning("支付接口返回错误: %s", err)
         except Exception as e:
             logger.exception("获取支付链接异常: %s", e)
@@ -308,10 +313,11 @@ class BuffBuyer:
         try:
             res = self._make_request("POST", API_BUY, headers=h, data=json.dumps(payload))
             if res.get("code") != "OK":
-                msg = str(res.get("msg", ""))
-                if "Cooling Down" in msg:
+                err_msg = res.get("error") or res.get("msg") or f"接口代码非 OK (Code: {res.get('code', 'N/A')})"
+                msg_str = str(err_msg)
+                if "Cooling Down" in msg_str:
                     return {"success": False, "code": "COOLING_DOWN"}
-                return {"success": False, "code": "FAIL", "msg": res.get("msg")}
+                return {"success": False, "code": "FAIL", "msg": err_msg}
             new_order_id = res.get("data", {}).get("id")
             if self.pay_method == PAY_METHOD_WECHAT:
                 jittered_sleep(0.5)

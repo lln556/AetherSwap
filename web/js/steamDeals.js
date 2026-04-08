@@ -228,10 +228,17 @@
         const btn = $('steam-deals-fetch-btn');
         if (btn) { btn.disabled = true; btn.textContent = '获取中...'; }
         try {
-            await fetch('/api/steam-deals/fetch', { method: 'POST' });
+            const resp = await fetch('/api/steam-deals/fetch', { method: 'POST' });
+            const r = await resp.json();
+            if (!r.ok) {
+                throw new Error(r.error || "获取失败");
+            }
             startPolling();
         } catch (err) {
             console.error('触发获取失败:', err);
+            if (typeof toast === "function") {
+                toast("获取失败", err.message || "");
+            }
             if (btn) { btn.disabled = false; btn.innerHTML = REFRESH_SVG + ' 获取数据'; }
         }
     }

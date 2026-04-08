@@ -66,7 +66,7 @@ def _check_buff_price(
     orders = buff_client.get_sell_orders(gid, game_buff)
     if not orders:
         if log_fn:
-            log_fn(f"[Buff]   → 预检未通过: 无法获取 Buff 卖单信息 (goods_id={gid})", "warn")
+            log_fn(f"[Buff]   → 预检未通过: 无法获取 Buff 卖单信息（检查） (goods_id={gid})", "warn")
         return False, None
     lowest_price, _ = count_lowest_price_orders(orders)
     if lowest_price <= 0:
@@ -222,7 +222,7 @@ def _log_stability_rejection(
     # 打印一行可读的拒绝原因，方便排查为什么这件东西被跳过
     if not log_fn:
         return
-    msg = report.get("msg", "未知原因")
+    msg = report.get("msg", "指标验证不通过")
     st = report.get("status", "")
     cv = report.get("cv", 0)
     r2 = report.get("r_squared", 0)
@@ -339,7 +339,7 @@ def _check_max_discount_precheck(
         max_discount_float = float(max_discount)
         if smart_price is None or smart_price <= 0:
             if log_fn:
-                log_fn("[稳定性]   → 预检未通过: 无法获取 Steam 参考价", "warn")
+                log_fn("[稳定性]   → 预检未通过: 无法获取 Steam 参考价（可能是网络问题或限流）", "warn")
             return False
         if est_ratio is None or est_ratio <= 0:
             if log_fn:
@@ -414,7 +414,7 @@ def pick_stable_item(
             steam_sell_data = _fetch_steam_sell_data(market_hash_name, config, app_id=730)
             if not steam_sell_data:
                 if log_fn:
-                    log_fn("[稳定性]   → 预检未通过: 无法获取 Steam 卖单信息", "warn")
+                    log_fn("[稳定性]   → 预检未通过: 无法获取 Steam 卖单信息（可能是网络问题或限流）", "warn")
                 if gid:
                     stability_failed.add(gid)
                 if failure_delay > 0:
@@ -783,7 +783,7 @@ def lock_and_confirm_payment(
         max_discount = float(max_discount)
         if ref_price is None or ref_price <= 0:
             if log_fn:
-                log_fn("[Buff]   → 二次验证: 无法获取 Steam 参考价，跳过本件", "warn")
+                log_fn("[Buff]   → 二次验证: 无法获取 Steam 参考价（可能是网络问题或限流），跳过本件", "warn")
             return SKIP_VERIFICATION_FAILED
         ref_price = _adjust_ref_price_for_daily_high(
             market_hash_name, ref_price, config, log_fn, app_id=730

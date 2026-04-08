@@ -258,19 +258,29 @@ def api_exchange_rates():
     return {"rates": rates, "region_currency": _REGION_CURRENCY}
 @router.post("/api/steam-deals/fetch")
 def api_fetch_steam_deals():
-    """手动触发抓取 Steam 折扣游戏数据."""
     from app.services.steam_deals import get_fetch_state, run_fetch
+
     state = get_fetch_state()
     if state["running"]:
-        return {"ok": False, "message": "正在获取中，请等待完成"}
-    _invalidate_sort_cache()
+        return {"ok": False, "error": "抓取任务已在运行中"}
+
     cfg = load_app_config_validated()
     deals_cfg = cfg.get("steam_deals", {})
-    max_game_threads = int(deals_cfg.get("max_game_threads", 5))
-    max_region_threads = int(deals_cfg.get("max_region_threads", 16))
+    if not deals_cfg.get("enabled", False):
+        return {"ok": False, "error": "Steam 折扣功能未启用，请在设置中开启该功能。"}
+
+    proxy_cfg = cfg.get("proxy_pool", {})
+    if not proxy_cfg.get("proxies"):
+        return {"ok": False, "error": "必须配置代理池才能使用此功能（请在[代理池]面板添加代理）。"}
+
+    max_games = int(deals_cfg.get("max_game_threads", 5))
+    max_regions = int(deals_cfg.get("max_region_threads", 16))
+
+    import threading
+
     t = threading.Thread(
         target=run_fetch,
-        kwargs={"max_game_threads": max_game_threads, "max_region_threads": max_region_threads},
+        args=(max_games, max_regions),
         daemon=True,
     )
     t.start()
