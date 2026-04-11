@@ -317,6 +317,88 @@
         const fetchBtn = $('steam-deals-fetch-btn');
         if (fetchBtn) fetchBtn.addEventListener('click', fetchData);
         setupObserver();
+
+        const grid = $('steam-deals-grid');
+        if (grid) {
+            grid.addEventListener('contextmenu', (e) => {
+                const card = e.target.closest('.sg-card');
+                if (!card) return;
+                e.preventDefault();
+
+                const link = card.querySelector('a.sg-card-title');
+                if (!link) return;
+                const match = link.href.match(/app\/(\d+)/);
+                if (!match) return;
+                const appId = match[1];
+
+                const existing = document.getElementById('sg-ctx-portal');
+                if (existing) existing.remove();
+
+                // Create a fullscreen portal overlay (fixed, covers viewport, pointer-events: none)
+                // then place the menu inside with absolute coords == clientX/Y
+                const portal = document.createElement('div');
+                portal.id = 'sg-ctx-portal';
+                portal.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none;overflow:visible;';
+                document.body.appendChild(portal);
+
+                const menu = document.createElement('div');
+                menu.id = 'sg-context-menu';
+                menu.style.cssText = [
+                    'position:absolute',
+                    'pointer-events:all',
+                    'background:#1e293b',
+                    'border:1px solid #334155',
+                    'border-radius:6px',
+                    'padding:8px 0',
+                    'box-shadow:0 10px 25px rgba(0,0,0,0.5)',
+                    'color:#e2e8f0',
+                    'font-size:14px',
+                    'min-width:180px',
+                    'white-space:nowrap',
+                ].join(';');
+                menu.innerHTML = `<div class="sg-cm-item" style="padding:8px 16px;cursor:pointer;transition:background 0.15s;">✨ 生成高质量折扣分享卡片</div>`;
+                portal.appendChild(menu);
+
+                // Position after render so we can read offsetWidth/Height
+                requestAnimationFrame(() => {
+                    let x = e.clientX;
+                    let y = e.clientY;
+                    if (x + menu.offsetWidth > window.innerWidth) x -= menu.offsetWidth;
+                    if (y + menu.offsetHeight > window.innerHeight) y -= menu.offsetHeight;
+                    menu.style.left = `${x}px`;
+                    menu.style.top = `${y}px`;
+                });
+
+                const item = menu.querySelector('.sg-cm-item');
+                item.addEventListener('mouseenter', () => item.style.background = '#334155');
+                item.addEventListener('mouseleave', () => item.style.background = 'transparent');
+
+                item.addEventListener('click', async () => {
+                    portal.remove();
+                    if (typeof toast === 'function') toast("正在生成卡片", "这利用网络下载高清封面进行实时渲染，请稍候...", 5000);
+                    try {
+                        const resp = await fetch(`/api/steam-deals/generate-card/${appId}`, { method: 'POST' });
+                        const r = await resp.json();
+                        if (r.ok) {
+                            if (typeof toast === 'function') toast("卡片生成成功！", r.message || "折扣分享卡已保存到本地文件夹。", 8000);
+                        } else {
+                            if (typeof toast === 'function') toast("卡片生成失败", r.error || "未知报错", 10000);
+                        }
+                    } catch (err) {
+                        if (typeof toast === 'function') toast("网络错误或异常", err.message || "接口调用异常", 10000);
+                    }
+                });
+
+                const closePortal = (ev) => {
+                    if (!menu.contains(ev.target)) {
+                        portal.remove();
+                        document.removeEventListener('mousedown', closePortal);
+                    }
+                };
+                setTimeout(() => document.addEventListener('mousedown', closePortal), 0);
+            });
+        }
+
         loadGames(true);
         checkAutoRefresh();
         pollStatus();

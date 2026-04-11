@@ -304,3 +304,27 @@ def api_steam_deals_status():
         "total_games_in_db": total_games,
         "auto_refresh_days": auto_refresh_days,
     }
+
+@router.post("/api/steam-deals/generate-card/{app_id}")
+def api_generate_deal_card(app_id: str):
+    from app.services.deal_cards import generate_card, ROOT
+    from app.database import get_engine, SteamDealGame
+    from sqlmodel import Session, select, col
+    
+    try:
+        engine = get_engine()
+        with Session(engine) as session:
+            stmt = select(SteamDealGame).where(col(SteamDealGame.app_id) == app_id)
+            game = session.exec(stmt).first()
+            if not game:
+                return {"ok": False, "error": "未找到该游戏的折扣记录，请先在列表中获取它"}
+                
+            out_dir = ROOT / "output_cards"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = "".join(c for c in (game.name_en or game.app_id) if c.isalnum() or c in "_ -")[:40]
+            out_path = out_dir / f"{game.app_id}_{safe_name}.png"
+            
+            generate_card(game, str(out_path))
+            return {"ok": True, "message": f"卡片已生成至 output_cards 目录！"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
