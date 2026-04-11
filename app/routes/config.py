@@ -162,11 +162,36 @@ def api_export_full():
         "log": get_log(0),
     }
     return data
+
+@router.get("/api/export_full/download")
+def api_export_full_download():
+    import json
+    from datetime import datetime, timezone
+    from fastapi.responses import Response
+    from app.accounts import get_current_id
+    data = {
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "app_config": load_app_config(),
+        "credentials": get_all_credentials(),
+        "transactions": {"purchases": get_purchases(), "sales": get_sales()},
+        "accounts": {"accounts": list_accounts(), "current_id": get_current_id()},
+        "log": get_log(0),
+    }
+    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    filename = f"full_backup_{ts}.json"
+    return Response(
+        content=json.dumps(data, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 @router.post("/api/import_full")
 def api_import_full(body: ImportFullBody):
     try:
         if body.app_config:
             save_app_config(body.app_config)
+            from app.config_loader import _invalidate_config_cache
+            _invalidate_config_cache()
         if body.credentials:
             save_credentials(body.credentials)
         tx = body.transactions or {}

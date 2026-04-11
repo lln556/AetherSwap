@@ -177,10 +177,68 @@
       margin-top: 1px;
     }
 
+
     .agu-close:hover {
       background: var(--hover-bg, rgba(255, 255, 255, .08));
     }
+
+    /* Wizard restore from backup */
+    .wizard-restore-divider {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 18px 0 12px;
+      color: var(--text-muted, #888);
+      font-size: .8em;
+    }
+
+    .wizard-restore-divider::before,
+    .wizard-restore-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border, rgba(255, 255, 255, .1));
+    }
+
+    .wizard-restore-card {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 14px;
+      border: 1px dashed var(--border, rgba(255, 255, 255, .15));
+      border-radius: 10px;
+      background: var(--card-bg, rgba(255, 255, 255, .03));
+      transition: border-color .2s;
+    }
+
+    .wizard-restore-card:hover {
+      border-color: var(--accent, #60a5fa);
+    }
+
+    .wizard-restore-icon {
+      font-size: 1.6em;
+      flex-shrink: 0;
+    }
+
+    .wizard-restore-text {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .wizard-restore-title {
+      font-size: .88em;
+      font-weight: 600;
+      color: var(--text, #e0e0e0);
+      margin-bottom: 3px;
+    }
+
+    .wizard-restore-desc {
+      font-size: .78em;
+      color: var(--text-muted, #aaa);
+      line-height: 1.4;
+    }
   </style>
+
 </head>
 
 <body>
@@ -1824,6 +1882,19 @@
           <div class="wizard-preview-item"><span class="wizard-preview-num">3</span>Buff 账号登录</div>
           <div class="wizard-preview-item"><span class="wizard-preview-num">4</span>Steam 账号</div>
         </div>
+        <div class="wizard-restore-divider">
+          <span>或者</span>
+        </div>
+        <div class="wizard-restore-card">
+          <div class="wizard-restore-icon">📦</div>
+          <div class="wizard-restore-text">
+            <div class="wizard-restore-title">已有备份？一键恢复</div>
+            <div class="wizard-restore-desc">如果您之前导出过完整备份文件，可直接导入恢复所有配置、账号和交易数据，无需逐步填写。</div>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" id="wiz-restore-btn">选择备份文件</button>
+          <input type="file" id="wiz-restore-file" accept=".json" style="display:none" />
+        </div>
+        <div id="wiz-restore-status" style="display:none; margin-top:8px; font-size:.85em; text-align:center;"></div>
       </div>
 
       <!-- 步骤 1：Steam 令牌 -->

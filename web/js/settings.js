@@ -296,16 +296,13 @@ async function confirmPayment(ok) {
 }
 async function exportConfig() {
   try {
-    const d = await fetchJson(API + "/export_full");
-    const blob = new Blob([JSON.stringify(d, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
+    // 优先用后端直接下载（适合内置浏览器，后端设置 Content-Disposition: attachment）
     const a = document.createElement("a");
-    a.href = url;
-    a.download = `full_backup_${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
+    a.href = API + "/export_full/download";
+    a.target = "_blank";
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
     toast("已导出完整数据", "配置、账号、交易、凭证、操作记录");
   } catch (e) {
     toast("导出失败", e.message || "请稍后再试");
@@ -456,7 +453,40 @@ function _showWizard(startAtBuffStep = false) {
     }
   }
 
+  const wizRestoreBtn = el("wiz-restore-btn");
+  const wizRestoreFile = el("wiz-restore-file");
+  const wizRestoreStatus = el("wiz-restore-status");
+  if (wizRestoreBtn && wizRestoreFile) {
+    wizRestoreBtn.onclick = () => wizRestoreFile.click();
+    wizRestoreFile.onchange = async () => {
+      const file = wizRestoreFile.files && wizRestoreFile.files[0];
+      if (!file) return;
+      wizRestoreBtn.disabled = true;
+      if (wizRestoreStatus) { wizRestoreStatus.style.display = "block"; wizRestoreStatus.textContent = "⏳ 正在导入，请稍候…"; wizRestoreStatus.style.color = "var(--text-muted,#aaa)"; }
+      try {
+        const text = await file.text();
+        const json = JSON.parse(text);
+        if (!isFullBackup(json)) throw new Error("所选文件不是完整备份，请确认文件正确");
+        const r = await fetchJson(API + "/import_full", { method: "POST", body: JSON.stringify(json) });
+        if (!r.ok) throw new Error(r.error || "导入失败");
+        if (wizRestoreStatus) { wizRestoreStatus.textContent = "✅ 数据已恢复！正在刷新…"; wizRestoreStatus.style.color = "#4ade80"; }
+        await loadConfig();
+        try { await refreshTransactions(); } catch { }
+        try { await refreshAccounts(); } catch { }
+        try { logLines = []; const out = el("log-output"); if (out) out.dataset.lastIndex = "0"; await refreshLog(); } catch { }
+        toast("已从备份恢复全部数据", "配置、账号、交易记录均已导入");
+        setTimeout(() => closeWizard(null), 900);
+      } catch (e) {
+        if (wizRestoreStatus) { wizRestoreStatus.textContent = "❌ " + (e.message || "导入失败，请确认 JSON 格式正确"); wizRestoreStatus.style.color = "#f87171"; }
+        wizRestoreBtn.disabled = false;
+      } finally {
+        wizRestoreFile.value = "";
+      }
+    };
+  }
+
   // Buff 登录按钮
+
   const buffOpenBtn = el("wiz-buff-open");
   const buffDoneBtn = el("wiz-buff-done");
   if (buffOpenBtn) {
