@@ -1,6 +1,8 @@
 
 let inventoryRefreshSeconds = 60;
 let inventoryTimer = null;
+let currentPriceRefreshMinutes = 10;
+let currentPriceTimer = null;
 async function loadConfig() {
   const d = await fetchJson(API + "/config");
   const c = d.config || {};
@@ -92,6 +94,7 @@ async function loadConfig() {
   if (sellPressureThresh) sellPressureThresh.value = p.sell_pressure_threshold ?? "";
   const currentPriceRefreshEl = el("cfg-current-price-refresh-minutes");
   if (currentPriceRefreshEl) currentPriceRefreshEl.value = p.current_price_refresh_minutes ?? "";
+  currentPriceRefreshMinutes = parseInt(p.current_price_refresh_minutes, 10) || currentPriceRefreshMinutes || 10;
   const gStartTimeLimitEnabled = el("cfg-start-time-limit-enabled");
   if (gStartTimeLimitEnabled) gStartTimeLimitEnabled.checked = !!p.start_time_limit_enabled;
   const gStartTimeHour = el("cfg-start-time-hour");
@@ -265,6 +268,8 @@ async function saveConfigFromForm() {
   const d = await fetchJson(API + "/config");
   const merged = deepMerge(d.config || {}, formToConfig());
   await fetchJson(API + "/config", { method: "POST", body: JSON.stringify({ config: merged }) });
+  await loadConfig();
+  setupInventoryAutoRefresh();
 }
 async function startPipeline() {
   try {
@@ -346,11 +351,21 @@ function setupInventoryAutoRefresh() {
     clearInterval(inventoryTimer);
     inventoryTimer = null;
   }
-  if (!inventoryRefreshSeconds || inventoryRefreshSeconds <= 0) return;
-  refreshMarketPrices();
-  inventoryTimer = setInterval(() => {
+  if (currentPriceTimer) {
+    clearInterval(currentPriceTimer);
+    currentPriceTimer = null;
+  }
+  if (inventoryRefreshSeconds && inventoryRefreshSeconds > 0) {
+    inventoryTimer = setInterval(() => {
+      refreshInventory(true);
+    }, inventoryRefreshSeconds * 1000);
+  }
+  if (currentPriceRefreshMinutes && currentPriceRefreshMinutes > 0) {
     refreshMarketPrices();
-  }, inventoryRefreshSeconds * 1000);
+    currentPriceTimer = setInterval(() => {
+      refreshMarketPrices();
+    }, currentPriceRefreshMinutes * 60 * 1000);
+  }
 }
 
 // ---- 配置完整性检查 & 新手引导向导 ----
