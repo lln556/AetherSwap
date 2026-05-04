@@ -13,7 +13,7 @@ async function loadConfig() {
   const inv = c.inventory || {};
   const sys = c.system || {};
   const gGames = el("cfg-games");
-  if (gGames) gGames.value = i.games || "";
+  if (gGames) gGames.value = i.type || i.games || "";
   const gPlatforms = el("cfg-platforms");
   if (gPlatforms) gPlatforms.value = i.platforms || "";
   const gSort = el("cfg-sort_by");
@@ -165,7 +165,7 @@ async function loadConfig() {
 function formToConfig() {
   return {
     iflow: {
-      games: el("cfg-games") ? el("cfg-games").value.trim() : undefined,
+      type: el("cfg-games") ? el("cfg-games").value.trim() : undefined,
       platforms: el("cfg-platforms") ? el("cfg-platforms").value.trim() : undefined,
       sort_by: el("cfg-sort_by") ? el("cfg-sort_by").value.trim() : undefined,
       min_price: el("cfg-min_price") ? parseFloat(el("cfg-min_price").value) || undefined : undefined,
