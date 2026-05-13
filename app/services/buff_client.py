@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 from app.services.retry import with_retry
-from buff.buyer import BuffAuthExpired, BuffBuyer, PAY_METHOD_ALIPAY, PAY_METHOD_WECHAT
+from buff.buyer import BuffAuthExpired, BuffBuyer, BuffVerificationRequired, PAY_METHOD_ALIPAY, PAY_METHOD_WECHAT
 buff_timeout = 15
 buff_retry_attempts = 2
 def count_lowest_price_orders(orders: List[dict]) -> Tuple[float, int]:
@@ -47,7 +47,7 @@ class BuffClient:
         return self._buyer.get_goods_steam_price_cny(search_name, game)
     def ask_seller_to_send(self, bill_order_id_or_ids: Union[str, List[str]], game: str = "csgo") -> bool:
         return self._buyer.ask_seller_to_send(bill_order_id_or_ids, game)
-    @with_retry(max_attempts=buff_retry_attempts, fatal_exceptions=(BuffAuthExpired,))
+    @with_retry(max_attempts=buff_retry_attempts, fatal_exceptions=(BuffAuthExpired, BuffVerificationRequired))
     def lock_and_get_pay_url(
         self,
         game: str,
@@ -56,7 +56,7 @@ class BuffClient:
         price: str,
     ) -> Dict[str, Any]:
         return self._buyer.lock_and_get_pay_url(game, goods_id, sell_order_id, price)
-    @with_retry(max_attempts=buff_retry_attempts, fatal_exceptions=(BuffAuthExpired,))
+    @with_retry(max_attempts=buff_retry_attempts, fatal_exceptions=(BuffAuthExpired, BuffVerificationRequired))
     def try_batch_buy(
         self,
         goods_id: int,
@@ -82,7 +82,7 @@ class BuffClient:
             "num": num,
             "total_price": unit_price * num,
         }
-    @with_retry(max_attempts=buff_retry_attempts, fatal_exceptions=(BuffAuthExpired,))
+    @with_retry(max_attempts=buff_retry_attempts, fatal_exceptions=(BuffAuthExpired, BuffVerificationRequired))
     def batch_buy_find_and_finalize(
         self,
         goods_id: int,

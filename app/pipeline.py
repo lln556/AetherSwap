@@ -21,7 +21,7 @@ from app.services.analysis_client import StabilityAnalyzer
 from app.services.buff_client import create_buff_client_from_config
 from app.services.steam_client import SteamClient
 from app.state import get_state, append_sale
-from buff.buyer import BuffAuthExpired
+from buff.buyer import BuffAuthExpired, BuffVerificationRequired
 from steamdt.models import SteamDTQueryParams
 from utils.delay import jittered_sleep
 from utils.money import USD_TO_CNY_DEFAULT, list_price_display_to_cents
@@ -29,8 +29,7 @@ from utils.network_check import get_network_checker
 from utils.proxy_manager import get_proxy_manager
 from datetime import datetime
 
-# Re-export for backward compatibility with routes/inventory.py
-from app.sell_pipeline import run_sell_phase_on_inventory_update  # noqa: F401
+from app.sell_pipeline import run_sell_phase_on_inventory_update
 
 DEFAULT_RETRY_INTERVAL_SECONDS = 300
 DEFAULT_START_TIME_HOUR = 8
@@ -184,6 +183,8 @@ def _process_deals_for_target(
 def _run_pipeline(config: dict) -> None:
     state = get_state()
     state.clear_stop()
+    state.set_buff_auth_expired(False)
+    state.set_buff_verification_required(False)
     cfg = merge(DEFAULTS, config)
     pipeline_cfg = cfg.get("pipeline", {})
     verbose = bool(pipeline_cfg.get("verbose_debug", False))
@@ -300,6 +301,12 @@ def _run_pipeline(config: dict) -> None:
             ctx.log("Buff 登录已过期，请在界面重新登录", "error", category="buff")
             ctx.set_status("error", "BUFF_AUTH_EXPIRED")
             return
+        except BuffVerificationRequired as e:
+            reason = str(e) or "Buff 需要刷新页面或完成人机验证"
+            ctx.state.set_buff_verification_required(True, reason)
+            ctx.log(f"Buff 需要刷新页面状态或完成人机验证: {reason}", "error", category="buff")
+            ctx.set_status("error", "BUFF_VERIFICATION_REQUIRED")
+            return
 
         if acc >= target:
             break
@@ -313,6 +320,30 @@ def _run_pipeline(config: dict) -> None:
     ctx.set_status("idle", "")
 
 
-def start_pipeline(config: dict) -> None:
-    t = threading.Thread(target=_run_pipeline, args=(config,), daemon=True)
-    t.start()
+_pipeline_thread = None
+_pipeline_start_lock = threading.Lock()
+
+
+def is_pipeline_running() -> bool:
+    with _pipeline_start_lock:
+        return _pipeline_thread is not None and _pipeline_thread.is_alive()
+
+
+def _run_pipeline_guarded(config: dict) -> None:
+    global _pipeline_thread
+    try:
+        _run_pipeline(config)
+    finally:
+        with _pipeline_start_lock:
+            _pipeline_thread = None
+
+
+def start_pipeline(config: dict) -> bool:
+    global _pipeline_thread
+    with _pipeline_start_lock:
+        if _pipeline_thread is not None and _pipeline_thread.is_alive():
+            return False
+        t = threading.Thread(target=_run_pipeline_guarded, args=(config,), daemon=True, name="buy-pipeline")
+        _pipeline_thread = t
+        t.start()
+        return True

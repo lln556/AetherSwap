@@ -8,7 +8,9 @@ class ConfigBody(BaseModel):
     config: dict
 @router.post("/api/pipeline/start")
 def api_pipeline_start(body: ConfigBody):
-    start_pipeline(body.config)
+    if not start_pipeline(body.config):
+        log("买入流水线已在运行，忽略重复启动请求", level="warn", category="pipeline")
+        return {"ok": False, "already_running": True, "error": "买入流水线已在运行，请勿重复启动"}
     return {"ok": True}
 @router.post("/api/pipeline/stop")
 def api_pipeline_stop():

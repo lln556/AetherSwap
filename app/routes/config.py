@@ -57,6 +57,8 @@ def api_data_init():
         "pipeline": {
             "max_discount": 0.8,
             "exclude_keywords": ["印花"],
+            "verbose_debug": False,
+            "steam_listings_debug": False,
         },
         "proxy_pool": {
             "enabled": False,

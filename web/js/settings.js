@@ -275,8 +275,12 @@ async function startPipeline() {
   try {
     await saveConfigFromForm();
     const d = await fetchJson(API + "/config");
-    await fetchJson(API + "/pipeline/start", { method: "POST", body: JSON.stringify({ config: d.config || {} }) });
-    toast("启动请求已发送");
+    const result = await fetchJson(API + "/pipeline/start", { method: "POST", body: JSON.stringify({ config: d.config || {} }) });
+    if (result && result.already_running) {
+      toast("买入流水线已在运行");
+    } else {
+      toast("启动请求已发送");
+    }
     refreshStatus();
   } catch (e) {
     toast("启动失败", e.message || "请检查配置与后端日志");

@@ -32,6 +32,8 @@ class State:
     _plan: List[Any]
     _inventory: List[Any]
     _buff_auth_expired: bool
+    _buff_verification_required: bool
+    _buff_verification_reason: str
     _progress_total: int
     _progress_done: int
     _progress_item: str
@@ -49,6 +51,8 @@ class State:
         self._plan = []
         self._inventory = []
         self._buff_auth_expired = False
+        self._buff_verification_required = False
+        self._buff_verification_reason = ""
         self._progress_total = 0
         self._progress_done = 0
         self._progress_item = ""
@@ -98,6 +102,8 @@ class State:
                 "status": self._status,
                 "step": self._step,
                 "buff_auth_expired": self._buff_auth_expired,
+                "buff_verification_required": self._buff_verification_required,
+                "buff_verification_reason": self._buff_verification_reason,
                 "progress_total": self._progress_total,
                 "progress_done": self._progress_done,
                 "progress_pct": round(pct, 1),
@@ -112,6 +118,15 @@ class State:
     def set_buff_auth_expired(self, value: bool) -> None:
         with self._lock:
             self._buff_auth_expired = value
+            if value:
+                self._buff_verification_required = False
+                self._buff_verification_reason = ""
+    def set_buff_verification_required(self, value: bool, reason: str = "") -> None:
+        with self._lock:
+            self._buff_verification_required = value
+            self._buff_verification_reason = reason if value else ""
+            if value:
+                self._buff_auth_expired = False
     def log(self, msg: str, level: str = "info", category: str = "", flow_id: str = "") -> None:
         with self._lock:
             self._log_seq += 1
@@ -218,6 +233,8 @@ def is_steam_background_allowed() -> bool:
     return get_state().is_steam_background_allowed()
 def set_buff_auth_expired(value: bool) -> None:
     get_state().set_buff_auth_expired(value)
+def set_buff_verification_required(value: bool, reason: str = "") -> None:
+    get_state().set_buff_verification_required(value, reason=reason)
 def log(msg: str, level: str = "info", category: str = "", flow_id: str = "") -> None:
     get_state().log(msg, level, category, flow_id)
 def get_log(since_idx: int = 0) -> list:

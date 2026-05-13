@@ -20,6 +20,10 @@ _USER_AGENTS = [
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 class BuffAuthExpired(Exception):
     pass
+
+class BuffVerificationRequired(Exception):
+    pass
+
 def _is_auth_error(status_code: int, data: dict) -> bool:
     if status_code == 401:
         return True
@@ -29,6 +33,20 @@ def _is_auth_error(status_code: int, data: dict) -> bool:
     if "login" in code or "login" in msg or "未登录" in msg or "登录" in msg:
         return True
     return False
+
+def _is_verification_required(data: dict) -> bool:
+    text = str(data.get("error") or data.get("msg") or data.get("message") or "").lower()
+    code = str(data.get("code", "")).lower()
+    haystack = f"{code} {text}"
+    markers = (
+        "页面已过期",
+        "刷新当前页面",
+        "人机验证",
+        "captcha",
+        "risk",
+        "安全验证",
+    )
+    return any(marker in haystack for marker in markers)
 PAY_METHOD_ALIPAY = 51
 PAY_METHOD_WECHAT = 6
 API_HISTORY = "https://buff.163.com/api/market/buy_order/history"
@@ -93,6 +111,9 @@ class BuffBuyer:
             data = {"code": "HTTP_" + str(r.status_code), "error": f"接口返回非预期的内容 (Status: {r.status_code})"}
         if _is_auth_error(r.status_code, data):
             raise BuffAuthExpired()
+        if _is_verification_required(data):
+            msg = data.get("error") or data.get("msg") or data.get("message") or "Buff 需要刷新页面或完成人机验证"
+            raise BuffVerificationRequired(str(msg))
         return data
     def check_wait_pay_orders(self, game: str = "csgo") -> bool:
         params = {
@@ -134,7 +155,7 @@ class BuffBuyer:
                 params.pop("mode", None)
                 data = self._make_request("GET", API_SELL_ORDER, params=params, headers=h)
             return data.get("data", {}).get("items", []) or None
-        except BuffAuthExpired:
+        except (BuffAuthExpired, BuffVerificationRequired):
             raise
         except Exception:
             return None
@@ -159,7 +180,7 @@ class BuffBuyer:
             if raw is None:
                 return None
             return float(raw)
-        except BuffAuthExpired:
+        except (BuffAuthExpired, BuffVerificationRequired):
             raise
         except (ValueError, TypeError, KeyError):
             return None
@@ -325,7 +346,7 @@ class BuffBuyer:
                 return {"success": True, "pay_url": pay_url, "pay_type": "wechat", "order_id": new_order_id}
             pay_url = self._get_alipay_url(game, new_order_id)
             return {"success": True, "pay_url": pay_url, "pay_type": "alipay", "order_id": new_order_id}
-        except BuffAuthExpired:
+        except (BuffAuthExpired, BuffVerificationRequired):
             raise
         except Exception as e:
             return {"success": False, "code": "FAIL", "msg": str(e)}
@@ -411,7 +432,7 @@ class BuffBuyer:
             data = res.get("data", {})
             raw = data.get("id") or data.get("batch_buy_id")
             return str(raw) if raw is not None else None
-        except BuffAuthExpired:
+        except (BuffAuthExpired, BuffVerificationRequired):
             raise
         except Exception:
             return None
@@ -427,6 +448,8 @@ class BuffBuyer:
                 return None
             data = res.get("data", {})
             return data.get("url") or data.get("qrcode") or None
+        except BuffVerificationRequired:
+            raise
         except Exception:
             return None
     def batch_buy_finalize(
@@ -464,7 +487,7 @@ class BuffBuyer:
                 return None
             raw = res.get("data", {}).get("id")
             return str(raw) if raw is not None else None
-        except BuffAuthExpired:
+        except (BuffAuthExpired, BuffVerificationRequired):
             raise
         except Exception:
             return None
@@ -489,7 +512,7 @@ class BuffBuyer:
                 res = self._make_request("POST", API_ASK_SELLER_SEND, headers=h, data=json.dumps(payload))
                 if res.get("code") == "OK":
                     any_success = True
-            except BuffAuthExpired:
+            except (BuffAuthExpired, BuffVerificationRequired):
                 raise
             except Exception:
                 pass

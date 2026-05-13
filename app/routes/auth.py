@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
-from app.state import log, set_buff_auth_expired
+from app.state import log, set_buff_auth_expired, set_buff_verification_required
 from app.config_loader import (
     get_steam_credentials,
     load_app_config_validated,
@@ -48,7 +48,7 @@ def _relogin_worker(relogin_type: str) -> None:
         profile_dir.mkdir(parents=True, exist_ok=True)
         context = p.chromium.launch_persistent_context(str(profile_dir), headless=False)
         page = context.pages[0] if context.pages else context.new_page()
-        url = "https://store.steampowered.com/login/" if relogin_type == "steam" else "https://buff.163.com/login"
+        url = "https://store.steampowered.com/login/" if relogin_type == "steam" else "https://buff.163.com/"
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         if relogin_type == "steam":
             pass
@@ -88,14 +88,15 @@ def _relogin_worker(relogin_type: str) -> None:
                 cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
                 update_buff_creds(cookie_str)
                 set_buff_auth_expired(False)
+                set_buff_verification_required(False)
                 from app.state import get_status
                 from app.pipeline import start_pipeline
                 from app.config_loader import load_app_config_validated
                 st = get_status()
                 err_msg = str(st.get("step") or "")
-                if st.get("status") == "error" and "Buff" in err_msg and "过期" in err_msg:
+                if st.get("status") == "error" and err_msg in ("BUFF_AUTH_EXPIRED", "BUFF_VERIFICATION_REQUIRED"):
                     from app.state import log
-                    log("检测到 Buff 权限更新，尝试自动恢复挂刀流水线...", "info", category="system")
+                    log("检测到 Buff 状态已更新，尝试自动恢复挂刀流水线...", "info", category="system")
                     try:
                         start_pipeline(load_app_config_validated())
                     except Exception as resume_err:
@@ -148,7 +149,7 @@ def _relogin_start(relogin_type: str):
         return {"ok": False, "error": "打开浏览器超时"}
     if _relogin_error:
         return {"ok": False, "error": _relogin_error}
-    msg = "请在弹出的浏览器中完成 Steam 登录" if relogin_type == "steam" else "请在弹出的浏览器中完成 Buff 登录"
+    msg = "请在弹出的浏览器中完成 Steam 登录" if relogin_type == "steam" else "请在弹出的浏览器中完成 Buff 登录/验证"
     return {"ok": True, "message": msg}
 def _relogin_finish(success: bool):
     global _relogin_success, _relogin_context

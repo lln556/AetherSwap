@@ -94,7 +94,9 @@ function pushLyricLine(text, subText) {
 async function refreshStatus() {
   try {
     const d = await fetchJson(API + "/status");
-    if (d.buff_auth_expired && _hasAnyAccount) {
+    if (d.buff_verification_required && _hasAnyAccount) {
+      showReloginModal("buff", { reason: "verification_required", error: d.buff_verification_reason });
+    } else if (d.buff_auth_expired && _hasAnyAccount) {
       showReloginModal("buff");
     }
     const raw = d.status || "idle";
@@ -203,8 +205,15 @@ function showReloginModal(type, opts = {}) {
   const title = el("relogin-title");
   const msg = el("relogin-message");
   if (reloginType === "buff") {
-    if (title) title.textContent = "Buff 登录已过期";
-    if (msg) msg.textContent = "登录已过期，请在弹出的浏览器中重新登录 Buff，完成后点击下方按钮继续。";
+    if (opts.reason === "verification_required") {
+      if (title) title.textContent = "Buff 需要验证";
+      if (msg) msg.textContent = opts.error
+        ? `Buff 返回：${opts.error}。请打开内置浏览器，进入 Buff 市场或任意商品页，完成刷新/人机验证后点击完成。`
+        : "Buff 需要刷新页面状态或完成人机验证。请打开内置浏览器，进入 Buff 市场或任意商品页，完成验证后点击完成。";
+    } else {
+      if (title) title.textContent = "Buff 登录已过期";
+      if (msg) msg.textContent = "登录已过期，请在弹出的浏览器中重新登录 Buff，完成后点击下方按钮继续。";
+    }
   } else {
     if (title) title.textContent = "Steam 登录已过期";
     if (opts.reason === "need_2fa") {

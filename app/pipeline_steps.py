@@ -13,7 +13,7 @@ from app.services.analysis_client import StabilityAnalyzer
 from app.services.buff_client import count_lowest_price_orders, first_order_at_price
 from app.notify import send_pushplus, build_payment_notify_content, wait_email_command
 from utils.delay import jittered_sleep
-from buff.buyer import BuffAuthExpired
+from buff.buyer import BuffAuthExpired, BuffVerificationRequired
 
 STEAM_FEE_FACTOR = 1.15  # Steam take rate for calculating net proceeds
 
@@ -669,7 +669,7 @@ def _do_batch_wait_finalize_and_append(
                 log_fn("[Buff]   → 已提醒卖家发货，请留意 Steam 报价", "info")
             elif log_fn:
                 log_fn("[Buff]   → 提醒卖家发货未成功（可稍后在订单页手动催发货）", "warn")
-        except BuffAuthExpired:
+        except (BuffAuthExpired, BuffVerificationRequired):
             raise
         except Exception:
             if log_fn:
@@ -717,7 +717,7 @@ def _do_wait_payment_and_append(
             log_fn("[Buff]   → 已提醒卖家发货，请留意 Steam 报价", "info")
         elif log_fn:
             log_fn("[Buff]   → 提醒卖家发货未成功（可稍后在订单页手动催发货）", "warn")
-    except BuffAuthExpired:
+    except (BuffAuthExpired, BuffVerificationRequired):
         raise
     except Exception:
         if log_fn:
@@ -849,7 +849,7 @@ def lock_and_confirm_payment(
             log_fn(f"[Buff]   → 锁单 order_id={o.get('id')} price={o.get('price')}", "info")
         try:
             result = buff_client.lock_and_get_pay_url(game_buff, goods_id, o["id"], o["price"])
-        except BuffAuthExpired:
+        except (BuffAuthExpired, BuffVerificationRequired):
             raise
         except Exception as e:
             if log_fn:
@@ -887,7 +887,7 @@ def lock_and_confirm_payment(
     def _try_batch_buy():
         try:
             batch_result = buff_client.try_batch_buy(goods_id, game_buff, orders, lowest_price, num_to_buy)
-        except BuffAuthExpired:
+        except (BuffAuthExpired, BuffVerificationRequired):
             raise
         except Exception as e:
             if log_fn:
