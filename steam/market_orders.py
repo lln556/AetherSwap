@@ -3,11 +3,14 @@ import threading
 import time
 import logging
 import math
-from typing import Any, List, Optional, Tuple
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from steam.client import build_listing_url
 from utils.delay import jittered_sleep
 from utils.proxy_manager import get_proxy_manager
+from utils.money import USD_TO_CNY_DEFAULT
 from app.database import db_get_item_nameid, db_set_item_nameid
 
 logger = logging.getLogger(__name__)
@@ -24,10 +27,69 @@ def clear_caches() -> None:
     with _sell_orders_cache_lock:
         _sell_orders_cache.clear()
 CURRENCY_CNY = 23
+STEAM_CURRENCY_USD = 1
+STEAM_CURRENCY_CNY = 23
+_ROOT = Path(__file__).resolve().parent.parent
+_EXCHANGE_RATE_FILE = _ROOT / "config" / "exchange_rate.json"
+_STEAM_CURRENCY_CODES = {
+    1: "USD",
+    2: "GBP",
+    3: "EUR",
+    4: "CHF",
+    5: "RUB",
+    6: "PLN",
+    7: "BRL",
+    8: "JPY",
+    9: "NOK",
+    10: "IDR",
+    11: "MYR",
+    12: "PHP",
+    13: "SGD",
+    14: "THB",
+    15: "VND",
+    16: "KRW",
+    17: "TRY",
+    18: "UAH",
+    19: "MXN",
+    20: "CAD",
+    21: "AUD",
+    22: "NZD",
+    23: "CNY",
+    24: "INR",
+    25: "CLP",
+    26: "PEN",
+    27: "COP",
+    28: "ZAR",
+    29: "HKD",
+    30: "TWD",
+    31: "SAR",
+    32: "AED",
+    33: "SEK",
+    34: "ARS",
+    35: "ILS",
+    36: "BYN",
+    37: "KZT",
+    38: "KWD",
+    39: "QAR",
+    40: "CRC",
+    41: "UYU",
+    42: "BGN",
+    43: "HRK",
+    44: "CZK",
+    45: "DKK",
+    46: "HUF",
+    47: "RON",
+}
+_exchange_rate_cache: Tuple[float, Dict[str, float]] = (0.0, {})
+_EXCHANGE_RATE_TTL = 300
 _ITEM_NAMEID_PATTERNS = [
     re.compile(r"Market_LoadOrderSpread\s*\(\s*(\d+)\s*\)", re.I),
     re.compile(r"item_nameid['\"]?\s*[:=]\s*['\"]?(\d+)", re.I),
 ]
+_SSR_RENDER_CONTEXT_RE = re.compile(
+    r'window\.SSR\.renderContext=JSON\.parse\("((?:\\.|[^"\\])*)"\);',
+    re.S,
+)
 def _format_request_error(prefix: str, exc: Exception) -> str:
     detail = str(exc).strip()
     if len(detail) > 120:
@@ -49,6 +111,164 @@ def _extract_item_nameid(html: str) -> Optional[str]:
         if m:
             return m.group(1)
     return None
+
+def _load_exchange_rates() -> Dict[str, float]:
+    global _exchange_rate_cache
+    now = time.time()
+    ts, cached = _exchange_rate_cache
+    if cached and now - ts < _EXCHANGE_RATE_TTL:
+        return cached
+    rates: Dict[str, float] = {}
+    try:
+        if _EXCHANGE_RATE_FILE.exists():
+            with open(_EXCHANGE_RATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            raw_rates = data.get("rates") if isinstance(data, dict) else None
+            if isinstance(raw_rates, dict):
+                rates = {
+                    str(k).upper(): float(v)
+                    for k, v in raw_rates.items()
+                    if isinstance(v, (int, float)) and float(v) > 0
+                }
+    except Exception as e:
+        logger.debug("读取 exchange_rate.json 失败: %s", type(e).__name__)
+    _exchange_rate_cache = (now, rates)
+    return rates
+
+def _extract_ssr_render_context(html: str) -> Optional[dict]:
+    m = _SSR_RENDER_CONTEXT_RE.search(html or "")
+    if not m:
+        return None
+    try:
+        return json.loads(json.loads(f'"{m.group(1)}"'))
+    except Exception as e:
+        logger.debug("解析 Steam SSR renderContext 失败: %s", type(e).__name__)
+        return None
+
+def _steam_cents_to_cny(
+    cents: int,
+    currency: int,
+    usd_to_cny_rate: float,
+    exchange_rates: Optional[Dict[str, float]] = None,
+) -> Optional[float]:
+    amount = cents / 100.0
+    code = _STEAM_CURRENCY_CODES.get(currency)
+    if code == "CNY":
+        return amount
+    if code == "USD":
+        rate = (exchange_rates or {}).get("USD") or usd_to_cny_rate
+        return amount * rate
+    if code:
+        rate = (exchange_rates or {}).get(code)
+        if rate:
+            return amount * rate
+    return None
+
+def _parse_compact_orders_cny(
+    raw: Any,
+    currency: int,
+    usd_to_cny_rate: float,
+    exchange_rates: Optional[Dict[str, float]] = None,
+) -> List[Tuple[float, int]]:
+    if not isinstance(raw, list):
+        return []
+    out: List[Tuple[float, int]] = []
+    for i in range(0, len(raw) - 1, 2):
+        try:
+            price_cents = int(raw[i])
+            volume = int(raw[i + 1])
+        except (ValueError, TypeError):
+            continue
+        price = _steam_cents_to_cny(price_cents, currency, usd_to_cny_rate, exchange_rates)
+        if price is None or price <= 0 or volume <= 0:
+            continue
+        out.append((round(price, 2), volume))
+    return sorted(out, key=lambda x: x[0])
+
+def _extract_ssr_orderbook_cny(
+    html: str,
+    usd_to_cny_rate: float = USD_TO_CNY_DEFAULT,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    ctx = _extract_ssr_render_context(html)
+    if not ctx:
+        return None, "Steam 新版页面未包含 SSR renderContext"
+    try:
+        query_data = json.loads(ctx.get("queryData") or "{}")
+    except Exception as e:
+        return None, f"Steam SSR queryData 解析失败: {type(e).__name__}"
+    queries = query_data.get("queries") if isinstance(query_data, dict) else None
+    if not isinstance(queries, list):
+        return None, "Steam SSR queryData 中没有 queries"
+    for query in queries:
+        if not isinstance(query, dict):
+            continue
+        data = (query.get("state") or {}).get("data")
+        if not isinstance(data, dict) or "rgCompactSellOrders" not in data:
+            continue
+        try:
+            currency = int(data.get("eCurrency") or 0)
+        except (ValueError, TypeError):
+            currency = 0
+        currency_code = _STEAM_CURRENCY_CODES.get(currency)
+        exchange_rates = _load_exchange_rates()
+        if not currency_code:
+            return None, f"Steam 新版订单簿币种暂不支持: eCurrency={currency}"
+        if currency_code not in ("CNY", "USD") and currency_code not in exchange_rates:
+            return None, f"Steam 新版订单簿币种={currency_code}(eCurrency={currency})，但 exchange_rate.json 缺少该币种汇率"
+        orders = _parse_compact_orders_cny(
+            data.get("rgCompactSellOrders"),
+            currency,
+            usd_to_cny_rate,
+            exchange_rates,
+        )
+        if not orders:
+            return None, "Steam 新版订单簿为空或无法解析卖单"
+        lowest_price = orders[0][0]
+        raw_lowest = data.get("amtMinSellOrder")
+        if raw_lowest is not None:
+            try:
+                converted = _steam_cents_to_cny(
+                    int(raw_lowest), currency, usd_to_cny_rate, exchange_rates
+                )
+                if converted is not None and converted > 0:
+                    lowest_price = round(converted, 2)
+            except (ValueError, TypeError):
+                pass
+        return {"lowest_price": lowest_price, "sell_orders": orders}, None
+    return None, "Steam 新版页面未找到 market/orderbook 数据"
+
+def _fetch_ssr_sell_orders_cny(
+    session,
+    market_hash_name: str,
+    app_id: int,
+    *,
+    timeout: int = 15,
+    usd_to_cny_rate: float = USD_TO_CNY_DEFAULT,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    url = build_listing_url(market_hash_name, app_id)
+    headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": url,
+    }
+    pm = get_proxy_manager()
+    last_error = ""
+    for attempt in range(3):
+        proxies = pm.get_proxies_for_request(failed=(attempt > 0))
+        try:
+            r = session.get(url, headers=headers, timeout=timeout, proxies=proxies, allow_redirects=True)
+            if r.status_code == 200:
+                result, parse_error = _extract_ssr_orderbook_cny(r.text, usd_to_cny_rate)
+                if result:
+                    return result, None
+                last_error = parse_error or "Steam 新版页面订单簿解析失败"
+                break
+            last_error = _http_error_reason("Steam 新版市场页面", r.status_code)
+        except Exception as e:
+            last_error = _format_request_error("Steam 新版市场页面请求异常", e)
+        if attempt < 2:
+            jittered_sleep(1.0)
+    return None, last_error or "无法打开 Steam 新版市场页面"
+
 def get_item_nameid(
     session,
     market_hash_name: str,
@@ -87,7 +307,7 @@ def get_item_nameid(
                         with _item_nameid_cache_lock:
                             _item_nameid_cache[key] = (nameid, time.time() + _ITEM_NAMEID_TTL)
                     return (nameid, None) if return_error else nameid
-                last_error = "Steam 市场页面未解析到 item_nameid（可能物品名不正确、页面被风控或地区不可访问）"
+                last_error = "Steam 市场页面未包含旧版 item_nameid 字段（可能是 Steam 新版页面、物品名不正确或页面被风控）"
                 break
             last_error = _http_error_reason("Steam 市场页面", r.status_code)
         except Exception as e:
@@ -221,6 +441,7 @@ def get_sell_orders_cny(
     request_delay: float = 1.0,
     use_cache: bool = True,
     return_error: bool = False,
+    usd_to_cny_rate: float = USD_TO_CNY_DEFAULT,
 ):
     key = (market_hash_name.strip(), app_id)
     if use_cache:
@@ -228,11 +449,38 @@ def get_sell_orders_cny(
             entry = _sell_orders_cache.get(key)
         if entry and time.time() < entry[1]:
             return (entry[0], None) if return_error else entry[0]
-    item_nameid, nameid_error = get_item_nameid(
-        session, market_hash_name, app_id, return_error=True
-    )
+    item_nameid = None
+    nameid_error = None
+    if use_cache:
+        item_nameid = db_get_item_nameid(key[0])
+        if not item_nameid:
+            with _item_nameid_cache_lock:
+                entry = _item_nameid_cache.get(key)
+            if entry and time.time() < entry[1]:
+                item_nameid = entry[0]
+    ssr_error = None
     if not item_nameid:
-        return (None, nameid_error or "无法获取 Steam item_nameid") if return_error else None
+        ssr_result, ssr_error = _fetch_ssr_sell_orders_cny(
+            session,
+            market_hash_name,
+            app_id,
+            usd_to_cny_rate=usd_to_cny_rate,
+        )
+        if ssr_result:
+            if use_cache:
+                with _sell_orders_cache_lock:
+                    _sell_orders_cache[key] = (ssr_result, time.time() + _SELL_ORDERS_TTL)
+            return (ssr_result, None) if return_error else ssr_result
+        item_nameid, nameid_error = get_item_nameid(
+            session, market_hash_name, app_id, return_error=True
+        )
+    if not item_nameid:
+        if return_error:
+            reason = ssr_error or nameid_error or "无法获取 Steam 卖单数据"
+            if ssr_error and nameid_error:
+                reason = f"{ssr_error}；旧版 item_nameid 解析也失败: {nameid_error}"
+            return None, reason
+        return None
     if request_delay > 0:
         jittered_sleep(request_delay)
     data, histogram_error = fetch_item_orders_histogram(

@@ -213,12 +213,16 @@ def _run_pipeline(config: dict) -> None:
     if ctx.verbose:
         ctx.debug("详细调试已开启")
 
-    ctx.set_status("running", "PROXY_WARMUP")
-    ctx.log("代理池预热已在后台启动，pipeline 同步开始运行...", "info")
-    proxy_warmup_thread = threading.Thread(
-        target=get_proxy_manager().warmup, daemon=True, name="proxy-warmup"
-    )
-    proxy_warmup_thread.start()
+    proxy_manager = get_proxy_manager()
+    if proxy_manager.is_proxy_enabled():
+        ctx.set_status("running", "PROXY_WARMUP")
+        ctx.log("代理池已启用，预热将在后台启动，pipeline 同步开始运行...", "info")
+        proxy_warmup_thread = threading.Thread(
+            target=proxy_manager.warmup, daemon=True, name="proxy-warmup"
+        )
+        proxy_warmup_thread.start()
+    else:
+        ctx.debug("代理池未启用或策略为关闭，跳过预热")
 
     acc = 0.0
     total_bought = 0

@@ -67,6 +67,8 @@ class ProxyManager:
         self._proxy_weights: list = []
         self._proxies: list = []
         self._warming_up: bool = False
+        self._last_disabled_proxy_log_key = None
+        self._last_disabled_proxy_log_at = 0.0
         self._reload()
         _pm_log(
             f"[ProxyManager] 初始化完成: "
@@ -97,10 +99,21 @@ class ProxyManager:
             f"已启用={self.is_proxy_enabled()} "
             f"策略={self.get_strategy()}"
         )
-        threading.Thread(target=self.warmup, daemon=True).start()
+        if self.is_proxy_enabled() and self._proxies:
+            threading.Thread(target=self.warmup, daemon=True).start()
+        else:
+            _pm_log("[ProxyManager] 代理池未启用或无可用配置，跳过预热")
     def warmup(self):
         with self._lock:
             if getattr(self, "_warming_up", False):
+                return
+            enabled = self.is_proxy_enabled()
+            strategy = self.get_strategy()
+            proxy_count = len(self._proxies)
+            if not enabled:
+                _pm_log(
+                    f"[ProxyManager] 代理池未启用(enabled={enabled}, strategy={strategy}, 代理数={proxy_count})，跳过预热"
+                )
                 return
             self._warming_up = True
             proxies_snapshot = list(self._proxies)
@@ -173,10 +186,15 @@ class ProxyManager:
         strategy = self.get_strategy()
         proxy_count = len(self._proxies)
         if not enabled:
-            _pm_log(
-                f"[ProxyManager] get_proxies_for_request(failed={failed}): "
-                f"代理未启用(enabled={enabled}, strategy={strategy}, 代理数={proxy_count}) → 走本机"
-            )
+            now = time.time()
+            key = (enabled, strategy, proxy_count)
+            if key != self._last_disabled_proxy_log_key or (now - self._last_disabled_proxy_log_at) >= 60:
+                _pm_log(
+                    f"[ProxyManager] get_proxies_for_request: "
+                    f"代理未启用(enabled={enabled}, strategy={strategy}, 代理数={proxy_count}) → 走本机"
+                )
+                self._last_disabled_proxy_log_key = key
+                self._last_disabled_proxy_log_at = now
             return None
         if strategy == 3:
             _pm_log(f"[ProxyManager] get_proxies_for_request(failed={failed}): 策略3=关闭 → 走本机")

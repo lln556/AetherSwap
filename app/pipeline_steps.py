@@ -47,12 +47,14 @@ def _fetch_steam_sell_data(
         cfg = config.get("pipeline", {})
         wall_volume = int(cfg.get("sell_price_wall_volume", 20))
         max_ignore = int(cfg.get("sell_price_max_ignore_volume", 4))
+        usd_to_cny_rate = float(cfg.get("usd_to_cny", 7.2))
         orders_result = get_sell_orders_cny(
             session,
             name,
             app_id=app_id,
             request_delay=1.0,
             return_error=True,
+            usd_to_cny_rate=usd_to_cny_rate,
         )
         if isinstance(orders_result, tuple) and len(orders_result) == 2:
             result, reason = orders_result
@@ -426,6 +428,9 @@ def pick_stable_item(
         next_name = filtered[i + 1].get("name", "") if i + 1 < n else ""
         set_status("running", step="STABILITY_CHECK", progress_total=n, progress_done=i, progress_item=f"({i+1}/{n}) {name}", next_progress_item=f"({i+2}/{n}) {next_name}" if next_name else "")
         pipeline_cfg = config.get("pipeline", {})
+        verbose_detail = bool(pipeline_cfg.get("verbose_debug", False))
+        if item_log and verbose_detail:
+            item_log(f"[稳定性] 开始预检 ({i+1}/{n}) Buff参考价={item.get('min_price')} 比例={item.get('ratio')}", "debug")
         max_discount = pipeline_cfg.get("max_discount")
         sell_pressure_threshold = _parse_threshold(pipeline_cfg.get("sell_pressure_threshold"))
         need_steam = (
@@ -442,6 +447,8 @@ def pick_stable_item(
 
             # 1. Buff 价格预检
             if buff_client:
+                if item_log and verbose_detail:
+                    item_log("[稳定性] 检查 Buff 实时卖单…", "debug")
                 buff_ok, plan_price = _check_buff_price(
                     item, gid, plan_price, buff_client, config, item_log
                 )
@@ -451,6 +458,8 @@ def pick_stable_item(
                     continue
 
             # 2. 拉取 Steam 挂单数据
+            if item_log and verbose_detail:
+                item_log("[稳定性] 拉取 Steam 卖单深度…", "debug")
             steam_sell_data, steam_error = _fetch_steam_sell_data(
                 market_hash_name, config, app_id=730, return_error=True
             )
@@ -462,6 +471,11 @@ def pick_stable_item(
                 if failure_delay > 0:
                     jittered_sleep(failure_delay)
                 continue
+            if item_log and verbose_detail:
+                orders_count = len(steam_sell_data.get("sell_orders") or [])
+                smart_dbg = steam_sell_data.get("smart_price")
+                smart_str = f"{smart_dbg:.2f}" if isinstance(smart_dbg, (int, float)) else "无"
+                item_log(f"[稳定性] Steam 卖单获取成功: {orders_count} 档 智能参考价={smart_str}", "debug")
 
             # 3. 卖压检测
             if not _check_sell_pressure_precheck(

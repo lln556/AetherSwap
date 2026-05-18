@@ -19,6 +19,8 @@ def _构造代理管理器(entries: list):
         mgr._cached_enabled = True
         mgr._proxy_configs = [p["config"] for p in entries]
         mgr._proxy_weights = [max(0, p["score"]) for p in entries]
+        mgr._last_disabled_proxy_log_key = None
+        mgr._last_disabled_proxy_log_at = 0.0
     return mgr
 
 
@@ -61,3 +63,16 @@ def test_代理_高分代理被选得明显更多():
     counts = Counter(hosts)
     # 快代理至少应该比慢代理多5倍
     assert counts["快代理"] > counts["慢代理"] * 5, f"高分代理没被优先选: {counts}"
+
+
+def test_代理池关闭时不预热():
+    entries = [
+        {"config": {"host": "不会测速", "port": 80}, "score": 0},
+    ]
+    mgr = _构造代理管理器(entries)
+    mgr._cached_enabled = False
+    mgr._cached_strategy = 3
+    with patch("utils.proxy_manager.test_one_proxy") as mock_test:
+        mgr.warmup()
+    mock_test.assert_not_called()
+    assert mgr._warming_up is False
