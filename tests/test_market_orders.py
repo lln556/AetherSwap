@@ -131,3 +131,85 @@ def test_get_sell_orders_cny_优先使用新版ssr而不是旧item_nameid缓存(
     result = market_orders.get_sell_orders_cny(object(), "AK-47 | Redline (Minimal Wear)", use_cache=False)
 
     assert result == {"lowest_price": 12.34, "sell_orders": [(12.34, 2)]}
+
+
+def test_get_sell_orders_cny_聚合页会回退到带筛选的分组页面(monkeypatch):
+    import json
+
+    from steam import market_orders
+
+    def _make_html(queries):
+        ctx = {
+            "queryData": json.dumps({"queries": queries}),
+            "localizationSettings": {},
+        }
+        return f"window.SSR.renderContext=JSON.parse({json.dumps(json.dumps(ctx, ensure_ascii=False))});"
+
+    first_html = _make_html(
+        [
+            {
+                "queryKey": ["market", "description", 730, "MP7 | Just Smile (Minimal Wear)"],
+                "state": {
+                    "data": {
+                        "market_hash_name": "MP7 | Just Smile (Minimal Wear)",
+                        "market_bucket_group_id": "G1821208B093004",
+                        "descriptions": [
+                            {"name": "exterior_wear", "value": "Exterior: Minimal Wear"},
+                        ],
+                    }
+                },
+            },
+            {
+                "queryKey": ["market", "orderbook", 730, "MP7 | Just Smile (Factory New)"],
+                "state": {
+                    "data": {
+                        "eCurrency": 23,
+                        "amtMinSellOrder": 4983,
+                        "rgCompactSellOrders": [4983, 1],
+                    }
+                },
+            },
+        ]
+    )
+    second_html = _make_html(
+        [
+            {
+                "queryKey": ["market", "orderbook", 730, "MP7 | Just Smile (Minimal Wear)"],
+                "state": {
+                    "data": {
+                        "eCurrency": 23,
+                        "amtMinSellOrder": 990,
+                        "rgCompactSellOrders": [990, 2, 1001, 1],
+                    }
+                },
+            },
+        ]
+    )
+
+    requested_urls = []
+
+    class DummyResponse:
+        def __init__(self, text):
+            self.status_code = 200
+            self.text = text
+
+    class DummySession:
+        def get(self, url, headers=None, timeout=None, proxies=None, allow_redirects=True):
+            requested_urls.append(url)
+            if "category_730_Exterior=tag_WearCategory1" in url:
+                return DummyResponse(second_html)
+            return DummyResponse(first_html)
+
+    monkeypatch.setattr(market_orders, "get_proxy_manager", lambda: type("PM", (), {"get_proxies_for_request": lambda self, failed=False: None})())
+
+    result, error = market_orders._fetch_ssr_sell_orders_cny(
+        DummySession(),
+        "MP7 | Just Smile (Minimal Wear)",
+        730,
+    )
+
+    assert error is None
+    assert result["lowest_price"] == 9.9
+    assert result["sell_orders"] == [(9.9, 2), (10.01, 1)]
+    assert any("G1821208B093004" in url for url in requested_urls)
+    assert any("category_730_Exterior=tag_WearCategory1" in url for url in requested_urls)

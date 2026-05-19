@@ -6,6 +6,7 @@ import math
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlencode
 
 from steam.client import build_listing_url
 from utils.delay import jittered_sleep
@@ -90,6 +91,13 @@ _SSR_RENDER_CONTEXT_RE = re.compile(
     r'window\.SSR\.renderContext=JSON\.parse\("((?:\\.|[^"\\])*)"\);',
     re.S,
 )
+_CS2_EXTERIOR_FILTER_TAGS = {
+    "Factory New": "tag_WearCategory0",
+    "Minimal Wear": "tag_WearCategory1",
+    "Field-Tested": "tag_WearCategory2",
+    "Well-Worn": "tag_WearCategory3",
+    "Battle-Scarred": "tag_WearCategory4",
+}
 def _format_request_error(prefix: str, exc: Exception) -> str:
     detail = str(exc).strip()
     if len(detail) > 120:
@@ -161,6 +169,102 @@ def _extract_orderbook_query_name(query_key: Any) -> str:
         return query_key[3].strip()
     return ""
 
+def _extract_description_query_name(query_key: Any) -> str:
+    if (
+        isinstance(query_key, list)
+        and len(query_key) >= 4
+        and query_key[0] == "market"
+        and query_key[1] == "description"
+        and isinstance(query_key[3], str)
+    ):
+        return query_key[3].strip()
+    return ""
+
+def _extract_ssr_queries(html: str) -> Tuple[Optional[List[dict]], Optional[str]]:
+    ctx = _extract_ssr_render_context(html)
+    if not ctx:
+        return None, "Steam 新版页面未包含 SSR renderContext"
+    try:
+        query_data = json.loads(ctx.get("queryData") or "{}")
+    except Exception as e:
+        return None, f"Steam SSR queryData 解析失败: {type(e).__name__}"
+    queries = query_data.get("queries") if isinstance(query_data, dict) else None
+    if not isinstance(queries, list):
+        return None, "Steam SSR queryData 中没有 queries"
+    return queries, None
+
+def _strip_html_text(value: Any) -> str:
+    text = str(value or "")
+    text = re.sub(r"<[^>]+>", "", text)
+    return text.strip()
+
+def _extract_ssr_description_data(html: str, market_hash_name: str) -> Optional[Dict[str, Any]]:
+    queries, _ = _extract_ssr_queries(html)
+    if not queries:
+        return None
+    target_name = _normalize_market_hash_name(market_hash_name)
+    target_folded = target_name.casefold()
+    for query in queries:
+        if not isinstance(query, dict):
+            continue
+        query_name = _extract_description_query_name(query.get("queryKey"))
+        if not query_name:
+            continue
+        normalized_query_name = _normalize_market_hash_name(query_name)
+        if normalized_query_name != target_name and normalized_query_name.casefold() != target_folded:
+            continue
+        data = (query.get("state") or {}).get("data")
+        if isinstance(data, dict):
+            return data
+    return None
+
+def _infer_cs2_quality_filter_tag(market_hash_name: str) -> str:
+    normalized = _normalize_market_hash_name(market_hash_name)
+    if normalized.startswith("StatTrak"):
+        return "tag_strange"
+    if normalized.startswith("Souvenir "):
+        return "tag_tournament"
+    return "tag_normal"
+
+def _extract_exterior_name_from_description(description_data: Dict[str, Any]) -> str:
+    for row in description_data.get("descriptions") or []:
+        if not isinstance(row, dict):
+            continue
+        if row.get("name") != "exterior_wear":
+            continue
+        value = _strip_html_text(row.get("value"))
+        if ":" in value:
+            return value.split(":", 1)[1].strip()
+        return value
+    market_hash_name = _normalize_market_hash_name(description_data.get("market_hash_name"))
+    m = re.search(r"\(([^)]+)\)\s*$", market_hash_name)
+    return m.group(1).strip() if m else ""
+
+def _build_filtered_group_listing_url(
+    html: str,
+    market_hash_name: str,
+    app_id: int,
+) -> Optional[str]:
+    if app_id != 730:
+        return None
+    description_data = _extract_ssr_description_data(html, market_hash_name)
+    if not description_data:
+        return None
+    group_id = _normalize_market_hash_name(description_data.get("market_bucket_group_id"))
+    if not group_id:
+        return None
+    params: List[Tuple[str, str]] = []
+    exterior_name = _extract_exterior_name_from_description(description_data)
+    exterior_tag = _CS2_EXTERIOR_FILTER_TAGS.get(exterior_name)
+    if exterior_tag:
+        params.append(("category_730_Exterior", exterior_tag))
+    quality_tag = _infer_cs2_quality_filter_tag(market_hash_name)
+    if quality_tag:
+        params.append(("category_730_Quality", quality_tag))
+    if not params:
+        return None
+    return f"{build_listing_url(group_id, app_id)}?{urlencode(params)}"
+
 def _steam_cents_to_cny(
     cents: int,
     currency: int,
@@ -206,16 +310,9 @@ def _extract_ssr_orderbook_cny(
     market_hash_name: Optional[str] = None,
     usd_to_cny_rate: float = USD_TO_CNY_DEFAULT,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    ctx = _extract_ssr_render_context(html)
-    if not ctx:
-        return None, "Steam 新版页面未包含 SSR renderContext"
-    try:
-        query_data = json.loads(ctx.get("queryData") or "{}")
-    except Exception as e:
-        return None, f"Steam SSR queryData 解析失败: {type(e).__name__}"
-    queries = query_data.get("queries") if isinstance(query_data, dict) else None
-    if not isinstance(queries, list):
-        return None, "Steam SSR queryData 中没有 queries"
+    queries, error = _extract_ssr_queries(html)
+    if not queries:
+        return None, error or "Steam SSR queryData 中没有 queries"
     target_name = _normalize_market_hash_name(market_hash_name)
     candidates: List[Tuple[str, Dict[str, Any]]] = []
     for query in queries:
@@ -242,6 +339,10 @@ def _extract_ssr_orderbook_cny(
                     selected_name = query_name
                     selected_data = data
                     break
+    if selected_data is None and target_name:
+        candidate_names = [name for name, _ in candidates if name]
+        suffix = f"；当前预取订单簿名单: {candidate_names[:5]}" if candidate_names else ""
+        return None, f"Steam 新版页面未预取目标变体订单簿: {target_name}{suffix}"
     if selected_data is None:
         selected_name, selected_data = candidates[0]
     try:
@@ -273,12 +374,6 @@ def _extract_ssr_orderbook_cny(
                 lowest_price = round(converted, 2)
         except (ValueError, TypeError):
             pass
-    if target_name and selected_name and _normalize_market_hash_name(selected_name) != target_name:
-        logger.debug(
-            "Steam SSR orderbook fallback to non-exact queryKey: target=%s selected=%s",
-            target_name,
-            selected_name,
-        )
     return {"lowest_price": lowest_price, "sell_orders": orders}, None
 
 def _fetch_ssr_sell_orders_cny(
@@ -290,15 +385,15 @@ def _fetch_ssr_sell_orders_cny(
     usd_to_cny_rate: float = USD_TO_CNY_DEFAULT,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     url = build_listing_url(market_hash_name, app_id)
-    headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": url,
-    }
     pm = get_proxy_manager()
     last_error = ""
     for attempt in range(3):
         proxies = pm.get_proxies_for_request(failed=(attempt > 0))
         try:
+            headers = {
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Referer": url,
+            }
             r = session.get(url, headers=headers, timeout=timeout, proxies=proxies, allow_redirects=True)
             if r.status_code == 200:
                 result, parse_error = _extract_ssr_orderbook_cny(
@@ -308,6 +403,27 @@ def _fetch_ssr_sell_orders_cny(
                 )
                 if result:
                     return result, None
+                filtered_url = _build_filtered_group_listing_url(r.text, market_hash_name, app_id)
+                if filtered_url and filtered_url != url:
+                    headers["Referer"] = filtered_url
+                    r2 = session.get(
+                        filtered_url,
+                        headers=headers,
+                        timeout=timeout,
+                        proxies=proxies,
+                        allow_redirects=True,
+                    )
+                    if r2.status_code == 200:
+                        result, parse_error2 = _extract_ssr_orderbook_cny(
+                            r2.text,
+                            market_hash_name=market_hash_name,
+                            usd_to_cny_rate=usd_to_cny_rate,
+                        )
+                        if result:
+                            return result, None
+                        parse_error = parse_error2 or parse_error
+                    else:
+                        parse_error = _http_error_reason("Steam 新版分组筛选页面", r2.status_code)
                 last_error = parse_error or "Steam 新版页面订单簿解析失败"
                 break
             last_error = _http_error_reason("Steam 新版市场页面", r.status_code)
