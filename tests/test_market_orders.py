@@ -213,3 +213,53 @@ def test_get_sell_orders_cny_聚合页会回退到带筛选的分组页面(monke
     assert result["sell_orders"] == [(9.9, 2), (10.01, 1)]
     assert any("G1821208B093004" in url for url in requested_urls)
     assert any("category_730_Exterior=tag_WearCategory1" in url for url in requested_urls)
+
+
+def test_构造分组筛选页优先使用描述里的内部tag():
+    import json
+
+    from steam import market_orders
+
+    ctx = {
+        "queryData": json.dumps(
+            {
+                "queries": [
+                    {
+                        "queryKey": ["market", "description", 730, "MP7 | Just Smile (Minimal Wear)"],
+                        "state": {
+                            "data": {
+                                "market_hash_name": "MP7 | Just Smile (Minimal Wear)",
+                                "market_bucket_group_id": "G1821208B093004",
+                                "descriptions": [
+                                    {"name": "exterior_wear", "value": "Exterior: 略有磨损"},
+                                ],
+                                "tags": [
+                                    {"internal_name": "tag_WearCategory1"},
+                                    {"internal_name": "tag_normal"},
+                                ],
+                            }
+                        },
+                    }
+                ]
+            }
+        ),
+        "localizationSettings": {},
+    }
+    html = f"window.SSR.renderContext=JSON.parse({json.dumps(json.dumps(ctx, ensure_ascii=False))});"
+
+    url = market_orders._build_filtered_group_listing_url(
+        html,
+        "MP7 | Just Smile (Minimal Wear)",
+        730,
+    )
+
+    assert "G1821208B093004" in url
+    assert "category_730_Exterior=tag_WearCategory1" in url
+    assert "category_730_Quality=tag_normal" in url
+
+
+def test_构造分组筛选页能识别星号stattrak品质():
+    from steam import market_orders
+
+    assert market_orders._infer_cs2_quality_filter_tag("★ StatTrak™ Bayonet | Night (Field-Tested)") == "tag_strange"
+    assert market_orders._infer_cs2_quality_filter_tag("★ Bayonet | Night (Field-Tested)") == "tag_unusual"

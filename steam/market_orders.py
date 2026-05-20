@@ -98,6 +98,12 @@ _CS2_EXTERIOR_FILTER_TAGS = {
     "Well-Worn": "tag_WearCategory3",
     "Battle-Scarred": "tag_WearCategory4",
 }
+_CS2_QUALITY_FILTER_TAGS = {
+    "tag_normal",
+    "tag_strange",
+    "tag_tournament",
+    "tag_unusual",
+}
 def _format_request_error(prefix: str, exc: Exception) -> str:
     detail = str(exc).strip()
     if len(detail) > 120:
@@ -198,6 +204,15 @@ def _strip_html_text(value: Any) -> str:
     text = re.sub(r"<[^>]+>", "", text)
     return text.strip()
 
+def _extract_description_tag(description_data: Dict[str, Any], allowed_tags: set) -> str:
+    for row in description_data.get("tags") or []:
+        if not isinstance(row, dict):
+            continue
+        internal_name = _normalize_market_hash_name(row.get("internal_name"))
+        if internal_name in allowed_tags:
+            return internal_name
+    return ""
+
 def _extract_ssr_description_data(html: str, market_hash_name: str) -> Optional[Dict[str, Any]]:
     queries, _ = _extract_ssr_queries(html)
     if not queries:
@@ -220,13 +235,18 @@ def _extract_ssr_description_data(html: str, market_hash_name: str) -> Optional[
 
 def _infer_cs2_quality_filter_tag(market_hash_name: str) -> str:
     normalized = _normalize_market_hash_name(market_hash_name)
-    if normalized.startswith("StatTrak"):
+    if "StatTrak" in normalized:
         return "tag_strange"
     if normalized.startswith("Souvenir "):
         return "tag_tournament"
+    if normalized.startswith("★"):
+        return "tag_unusual"
     return "tag_normal"
 
 def _extract_exterior_name_from_description(description_data: Dict[str, Any]) -> str:
+    market_hash_name = _normalize_market_hash_name(description_data.get("market_hash_name"))
+    m = re.search(r"\(([^)]+)\)\s*$", market_hash_name)
+    name_exterior = m.group(1).strip() if m else ""
     for row in description_data.get("descriptions") or []:
         if not isinstance(row, dict):
             continue
@@ -234,11 +254,9 @@ def _extract_exterior_name_from_description(description_data: Dict[str, Any]) ->
             continue
         value = _strip_html_text(row.get("value"))
         if ":" in value:
-            return value.split(":", 1)[1].strip()
-        return value
-    market_hash_name = _normalize_market_hash_name(description_data.get("market_hash_name"))
-    m = re.search(r"\(([^)]+)\)\s*$", market_hash_name)
-    return m.group(1).strip() if m else ""
+            value = value.split(":", 1)[1].strip()
+        return value if value in _CS2_EXTERIOR_FILTER_TAGS else name_exterior
+    return name_exterior
 
 def _build_filtered_group_listing_url(
     html: str,
@@ -254,11 +272,18 @@ def _build_filtered_group_listing_url(
     if not group_id:
         return None
     params: List[Tuple[str, str]] = []
-    exterior_name = _extract_exterior_name_from_description(description_data)
-    exterior_tag = _CS2_EXTERIOR_FILTER_TAGS.get(exterior_name)
+    exterior_tag = _extract_description_tag(
+        description_data,
+        set(_CS2_EXTERIOR_FILTER_TAGS.values()),
+    )
+    if not exterior_tag:
+        exterior_name = _extract_exterior_name_from_description(description_data)
+        exterior_tag = _CS2_EXTERIOR_FILTER_TAGS.get(exterior_name)
     if exterior_tag:
         params.append(("category_730_Exterior", exterior_tag))
-    quality_tag = _infer_cs2_quality_filter_tag(market_hash_name)
+    quality_tag = _extract_description_tag(description_data, _CS2_QUALITY_FILTER_TAGS)
+    if not quality_tag:
+        quality_tag = _infer_cs2_quality_filter_tag(market_hash_name)
     if quality_tag:
         params.append(("category_730_Quality", quality_tag))
     if not params:
