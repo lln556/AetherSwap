@@ -263,3 +263,76 @@ def test_构造分组筛选页能识别星号stattrak品质():
 
     assert market_orders._infer_cs2_quality_filter_tag("★ StatTrak™ Bayonet | Night (Field-Tested)") == "tag_strange"
     assert market_orders._infer_cs2_quality_filter_tag("★ Bayonet | Night (Field-Tested)") == "tag_unusual"
+
+
+def test_新版_orderbook_action_按精确名称拉取目标变体(monkeypatch):
+    import json
+
+    from steam import market_orders
+
+    target = "Glock-18 | Umbral Rabbit (Battle-Scarred)"
+    requested = {}
+
+    class DummyResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "success": True,
+                "data": {
+                    "eCurrency": 23,
+                    "amtMinSellOrder": 890,
+                    "rgCompactSellOrders": [890, 1, 900, 2, 930, 4],
+                },
+            }
+
+    class DummySession:
+        def get(self, url, params=None, headers=None, timeout=None, proxies=None, allow_redirects=True):
+            requested["url"] = url
+            requested["params"] = params
+            requested["headers"] = headers or {}
+            return DummyResponse()
+
+    monkeypatch.setattr(
+        market_orders,
+        "get_proxy_manager",
+        lambda: type("PM", (), {"get_proxies_for_request": lambda self, failed=False: None})(),
+    )
+
+    result, error = market_orders._fetch_action_orderbook_cny(DummySession(), target, 730)
+
+    assert error is None
+    assert result == {"lowest_price": 8.9, "sell_orders": [(8.9, 1), (9.0, 2), (9.3, 4)]}
+    assert requested["url"] == "https://steamcommunity.com/market/orderbook"
+    assert requested["params"]["q"] == "Load"
+    assert json.loads(requested["params"]["qp"]) == [730, target]
+    assert requested["headers"]["x-valve-request-type"] == "queryAction"
+
+
+def test_get_sell_orders_cny_ssr预取错变体时回退新版_orderbook_action(monkeypatch):
+    from steam import market_orders
+
+    market_orders.clear_caches()
+    monkeypatch.setattr(
+        market_orders,
+        "_fetch_ssr_sell_orders_cny",
+        lambda *args, **kwargs: (None, "Steam 新版页面未预取目标变体订单簿"),
+    )
+    monkeypatch.setattr(
+        market_orders,
+        "_fetch_action_orderbook_cny",
+        lambda *args, **kwargs: ({"lowest_price": 8.9, "sell_orders": [(8.9, 1)]}, None),
+    )
+    monkeypatch.setattr(
+        market_orders,
+        "get_item_nameid",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("item_nameid should not be used")),
+    )
+
+    result = market_orders.get_sell_orders_cny(
+        object(),
+        "Glock-18 | Umbral Rabbit (Battle-Scarred)",
+        use_cache=False,
+    )
+
+    assert result == {"lowest_price": 8.9, "sell_orders": [(8.9, 1)]}

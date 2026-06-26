@@ -330,6 +330,45 @@ def _parse_compact_orders_cny(
         out.append((round(price, 2), volume))
     return sorted(out, key=lambda x: x[0])
 
+def _compact_orderbook_data_to_cny(
+    data: Any,
+    *,
+    source: str,
+    usd_to_cny_rate: float = USD_TO_CNY_DEFAULT,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if not isinstance(data, dict):
+        return None, f"{source}返回格式异常"
+    try:
+        currency = int(data.get("eCurrency") or 0)
+    except (ValueError, TypeError):
+        currency = 0
+    currency_code = _STEAM_CURRENCY_CODES.get(currency)
+    exchange_rates = _load_exchange_rates()
+    if not currency_code:
+        return None, f"{source}币种暂不支持: eCurrency={currency}"
+    if currency_code not in ("CNY", "USD") and currency_code not in exchange_rates:
+        return None, f"{source}币种={currency_code}(eCurrency={currency})，但 exchange_rate.json 缺少该币种汇率"
+    orders = _parse_compact_orders_cny(
+        data.get("rgCompactSellOrders"),
+        currency,
+        usd_to_cny_rate,
+        exchange_rates,
+    )
+    if not orders:
+        return None, f"{source}为空或无法解析卖单"
+    lowest_price = orders[0][0]
+    raw_lowest = data.get("amtMinSellOrder")
+    if raw_lowest is not None:
+        try:
+            converted = _steam_cents_to_cny(
+                int(raw_lowest), currency, usd_to_cny_rate, exchange_rates
+            )
+            if converted is not None and converted > 0:
+                lowest_price = round(converted, 2)
+        except (ValueError, TypeError):
+            pass
+    return {"lowest_price": lowest_price, "sell_orders": orders}, None
+
 def _extract_ssr_orderbook_cny(
     html: str,
     market_hash_name: Optional[str] = None,
@@ -370,36 +409,11 @@ def _extract_ssr_orderbook_cny(
         return None, f"Steam 新版页面未预取目标变体订单簿: {target_name}{suffix}"
     if selected_data is None:
         selected_name, selected_data = candidates[0]
-    try:
-        currency = int(selected_data.get("eCurrency") or 0)
-    except (ValueError, TypeError):
-        currency = 0
-    currency_code = _STEAM_CURRENCY_CODES.get(currency)
-    exchange_rates = _load_exchange_rates()
-    if not currency_code:
-        return None, f"Steam 新版订单簿币种暂不支持: eCurrency={currency}"
-    if currency_code not in ("CNY", "USD") and currency_code not in exchange_rates:
-        return None, f"Steam 新版订单簿币种={currency_code}(eCurrency={currency})，但 exchange_rate.json 缺少该币种汇率"
-    orders = _parse_compact_orders_cny(
-        selected_data.get("rgCompactSellOrders"),
-        currency,
-        usd_to_cny_rate,
-        exchange_rates,
+    return _compact_orderbook_data_to_cny(
+        selected_data,
+        source="Steam 新版订单簿",
+        usd_to_cny_rate=usd_to_cny_rate,
     )
-    if not orders:
-        return None, "Steam 新版订单簿为空或无法解析卖单"
-    lowest_price = orders[0][0]
-    raw_lowest = selected_data.get("amtMinSellOrder")
-    if raw_lowest is not None:
-        try:
-            converted = _steam_cents_to_cny(
-                int(raw_lowest), currency, usd_to_cny_rate, exchange_rates
-            )
-            if converted is not None and converted > 0:
-                lowest_price = round(converted, 2)
-        except (ValueError, TypeError):
-            pass
-    return {"lowest_price": lowest_price, "sell_orders": orders}, None
 
 def _fetch_ssr_sell_orders_cny(
     session,
@@ -457,6 +471,71 @@ def _fetch_ssr_sell_orders_cny(
         if attempt < 2:
             jittered_sleep(1.0)
     return None, last_error or "无法打开 Steam 新版市场页面"
+
+def _fetch_action_orderbook_cny(
+    session,
+    market_hash_name: str,
+    app_id: int,
+    *,
+    timeout: int = 15,
+    usd_to_cny_rate: float = USD_TO_CNY_DEFAULT,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    name = _normalize_market_hash_name(market_hash_name)
+    if not name:
+        return None, "Steam 新版 orderbook 接口缺少 market_hash_name"
+    url = "https://steamcommunity.com/market/orderbook"
+    referer = build_listing_url(name, app_id)
+    params = {
+        "q": "Load",
+        "qp": json.dumps([app_id, name], ensure_ascii=False, separators=(",", ":")),
+    }
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "Referer": referer,
+        "X-Requested-With": "XMLHttpRequest",
+        "x-valve-request-type": "queryAction",
+    }
+    pm = get_proxy_manager()
+    last_error = ""
+    for attempt in range(3):
+        proxies = pm.get_proxies_for_request(failed=(attempt > 0))
+        try:
+            r = session.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=timeout,
+                proxies=proxies,
+                allow_redirects=True,
+            )
+            if r.status_code == 200:
+                try:
+                    payload = r.json()
+                except Exception as e:
+                    last_error = f"Steam 新版 orderbook 接口返回非 JSON: {type(e).__name__}"
+                    break
+                if not isinstance(payload, dict):
+                    last_error = "Steam 新版 orderbook 接口返回格式异常"
+                    break
+                if payload.get("success") not in (True, 1, "1"):
+                    msg = payload.get("message") or payload.get("error") or ""
+                    last_error = "Steam 新版 orderbook 接口返回失败" + (f": {msg}" if msg else "")
+                    break
+                result, parse_error = _compact_orderbook_data_to_cny(
+                    payload.get("data"),
+                    source="Steam 新版 orderbook 接口",
+                    usd_to_cny_rate=usd_to_cny_rate,
+                )
+                if result:
+                    return result, None
+                last_error = parse_error or "Steam 新版 orderbook 接口订单簿解析失败"
+                break
+            last_error = _http_error_reason("Steam 新版 orderbook 接口", r.status_code)
+        except Exception as e:
+            last_error = _format_request_error("Steam 新版 orderbook 接口请求异常", e)
+        if attempt < 2:
+            jittered_sleep(1.0)
+    return None, last_error or "无法访问 Steam 新版 orderbook 接口"
 
 def get_item_nameid(
     session,
@@ -649,6 +728,17 @@ def get_sell_orders_cny(
             with _sell_orders_cache_lock:
                 _sell_orders_cache[key] = (ssr_result, time.time() + _SELL_ORDERS_TTL)
         return (ssr_result, None) if return_error else ssr_result
+    action_result, action_error = _fetch_action_orderbook_cny(
+        session,
+        market_hash_name,
+        app_id,
+        usd_to_cny_rate=usd_to_cny_rate,
+    )
+    if action_result:
+        if use_cache:
+            with _sell_orders_cache_lock:
+                _sell_orders_cache[key] = (action_result, time.time() + _SELL_ORDERS_TTL)
+        return (action_result, None) if return_error else action_result
     item_nameid = None
     nameid_error = None
     if use_cache:
@@ -664,9 +754,16 @@ def get_sell_orders_cny(
         )
     if not item_nameid:
         if return_error:
-            reason = ssr_error or nameid_error or "无法获取 Steam 卖单数据"
-            if ssr_error and nameid_error:
-                reason = f"{ssr_error}；旧版 item_nameid 解析也失败: {nameid_error}"
+            reason_parts: List[str] = []
+            if ssr_error:
+                reason_parts.append(ssr_error)
+            if action_error:
+                prefix = "新版 orderbook 接口也失败: " if reason_parts else ""
+                reason_parts.append(f"{prefix}{action_error}")
+            if nameid_error:
+                prefix = "旧版 item_nameid 解析也失败: " if reason_parts else ""
+                reason_parts.append(f"{prefix}{nameid_error}")
+            reason = "；".join(reason_parts) or "无法获取 Steam 卖单数据"
             return None, reason
         return None
     if request_delay > 0:
