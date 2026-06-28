@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 import sys
 import threading
 import time
@@ -96,6 +97,24 @@ def _wait_for_server_thread(thread: threading.Thread) -> None:
         pass
 
 
+def _probe_host(host: str) -> str:
+    return "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+
+
+def _wait_for_server_ready(thread: threading.Thread, host: str, port: int, timeout: float = 20.0) -> bool:
+    probe_host = _probe_host(host)
+    deadline = time.monotonic() + max(0.1, timeout)
+    while time.monotonic() < deadline:
+        if not thread.is_alive():
+            return False
+        try:
+            with socket.create_connection((probe_host, port), timeout=0.35):
+                return True
+        except OSError:
+            time.sleep(0.15)
+    return False
+
+
 def main() -> None:
     check_runtime_dependencies()
     _ensure_disclaimer()
@@ -120,7 +139,13 @@ def main() -> None:
 
     thread = threading.Thread(target=run_server, args=(host, port), daemon=True)
     thread.start()
-    time.sleep(1.2)
+    if not _wait_for_server_ready(thread, host, port):
+        if thread.is_alive():
+            print(f"后端启动时间过长，暂不自动打开浏览器。服务就绪后请手动访问 {local_url}。")
+            _wait_for_server_thread(thread)
+        else:
+            print("后端启动失败，请查看上方错误日志。")
+        return
 
     webview, webview_error = _load_webview()
     if webview:

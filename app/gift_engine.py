@@ -100,8 +100,74 @@ _CURRENCY_MAP = {
     38: ("KWD", "KD"),
     39: ("QAR", "QR"),
 }
-_NO_DIVIDE_CURRENCIES = {8, 16, 15}  
-def get_base_auth_status(cookies_raw: str):
+_NO_DIVIDE_CURRENCIES = {8, 16, 15}
+
+_COUNTRY_CODE_KEYS = (
+    "country_code",
+    "country",
+    "store_country_code",
+    "wallet_country",
+    "user_country",
+)
+
+
+def _normalize_country_code(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = value.strip().upper()
+    return value if re.fullmatch(r"[A-Z]{2}", value) else ""
+
+
+def _find_country_code(value) -> str:
+    if isinstance(value, dict):
+        for key in _COUNTRY_CODE_KEYS:
+            code = _normalize_country_code(value.get(key))
+            if code:
+                return code
+        for item in value.values():
+            code = _find_country_code(item)
+            if code:
+                return code
+    elif isinstance(value, list):
+        for item in value:
+            code = _find_country_code(item)
+            if code:
+                return code
+    return ""
+
+
+def _extract_store_user_config(page_text: str) -> dict:
+    for pattern in (
+        r'data-store_user_config="([^"]+)"',
+        r"data-store_user_config='([^']+)'",
+    ):
+        cfg = re.search(pattern, page_text or "")
+        if not cfg:
+            continue
+        try:
+            data = json.loads(html.unescape(cfg.group(1)))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _extract_country_code(page_text: str, config_data: dict = None) -> str:
+    code = _find_country_code(config_data or {})
+    if code:
+        return code
+
+    for source in (page_text or "", html.unescape(page_text or "")):
+        for key in _COUNTRY_CODE_KEYS:
+            match = re.search(rf'"{re.escape(key)}"\s*:\s*"([A-Za-z]{{2}})"', source)
+            if match:
+                code = _normalize_country_code(match.group(1))
+                if code:
+                    return code
+    return ""
+
+
+def get_base_auth_status(cookies_raw: str, *, require_country: bool = False):
     url = f"https://store.steampowered.com/cart/?_t={int(time.time() * 1000)}"
     cookies = _build_cookies(cookies_raw)
     from utils.proxy_manager import get_proxy_manager
@@ -109,16 +175,16 @@ def get_base_auth_status(cookies_raw: str):
     try:
         proxies = pm.get_proxies_for_request()
         resp = requests.get(url, cookies=cookies, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
-        country_code = "CN"
-        cc = re.search(r'"country_code":"([^"]+)"', resp.text)
-        if cc:
-            country_code = cc.group(1)
+        page_text = resp.text or ""
         jwt_token = ""
-        config_data = {}
-        cfg = re.search(r'data-store_user_config="([^"]+)"', resp.text)
-        if cfg:
-            config_data = json.loads(html.unescape(cfg.group(1)))
+        config_data = _extract_store_user_config(page_text)
+        if config_data:
             jwt_token = config_data.get("webapi_token", "")
+        country_code = _extract_country_code(page_text, config_data)
+        if require_country and not country_code:
+            raise RuntimeError("无法从 Steam 商店页面解析账号地区")
+        if not country_code:
+            country_code = "CN"
         return jwt_token, country_code, config_data
     except Exception as e:
         raise RuntimeError(f"获取底层鉴权失败: {e}") from e
@@ -127,6 +193,7 @@ def get_wallet_balance(cookies_raw: str) -> dict:
     from utils.proxy_manager import get_proxy_manager
     pm = get_proxy_manager()
     proxies = pm.get_proxies_for_request()
+    unknown_currency_id = None
     try:
         resp = requests.get(
             "https://steamcommunity.com/market/",
@@ -144,7 +211,12 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                 delayed_raw  = int(wallet.get("wallet_delayed_balance", 0))
                 total_raw    = balance_raw + delayed_raw
                 currency_id  = int(wallet.get("wallet_currency", 0))
-                code, symbol = _CURRENCY_MAP.get(currency_id, ("USD", "$"))
+                wallet_country = _normalize_country_code(wallet.get("wallet_country"))
+                currency_info = _CURRENCY_MAP.get(currency_id)
+                if not currency_info:
+                    unknown_currency_id = currency_id
+                    raise RuntimeError(f"未知 Steam 钱包币种 ID: {currency_id}")
+                code, symbol = currency_info
                 display = (
                     f"{symbol}{total_raw:,}"
                     if currency_id in _NO_DIVIDE_CURRENCIES
@@ -156,6 +228,8 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                     "currency_code": code,
                     "currency_symbol": symbol,
                     "currency_id": currency_id,
+                    "wallet_country": wallet_country,
+                    "country_code": wallet_country,
                 }
     except Exception:
         pass
@@ -173,8 +247,17 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                 delayed_raw  = int(data.get("delayed_balance", 0))
                 total_raw    = balance_raw + delayed_raw
                 currency_id  = int(data.get("currency", 0))
+                wallet_country = _normalize_country_code(
+                    data.get("country")
+                    or data.get("wallet_country")
+                    or data.get("country_code")
+                )
                 if total_raw > 0 and currency_id > 0:
-                    code, symbol = _CURRENCY_MAP.get(currency_id, ("USD", "$"))
+                    currency_info = _CURRENCY_MAP.get(currency_id)
+                    if not currency_info:
+                        unknown_currency_id = currency_id
+                        raise RuntimeError(f"未知 Steam 钱包币种 ID: {currency_id}")
+                    code, symbol = currency_info
                     display = (
                         f"{symbol}{total_raw:,}"
                         if currency_id in _NO_DIVIDE_CURRENCIES
@@ -186,9 +269,13 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                         "currency_code": code,
                         "currency_symbol": symbol,
                         "currency_id": currency_id,
+                        "wallet_country": wallet_country,
+                        "country_code": wallet_country,
                     }
     except Exception:
         pass
+    if unknown_currency_id is not None:
+        raise RuntimeError(f"未知 Steam 钱包币种 ID: {unknown_currency_id}")
     raise RuntimeError("无法获取 Steam 钱包余额，请确认 Cookie 有效且账户已设置钱包")
 def extract_appid_from_url(url: str) -> str:
     m = re.search(r'/app/(\d+)', url)

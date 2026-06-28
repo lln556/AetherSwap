@@ -1,3 +1,4 @@
+import copy
 from typing import Any, Optional
 DEFAULTS = {
     "iflow": {
@@ -116,13 +117,30 @@ DEFAULTS = {
     },
 }
 def merge(default: dict, overrides: dict) -> dict:
-    out = dict(default)
+    out = copy.deepcopy(default)
     for k, v in overrides.items():
         if k in out and isinstance(out[k], dict) and isinstance(v, dict):
             out[k] = merge(out[k], v)
         else:
-            out[k] = v
+            out[k] = copy.deepcopy(v)
     return out
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 def _validate_ranges(cfg: dict) -> dict:
     # 简单校验一下，防止用户乱填配置搞崩程序
     import warnings
@@ -183,7 +201,7 @@ def validate_and_fill(data: dict, defaults: Optional[dict] = None) -> dict:
         else:
             val = data[k]
             if isinstance(default, bool) and not isinstance(val, bool):
-                val = bool(val) if val is not None else default
+                val = _coerce_bool(val, default)
             elif isinstance(default, int) and isinstance(val, (float, str)):
                 try:
                     val = int(float(val))

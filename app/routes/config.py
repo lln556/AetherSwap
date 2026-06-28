@@ -10,7 +10,7 @@ from app.state import (
     replace_transactions,
 )
 from app.config_loader import load_app_config_validated, save_app_config_validated
-from config import load_app_config, save_app_config, save_credentials, get_all_credentials
+from config import load_app_config, save_credentials, get_all_credentials
 from app.accounts import list_accounts, replace_all as accounts_replace_all
 router = APIRouter()
 class ConfigBody(BaseModel):
@@ -191,9 +191,7 @@ def api_export_full_download():
 def api_import_full(body: ImportFullBody):
     try:
         if body.app_config:
-            save_app_config(body.app_config)
-            from app.config_loader import _invalidate_config_cache
-            _invalidate_config_cache()
+            save_app_config_validated(body.app_config)
         if body.credentials:
             save_credentials(body.credentials)
         tx = body.transactions or {}

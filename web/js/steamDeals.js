@@ -20,6 +20,9 @@
     let _pollTimer = null;
     let _initialized = false;
     const $ = id => document.getElementById(id);
+    const esc = (value) => typeof escapeHtml === 'function'
+        ? escapeHtml(value)
+        : String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     function timeAgo(ts) {
         if (!ts) return '从未';
         const diff = Date.now() / 1000 - ts;
@@ -92,7 +95,7 @@
         games.forEach(g => {
             const card = document.createElement('div');
             card.className = 'sg-card';
-            const rate = g.positive_rate != null ? g.positive_rate : 0;
+            const rate = Math.max(0, Math.min(100, Number(g.positive_rate) || 0));
             const rateColor = rate >= 80 ? '#10b981' : rate >= 60 ? '#f59e0b' : '#ef4444';
             const rateLabel = rate >= 95 ? '好评如潮' : rate >= 80 ? '特别好评' : rate >= 70 ? '多半好评' : rate >= 50 ? '褒贬不一' : '差评';
             const cnCny = g.cny_prices?.cn;
@@ -111,7 +114,7 @@
                         isExpensive = true;
                     }
                 }
-                pricePills += _pill(REGION_NAMES[_compareRegion] || _compareRegion, regCny, 'sg-pill-compare', saving, isExpensive);
+                pricePills += _pill(REGION_NAMES[_compareRegion] || esc(_compareRegion), regCny, 'sg-pill-compare', saving, isExpensive);
                 regionPillsCount++;
             }
             if (g.cheapest_regions) {
@@ -128,7 +131,7 @@
                             isExpensive = true;
                         }
                     }
-                    pricePills += _pill(REGION_NAMES[cr.region] || cr.region, cr.cny, 'sg-pill-cheap', saving, isExpensive);
+                    pricePills += _pill(REGION_NAMES[cr.region] || esc(cr.region), cr.cny, 'sg-pill-cheap', saving, isExpensive);
                     regionPillsCount++;
                 }
             }
@@ -148,15 +151,19 @@
                     diffBadge = `<span class="sg-diff-chip" style="background:linear-gradient(135deg, #ef4444, #dc2626);box-shadow:0 2px 8px rgba(239, 68, 68, 0.3)">贵¥${Math.abs(g.price_diff).toFixed(0)}</span>`;
                 }
             }
-            let discBadge = g.discount_percent
-                ? `<div class="sg-badge-discount">${g.discount_percent}%</div>`
+            const discount = Number(g.discount_percent) || 0;
+            let discBadge = discount
+                ? `<div class="sg-badge-discount">${esc(discount)}%</div>`
                 : '';
             if (g.deal_status === '新史低' || g.deal_status === '平史低') {
                 const color = g.deal_status === '新史低' ? '#ef4444' : '#f59e0b';
                 const icon = g.deal_status === '新史低' ? '🔥' : '🏷️';
-                discBadge += `<div class="sg-badge-status" style="position:absolute;top:10px;left:10px;background:linear-gradient(135deg, ${color}, ${color}dd);color:white;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.2);backdrop-filter:blur(4px);z-index:2;line-height:1;">${icon} ${g.deal_status}</div>`;
+                discBadge += `<div class="sg-badge-status" style="position:absolute;top:10px;left:10px;background:linear-gradient(135deg, ${color}, ${color}dd);color:white;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.2);backdrop-filter:blur(4px);z-index:2;line-height:1;">${icon} ${esc(g.deal_status)}</div>`;
             }
             const uid = 'sg-expand-' + g.app_id;
+            const appId = encodeURIComponent(String(g.app_id ?? ''));
+            const safeName = esc(g.name || '');
+            const safeBanner = esc(g.banner_url || '');
             let allRows = '';
             const regionCodes = Object.keys(REGION_NAMES);
             for (let i = 0; i < regionCodes.length; i += 2) {
@@ -165,25 +172,25 @@
                 allRows += `<tr>
           <td class="sg-exp-name">${REGION_NAMES[rc1]}</td>
           <td class="sg-exp-price">${fmtCNY(v1)}</td>
-          <td class="sg-exp-orig">${g.prices?.[rc1] || '—'}</td>
+          <td class="sg-exp-orig">${esc(g.prices?.[rc1] || '—')}</td>
           <td class="sg-exp-name">${rc2 ? REGION_NAMES[rc2] : ''}</td>
           <td class="sg-exp-price">${rc2 ? fmtCNY(v2) : ''}</td>
-          <td class="sg-exp-orig">${rc2 ? (g.prices?.[rc2] || '—') : ''}</td>
+          <td class="sg-exp-orig">${rc2 ? esc(g.prices?.[rc2] || '—') : ''}</td>
         </tr>`;
             }
             card.innerHTML = `
         <div class="sg-card-banner">
-          <img src="${g.banner_url}" alt="${g.name}" loading="lazy" onerror="this.style.display='none'" />
+          <img src="${safeBanner}" alt="${safeName}" loading="lazy" onerror="this.style.display='none'" />
           ${discBadge}
         </div>
         <div class="sg-card-content">
-          <a class="sg-card-title" href="https://store.steampowered.com/app/${g.app_id}/" target="_blank" rel="noopener" title="${g.name}">${g.name}</a>
+          <a class="sg-card-title" href="https://store.steampowered.com/app/${appId}/" target="_blank" rel="noopener" title="${safeName}">${safeName}</a>
           <div class="sg-card-review" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
             <div class="sg-review-track"><div class="sg-review-bar-fill" style="width:${rate}%;background:${rateColor}"></div></div>
             <span style="color:${rateColor};font-weight:600;font-size:12px">${rate}%</span>
             <span class="sg-review-tag">${rateLabel}</span>
             <span class="sg-review-cnt">${fmtReviews(g.total_reviews)}</span>
-            <a class="sg-steam-btn" href="https://store.steampowered.com/app/${g.app_id}/" target="_blank" rel="noopener" style="margin-left:auto;padding:2px 8px;font-size:11px;">
+            <a class="sg-steam-btn" href="https://store.steampowered.com/app/${appId}/" target="_blank" rel="noopener" style="margin-left:auto;padding:2px 8px;font-size:11px;">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.606 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.455 1.012zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.662 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.252 0-2.265-1.014-2.265-2.265z"/></svg>
               Steam 商店
             </a>

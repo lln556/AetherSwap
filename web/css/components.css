@@ -1194,6 +1194,11 @@ tr:hover td:first-child {
   font-size: 13px;
   color: var(--text-secondary);
   margin-top: 4px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .app-modal-host {
@@ -1226,11 +1231,15 @@ tr:hover td:first-child {
 .app-modal {
   position: relative;
   width: min(100%, 460px);
+  max-height: min(760px, calc(100vh - 48px));
   background: var(--bg-surface);
   border: 1px solid var(--border-color);
   border-radius: 8px;
   box-shadow: var(--shadow-lg);
   padding: 20px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   transform: translateY(10px) scale(0.98);
   transition: transform 0.2s var(--ease-spring);
 }
@@ -1270,6 +1279,14 @@ tr:hover td:first-child {
   color: var(--text-secondary);
   font-size: 14px;
   line-height: 1.65;
+  max-height: min(26vh, 180px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding-right: 4px;
+}
+
+.app-modal-export {
+  margin-top: 12px;
 }
 
 .app-modal-field {
@@ -1280,12 +1297,23 @@ tr:hover td:first-child {
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 700;
+  min-height: 0;
+}
+
+.app-modal-input {
+  min-height: 0;
+}
+
+textarea.app-modal-input {
+  max-height: min(34vh, 260px);
+  resize: vertical;
 }
 
 .app-modal-content {
   margin-top: 16px;
   max-height: min(62vh, 560px);
   overflow: auto;
+  min-height: 0;
 }
 
 .app-modal-actions {
@@ -1336,7 +1364,9 @@ tr:hover td:first-child {
   border-radius: var(--radius-xl);
   padding: 32px;
   max-width: 460px;
+  max-height: min(720px, calc(100vh - 48px));
   width: 90%;
+  overflow: auto;
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--border-color);
   animation: modalBounceIn 0.5s var(--ease-spring);
@@ -1368,6 +1398,7 @@ tr:hover td:first-child {
   color: var(--text-secondary);
   font-size: 14px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .relogin-actions {

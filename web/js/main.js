@@ -221,7 +221,7 @@ function showReloginModal(type, opts = {}) {
     if (opts.reason === "verification_required") {
       if (title) title.textContent = "Buff 需要验证";
       if (msg) msg.textContent = opts.error
-        ? `Buff 返回：${opts.error}。请打开内置浏览器，进入 Buff 市场或任意商品页，完成刷新/人机验证后点击完成。`
+        ? `Buff 返回：${compactErrorText(opts.error, 180)}。请打开内置浏览器，进入 Buff 市场或任意商品页，完成刷新/人机验证后点击完成。`
         : "Buff 需要刷新页面状态或完成人机验证。请打开内置浏览器，进入 Buff 市场或任意商品页，完成验证后点击完成。";
     } else {
       if (title) title.textContent = "Buff 登录已过期";
@@ -232,7 +232,7 @@ function showReloginModal(type, opts = {}) {
     if (opts.reason === "need_2fa") {
       if (msg) msg.textContent = "需要二次验证（验证码），请点击下方按钮打开浏览器并完成 Steam 登录。";
     } else if (opts.error) {
-      if (msg) msg.textContent = opts.error;
+      if (msg) msg.textContent = compactErrorText(opts.error, 220);
     } else {
       if (msg) msg.textContent = "登录已过期，请按当前运行环境打开浏览器登录 Steam，或手动填写 Cookie 后继续。";
     }

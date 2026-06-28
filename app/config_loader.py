@@ -1,6 +1,6 @@
 import threading
 import time as _time
-from app.config_schema import DEFAULTS, merge, validate_and_fill
+from app.config_schema import DEFAULTS, _validate_ranges, merge, validate_and_fill
 from config import (
     get_buff,
     get_steam,
@@ -33,11 +33,11 @@ def load_app_config_validated() -> dict:
         if _config_cache and (now - _config_cache_ts) < _CONFIG_CACHE_TTL:
             return _config_cache
         raw = load_app_config()
-        result = validate_and_fill(merge(DEFAULTS, raw))
+        result = _validate_ranges(validate_and_fill(merge(DEFAULTS, raw)))
         _config_cache = result
         _config_cache_ts = now
         return result
 def save_app_config_validated(data: dict) -> None:
-    filled = validate_and_fill(merge(DEFAULTS, data))
+    filled = _validate_ranges(validate_and_fill(merge(DEFAULTS, data)))
     save_app_config(filled)
     _invalidate_config_cache()  

@@ -11,6 +11,7 @@ from app.config_loader import get_steam_credentials, load_app_config_validated
 from app.config_schema import DEFAULTS, merge
 from app.inventory_cs2 import scan_cs2_inventory
 from app.pipeline_context import PipelineContext
+from app.services.account_region import refresh_account_region_currency
 from app.strategy_engine import apply_strategy_to_config, evaluate_strategy_runtime_modules
 from app.state import get_state, append_sale
 from app.steam_confirm import auto_confirm_once
@@ -536,23 +537,40 @@ def _run_sell_phase_impl(cfg: dict, state, flow_id: str, items: Optional[list] =
         # 工厂重置后账号列表为空，直接跳过出售避免以错误币种上架
         ctx.log("[出售] 无有效账号（可能刚执行了出厂重置），跳过本次出售", "warn", category="steam")
         return
-    account_currency = (account.get("currency_code") or "").strip().upper()
+    account_currency_cached = (account.get("currency_code") or "").strip().upper()
+    region_check = refresh_account_region_currency(
+        account.get("id"),
+        cookies_raw=cred_steam.get("cookies", ""),
+    )
+    if not region_check.get("ok"):
+        ctx.log(
+            "[出售] 无法实时确认 Steam 账号结算币种，已拒绝上架，"
+            f"防止跨区价格误卖。原因: {region_check.get('error') or '未知原因'}",
+            "error",
+            category="steam",
+        )
+        return
+    account_currency = (region_check.get("currency_code") or "").strip().upper()
+    account_region = (region_check.get("region_code") or "").strip().upper()
     if not account_currency:
-        ctx.log("[出售] 当前账号未配置 currency_code，尝试自动获取...", "info", category="steam")
-        try:
-            from app.gift_engine import get_wallet_balance
-            from app.accounts import update_account
-            wallet = get_wallet_balance(cred_steam.get("cookies", ""))
-            account_currency = wallet.get("currency_code", "").upper()
-            if account_currency:
-                update_account(account.get("id"), currency_code=account_currency)
-                ctx.log(f"[出售] 自动获取成功: {account_currency}，已保存至配置", "info", category="steam")
-        except Exception as e:
-            ctx.log(f"[出售] 自动获取 currency_code 失败: {e}", "warn", category="steam")
-
-        if not account_currency:
-            ctx.log("[出售] 无法获取 currency_code，为防止跨区汇率导致资产损失，已拒绝上架。", "error", category="steam")
-            return
+        ctx.log(
+            "[出售] Steam 未返回结算币种，已拒绝上架，防止跨区价格误卖。",
+            "error",
+            category="steam",
+        )
+        return
+    if account_currency_cached and account_currency_cached != account_currency:
+        ctx.log(
+            f"[出售] 检测到账号币种变化: 缓存={account_currency_cached} 实时={account_currency}，"
+            "已更新并使用实时币种定价。",
+            "warn",
+            category="steam",
+        )
+    if account_region:
+        ctx.debug(
+            f"[出售] 账号地区按结算币种派生: 币种={account_currency} 地区={account_region}",
+            category="steam",
+        )
     rate_map = _load_rate_map()
 
     assetid_to_name_map = {

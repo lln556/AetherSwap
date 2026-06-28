@@ -414,7 +414,6 @@ def _sync_account_profile_and_region(acc: dict) -> None:
 
 def sync_account_region_worker() -> None:
     try:
-        time.sleep(5)
         acc = get_current_account()
         if not acc:
             log("account_region: 无当前账号，跳过同步", "debug", category="account")
@@ -426,32 +425,26 @@ def sync_account_region_worker() -> None:
         )
         _sync_account_profile_and_region(acc)
         
-        try:
-            from app.gift_engine import get_wallet_balance, get_base_auth_status
-            from app.config_loader import get_steam_credentials
-            cred = get_steam_credentials()
-            cookies_str = cred.get("cookies", "")
-            
-            jwt_token, country_code, _ = get_base_auth_status(cookies_str)
-            wallet = get_wallet_balance(cookies_str)
-            code = wallet.get("currency_code")
-            region_code = country_code or ""
-        except Exception as e:
-            log(f"account_region: 尝试通过钱包/底层接口拉取币种和地区信息失败: {e}", "error", category="account")
-            return
-
-        if not code:
-            log("account_region: 最终解析币种失败", "error", category="account")
-            return
-
-        log(f"account_region: 解析结果 币种={code} 地区={region_code or '未知'}", "debug", category="account")
-        updated = update_account(acc.get("id"), currency_code=code, region_code=region_code)
-        if not updated:
-            log("account_region: 写入账号配置失败", "error", category="account")
+        from app.services.account_region import refresh_account_region_currency
+        result = refresh_account_region_currency(acc.get("id"), skip_unconfigured=True)
+        if not result.get("ok"):
+            if result.get("skipped"):
+                log(
+                    f"account_region: {result.get('error') or '尚未完成 Steam 登录配置'}",
+                    "debug",
+                    category="account",
+                )
+                return
+            log(
+                f"account_region: 同步失败，已暂停自动出售安全许可: {result.get('error') or '未知原因'}",
+                "error",
+                category="account",
+            )
             return
         log(
-            f"account_region: 同步完成 account_id={updated.get('id')} 币种={code} 地区={region_code or '未知'}",
-            "info",
+            f"account_region: 同步完成 account_id={acc.get('id')} "
+            f"币种={result.get('currency_code')} 派生地区={result.get('region_code')}",
+            "debug",
             category="account",
         )
     except Exception as e:

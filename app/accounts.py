@@ -57,7 +57,20 @@ def add_account(username: str = "", password: str = "", steam_id: str = "", disp
 def update_account(account_id: str, **kwargs: Any) -> Optional[dict]:
     data = _load()
     accs = data.get("accounts", [])
-    allowed = ("username", "password", "steam_id", "display_name", "avatar_url", "currency_code", "region_code")
+    allowed = (
+        "username",
+        "password",
+        "steam_id",
+        "display_name",
+        "avatar_url",
+        "currency_code",
+        "region_code",
+        "region_check_ok",
+        "region_check_error",
+        "region_checked_at",
+        "currency_checked_at",
+        "wallet_currency_id",
+    )
     for a in accs:
         if a.get("id") == account_id:
             for k, v in kwargs.items():

@@ -12,6 +12,8 @@ from app.accounts import (
     update_account,
 )
 from app.services.steam_auth import verify_steam_auto_login
+from app.services.account_region import refresh_account_region_currency
+from app.state import log
 router = APIRouter()
 class AccountBody(BaseModel):
     username: str = ""
@@ -69,4 +71,29 @@ def api_set_current_account(account_id: str):
 @router.post("/api/accounts/{account_id}/verify")
 def api_verify_account(account_id: str):
     result = verify_steam_auto_login(account_id)
-    return {"ok": result.get("ok", False), "status": result.get("status", "error"), "message": result.get("message", "验证失败")}
+    if result.get("ok"):
+        sync_result = refresh_account_region_currency(account_id)
+        result["region_sync"] = sync_result
+        if sync_result.get("ok"):
+            log(
+                "account_verify: 结算币种确认成功 "
+                f"account_id={account_id} "
+                f"currency={sync_result.get('currency_code')} "
+                f"derived_region={sync_result.get('region_code')}",
+                "debug",
+                category="account",
+            )
+        else:
+            log(
+                "account_verify: 结算币种确认失败 "
+                f"account_id={account_id} "
+                f"error={sync_result.get('error') or '未知原因'}",
+                "warn",
+                category="account",
+            )
+    return {
+        "ok": result.get("ok", False),
+        "status": result.get("status", "error"),
+        "message": result.get("message", "验证失败"),
+        "region_sync": result.get("region_sync"),
+    }

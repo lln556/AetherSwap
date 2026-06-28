@@ -10,7 +10,7 @@ function toast(title, detail = "") {
   if (!host) return;
   const node = document.createElement("div");
   node.className = "toast";
-  node.innerHTML = `<div class="t">${escapeHtml(title)}</div>${detail ? `<div class="d">${escapeHtml(detail)}</div>` : ""}`;
+  node.innerHTML = `<div class="t">${escapeHtml(title)}</div>${detail ? `<div class="d">${escapeHtml(compactErrorText(detail, 220))}</div>` : ""}`;
   host.appendChild(node);
   const ttl = 3500;
   setTimeout(() => {
@@ -29,6 +29,8 @@ function appModal(options = {}) {
     defaultValue = "",
     autofocus = true,
     width = "460px",
+    exportText = "",
+    exportFileName = "",
   } = options;
   return new Promise((resolve) => {
     const host = document.createElement("div");
@@ -56,6 +58,7 @@ function appModal(options = {}) {
           <button type="button" class="app-modal-close" aria-label="关闭">×</button>
         </div>
         ${message ? `<div class="app-modal-message">${escapeHtml(message).replace(/\n/g, "<br>")}</div>` : ""}
+        ${exportText ? `<div class="app-modal-export"><button type="button" class="btn btn-secondary btn-sm" data-export-error>导出错误信息</button></div>` : ""}
         ${inputHtml}
         ${hasCustomContent ? `<div class="app-modal-content">${contentHtml}</div>` : ""}
         <div class="app-modal-actions">
@@ -67,6 +70,10 @@ function appModal(options = {}) {
     const modal = host.querySelector(".app-modal");
     const contentBox = host.querySelector(".app-modal-content");
     if (content instanceof HTMLElement && contentBox) contentBox.appendChild(content);
+    host.querySelector("[data-export-error]")?.addEventListener("click", () => {
+      downloadTextFile(exportFileName || buildErrorExportName("aetherswap-error"), exportText);
+      toast("错误信息已导出");
+    });
     const close = (value) => {
       host.classList.add("closing");
       setTimeout(() => host.remove(), 160);
@@ -121,6 +128,8 @@ function appPrompt(title, defaultValue = "", options = {}) {
       { label: options.confirmText || "确认", value: true, kind: "primary" },
     ],
     width: options.width || "440px",
+    exportText: options.exportText || "",
+    exportFileName: options.exportFileName || "",
   });
 }
 function escapeHtml(s) {
@@ -175,6 +184,36 @@ function runtimeManualLoginMessage(type = "steam") {
     return `当前后端运行在服务器/无桌面环境，无法弹出 ${label} 登录浏览器。请在你本机浏览器完成登录后，复制 ${label} Cookie 并粘贴保存。`;
   }
   return `请从已登录的浏览器复制 ${label} Cookie 后粘贴到下方。`;
+}
+function compactErrorText(reason, limit = 260) {
+  let text = String(reason || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  text = text
+    .replace(/Browser logs:.*/i, "完整浏览器日志见调试日志")
+    .replace(/<launching>.*$/i, "完整浏览器日志见调试日志")
+    .replace(/Call log:.*/i, "完整浏览器日志见调试日志");
+  if (text.length > limit) {
+    return text.slice(0, limit) + "…（完整信息可导出查看）";
+  }
+  return text;
+}
+function compactLoginError(reason) {
+  return compactErrorText(reason, 220);
+}
+function buildErrorExportName(prefix = "aetherswap-error") {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${prefix}-${stamp}.txt`;
+}
+function downloadTextFile(filename, text) {
+  const blob = new Blob([String(text || "")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || buildErrorExportName();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function applyRuntimeUiHints() {
   const canLaunch = runtimeCanLaunchBrowser();

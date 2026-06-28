@@ -144,7 +144,9 @@ async function saveManualCookie(type, cookies) {
 }
 async function promptManualCookieLogin(type, reason = "", options = {}) {
   const isSteam = type === "steam";
-  const message = options.message || ((reason ? `浏览器打开失败：${reason}\n\n` : "") + "请从已登录的浏览器复制 Cookie 后粘贴到下方。");
+  const reasonText = compactLoginError(reason);
+  const message = options.message || ((reasonText ? `浏览器打开失败：${reasonText}\n\n` : "") + "请从已登录的浏览器复制 Cookie 后粘贴到下方。");
+  const exportText = options.exportText || (reason ? String(reason) : "");
   const cookie = await appPrompt(isSteam ? "手动输入 Steam Cookie" : "手动输入 Buff Cookie", "", {
     message,
     label: "Cookie",
@@ -155,6 +157,8 @@ async function promptManualCookieLogin(type, reason = "", options = {}) {
     rows: 8,
     width: "620px",
     confirmText: "保存 Cookie",
+    exportText,
+    exportFileName: buildErrorExportName(isSteam ? "steam-login-error" : "buff-login-error"),
   });
   if (cookie === false) return false;
   const raw = String(cookie || "").trim();
@@ -194,12 +198,12 @@ async function openBrowserAndLogin() {
       const btnOk = el("relogin-btn-ok");
       if (btnOk) btnOk.disabled = false;
     } else {
-      toast("打开失败", d.error || "");
+      toast("打开失败", compactLoginError(d.error || ""));
       const saved = await promptManualCookieLogin(reloginType, d.error || "");
       if (saved) hideReloginModal();
     }
   } catch (e) {
-    toast("请求失败", e.message || "");
+    toast("请求失败", compactLoginError(e.message || ""));
     const saved = await promptManualCookieLogin(reloginType, e.message || "");
     if (saved) hideReloginModal();
   }
@@ -218,8 +222,8 @@ async function finishRelogin(success) {
       method: "POST",
       body: JSON.stringify({ success }),
     });
-    hideReloginModal();
     if (success && d.ok) {
+      hideReloginModal();
       toast("登录信息已更新");
       if (reloginType === "steam") {
         await refreshInventory(true);
@@ -229,9 +233,11 @@ async function finishRelogin(success) {
       }
     } else if (success && !d.ok) {
       toast("更新失败", d.error || "");
+    } else {
+      hideReloginModal();
     }
   } catch (e) {
-    hideReloginModal();
+    if (!success) hideReloginModal();
     toast("请求失败", e.message || "");
   } finally {
     if (btnOk) {

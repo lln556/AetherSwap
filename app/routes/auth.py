@@ -3,7 +3,9 @@ import base64
 import hashlib
 import hmac
 import re
+import shutil
 import struct
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -34,6 +36,7 @@ _relogin_wake = threading.Event()
 _relogin_done = threading.Event()
 _relogin_success = False
 _relogin_error = None
+_BROWSER_LAUNCH_ARGS = ["--disable-blink-features=AutomationControlled"]
 def _manual_cookie_required_response(relogin_type: str, reason: str):
     label = "Steam" if relogin_type == "steam" else "Buff"
     return {
@@ -73,6 +76,21 @@ def _cookie_value(cookie_str: str, name: str) -> str:
         if key.strip().lower() == wanted:
             return value.strip()
     return ""
+def _cookie_header_from_browser(cookies: list) -> str:
+    pieces = []
+    for cookie in cookies or []:
+        name = str(cookie.get("name") or "").strip()
+        value = str(cookie.get("value") or "").strip()
+        if name:
+            pieces.append(f"{name}={value}")
+    return "; ".join(pieces)
+def _has_browser_cookie(cookies: list, name: str) -> bool:
+    wanted = name.lower()
+    return any(
+        str(cookie.get("name") or "").strip().lower() == wanted
+        and str(cookie.get("value") or "").strip()
+        for cookie in (cookies or [])
+    )
 def _steam_id_from_cookie_str(cookie_str: str) -> str:
     value = _cookie_value(cookie_str, "steamLoginSecure")
     if "%7C%7C" in value:
@@ -80,6 +98,92 @@ def _steam_id_from_cookie_str(cookie_str: str) -> str:
     if "||" in value:
         return value.split("||", 1)[0].strip()
     return value.strip() if value.strip().isdigit() else ""
+def _looks_like_browser_launch_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "browser",
+            "chromium",
+            "launch_persistent_context",
+            "target page, context or browser has been closed",
+            "process did exit",
+            "executable doesn't exist",
+            "processsingleton",
+            "user data dir",
+        )
+    )
+def _should_retry_browser_launch(exc: Exception) -> bool:
+    text = str(exc).lower()
+    if "executable doesn't exist" in text or "playwright install" in text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "target page, context or browser has been closed",
+            "process did exit",
+            "processsingleton",
+            "user data dir",
+            "profile",
+        )
+    )
+def _friendly_browser_launch_error(exc: Exception, relogin_type: str, retried: bool = False) -> str:
+    label = "Steam" if relogin_type == "steam" else "Buff"
+    text = str(exc)
+    lower = text.lower()
+    if "executable doesn't exist" in lower or "playwright install" in lower:
+        return f"{label} 登录浏览器未安装，请在项目环境执行：python -m playwright install chromium"
+    if "processsingleton" in lower or "user data dir" in lower:
+        return f"{label} 登录浏览器配置目录正在被占用。请关闭残留的 Chromium/Chrome 窗口后重试，或先使用手动 Cookie 登录。"
+    if "target page, context or browser has been closed" in lower or "process did exit" in lower:
+        prefix = "临时登录目录重试后仍失败" if retried else "浏览器启动后立即关闭"
+        return (
+            f"{label} {prefix}。常见原因是 Playwright 浏览器目录被占用/损坏、"
+            "系统安全软件拦截或浏览器组件异常；请先使用手动 Cookie 登录，完整错误见调试日志。"
+        )
+    short = " ".join(text.split())
+    if len(short) > 180:
+        short = short[:180] + "..."
+    return f"{label} 登录浏览器打开失败：{short or type(exc).__name__}"
+def _launch_relogin_context(playwright, profile_dir: Path, relogin_type: str):
+    label = "Steam" if relogin_type == "steam" else "Buff"
+    try:
+        return playwright.chromium.launch_persistent_context(
+            str(profile_dir),
+            headless=False,
+            args=_BROWSER_LAUNCH_ARGS,
+        ), None
+    except Exception as first_exc:
+        log(
+            f"{label} 登录浏览器使用固定目录启动失败: {str(first_exc)[:2000]}",
+            "warn",
+            category="auth",
+        )
+        if not _should_retry_browser_launch(first_exc):
+            raise RuntimeError(_friendly_browser_launch_error(first_exc, relogin_type)) from first_exc
+        tmp_parent = profile_dir.parent / "playwright_tmp"
+        tmp_parent.mkdir(parents=True, exist_ok=True)
+        temp_profile = Path(tempfile.mkdtemp(prefix=f"{relogin_type}_", dir=str(tmp_parent)))
+        try:
+            context = playwright.chromium.launch_persistent_context(
+                str(temp_profile),
+                headless=False,
+                args=_BROWSER_LAUNCH_ARGS,
+            )
+            log(
+                f"{label} 登录浏览器已使用临时目录启动，原目录可能被占用或损坏: {profile_dir}",
+                "info",
+                category="auth",
+            )
+            return context, temp_profile
+        except Exception as second_exc:
+            log(
+                f"{label} 登录浏览器临时目录重试失败: {str(second_exc)[:2000]}",
+                "error",
+                category="auth",
+            )
+            shutil.rmtree(temp_profile, ignore_errors=True)
+            raise RuntimeError(_friendly_browser_launch_error(second_exc, relogin_type, retried=True)) from second_exc
 def _maybe_resume_after_buff_cookie_update() -> None:
     set_buff_auth_expired(False)
     set_buff_verification_required(False)
@@ -98,6 +202,9 @@ def _maybe_resume_after_buff_cookie_update() -> None:
         log(f"Buff Cookie 更新后的恢复检查失败: {resume_err}", "warn", category="system")
 def _relogin_worker(relogin_type: str) -> None:
     global _relogin_playwright, _relogin_browser, _relogin_context, _relogin_error, _relogin_success
+    p = None
+    context = None
+    temp_profile_dir = None
     try:
         from playwright.sync_api import sync_playwright
         p = sync_playwright().start()
@@ -107,7 +214,7 @@ def _relogin_worker(relogin_type: str) -> None:
         else:
             profile_dir = Path(__file__).resolve().parent.parent.parent / "config" / "playwright_buff"
         profile_dir.mkdir(parents=True, exist_ok=True)
-        context = p.chromium.launch_persistent_context(str(profile_dir), headless=False)
+        context, temp_profile_dir = _launch_relogin_context(p, profile_dir, relogin_type)
         page = context.pages[0] if context.pages else context.new_page()
         url = "https://store.steampowered.com/login/" if relogin_type == "steam" else "https://buff.163.com/"
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -127,53 +234,67 @@ def _relogin_worker(relogin_type: str) -> None:
             if relogin_type == "steam":
                 steam_cookies = [c for c in cookies if "steamcommunity" in (c.get("domain") or "") or "steampowered" in (c.get("domain") or "")]
                 selected = steam_cookies if steam_cookies else cookies
-                has_secure = any(c.get("name") == "steamLoginSecure" for c in selected)
-                cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in selected)
+                has_secure = _has_browser_cookie(selected, "steamLoginSecure")
+                cookie_str = _cookie_header_from_browser(selected)
                 session_id = next((c["value"] for c in selected if c.get("name") == "sessionid"), None) or next((c["value"] for c in cookies if c.get("name") == "sessionid"), None)
-                if session_id and has_secure:
+                if not session_id or not has_secure:
+                    _relogin_error = "未检测到 Steam 登录 Cookie，请确认弹出的浏览器已经登录完成后再点击完成。"
+                else:
+                    if not _cookie_value(cookie_str, "sessionid"):
+                        cookie_str = f"{cookie_str}; sessionid={session_id}"
                     update_steam_creds(cookie_str, session_id)
-                cur = get_current_account()
-                if cur:
-                    steam_id = None
-                    for c in cookies:
-                        if c.get("name") == "steamLoginSecure":
-                            v = c.get("value", "")
-                            if "%7C%7C" in v:
-                                steam_id = v.split("%7C%7C")[0].strip()
-                            elif "||" in v:
-                                steam_id = v.split("||")[0].strip()
-                            break
-                    display_name, avatar_url = fetch_steam_profile_via_api(steam_id or "", cookie_str)
-                    update_account(cur["id"], steam_id=steam_id or "", display_name=display_name, avatar_url=avatar_url)
+                    cur = get_current_account()
+                    if cur:
+                        steam_id = None
+                        for c in cookies:
+                            if c.get("name") == "steamLoginSecure":
+                                v = c.get("value", "")
+                                if "%7C%7C" in v:
+                                    steam_id = v.split("%7C%7C")[0].strip()
+                                elif "||" in v:
+                                    steam_id = v.split("||")[0].strip()
+                                break
+                        display_name, avatar_url = fetch_steam_profile_via_api(steam_id or "", cookie_str)
+                        update_account(cur["id"], steam_id=steam_id or "", display_name=display_name, avatar_url=avatar_url)
             else:
-                cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-                update_buff_creds(cookie_str)
-                set_buff_auth_expired(False)
-                set_buff_verification_required(False)
-                from app.state import get_status
-                from app.pipeline import start_pipeline
-                from app.config_loader import load_app_config_validated
-                st = get_status()
-                err_msg = str(st.get("step") or "")
-                if st.get("status") == "error" and err_msg in ("BUFF_AUTH_EXPIRED", "BUFF_VERIFICATION_REQUIRED"):
-                    from app.state import log
-                    log("检测到 Buff 状态已更新，尝试自动恢复挂刀流水线...", "info", category="system")
-                    try:
-                        start_pipeline(load_app_config_validated())
-                    except Exception as resume_err:
-                        log(f"自动恢复流水线失败: {resume_err}", "warn", category="system")
-        try:
-            context.close()
-        except Exception:
-            pass
-        try:
-            p.stop()
-        except Exception:
-            pass
+                cookie_str = _cookie_header_from_browser(cookies)
+                if not _has_browser_cookie(cookies, "session"):
+                    _relogin_error = "未检测到 Buff 登录 session，请确认弹出的浏览器已经完成登录或验证后再点击完成。"
+                else:
+                    update_buff_creds(cookie_str)
+                    set_buff_auth_expired(False)
+                    set_buff_verification_required(False)
+                    from app.state import get_status
+                    from app.pipeline import start_pipeline
+                    from app.config_loader import load_app_config_validated
+                    st = get_status()
+                    err_msg = str(st.get("step") or "")
+                    if st.get("status") == "error" and err_msg in ("BUFF_AUTH_EXPIRED", "BUFF_VERIFICATION_REQUIRED"):
+                        from app.state import log
+                        log("检测到 Buff 状态已更新，尝试自动恢复挂刀流水线...", "info", category="system")
+                        try:
+                            start_pipeline(load_app_config_validated())
+                        except Exception as resume_err:
+                            log(f"自动恢复流水线失败: {resume_err}", "warn", category="system")
     except Exception as e:
-        _relogin_error = str(e)
+        if _looks_like_browser_launch_error(e):
+            _relogin_error = _friendly_browser_launch_error(e, relogin_type)
+        else:
+            _relogin_error = str(e)
         _relogin_ready.set()
     finally:
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if p is not None:
+            try:
+                p.stop()
+            except Exception:
+                pass
+        if temp_profile_dir is not None:
+            shutil.rmtree(temp_profile_dir, ignore_errors=True)
         with _relogin_lock:
             _relogin_playwright = None
             _relogin_browser = None
@@ -216,13 +337,16 @@ def _relogin_start(relogin_type: str):
     msg = "请在弹出的浏览器中完成 Steam 登录" if relogin_type == "steam" else "请在弹出的浏览器中完成 Buff 登录/验证"
     return {"ok": True, "message": msg}
 def _relogin_finish(success: bool):
-    global _relogin_success, _relogin_context
+    global _relogin_success, _relogin_context, _relogin_error
     with _relogin_lock:
         if not _relogin_context:
             return {"ok": False, "error": "未在重新登录流程中"}
         _relogin_success = success
     _relogin_wake.set()
-    _relogin_done.wait(timeout=15)
+    if not _relogin_done.wait(timeout=15):
+        return {"ok": False, "error": "更新登录信息超时，请稍后重试"}
+    if _relogin_error:
+        return {"ok": False, "error": _relogin_error}
     return {"ok": True}
 def _normalize_secret(raw: str) -> str:
     return re.sub(r'\\u([0-9a-fA-F]{4})', lambda m: chr(int(m.group(1), 16)), raw)
@@ -278,6 +402,8 @@ def api_auth_manual_cookie(relogin_type: str, body: ManualCookieBody):
             update_account(cur["id"], steam_id=steam_id or cur.get("steam_id", ""), display_name=display_name, avatar_url=avatar_url)
         return {"ok": True, "message": "Steam Cookie 已保存", "steam_id": steam_id}
     if relogin_type == "buff":
+        if not _cookie_value(cookie_str, "session"):
+            return {"ok": False, "error": "Buff Cookie 缺少 session"}
         update_buff_creds(cookie_str)
         _maybe_resume_after_buff_cookie_update()
         return {"ok": True, "message": "Buff Cookie 已保存"}

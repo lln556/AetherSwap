@@ -160,5 +160,7 @@ def get_task_queue() -> TaskQueue:
     global _queue
     with _queue_lock:
         if _queue is None:
-            _queue = TaskQueue(max_workers=4)
+            # Startup registers several long-running workers; keep spare
+            # capacity for one-shot checks and manual tasks.
+            _queue = TaskQueue(max_workers=8)
         return _queue

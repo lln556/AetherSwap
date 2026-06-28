@@ -4,7 +4,7 @@ Buff authentication service for background keep-alive.
 import threading
 import time
 from pathlib import Path
-from app.state import log, set_buff_auth_expired
+from app.state import log, set_buff_auth_expired, set_buff_verification_required
 from app.config_loader import get_buff_credentials, update_buff_creds
 _buff_auto_relogin_lock = threading.Lock()
 _buff_auto_relogin_last_success = 0.0
@@ -44,6 +44,7 @@ def _try_buff_auto_relogin_impl() -> tuple:
                 cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
                 update_buff_creds(cookie_str)
                 set_buff_auth_expired(False)
+                set_buff_verification_required(False)
                 log("buff_relogin: Cookie 刷新成功，会话已延长", "info", category="buff")
                 context.close()
                 _buff_auto_relogin_last_success = time.time()

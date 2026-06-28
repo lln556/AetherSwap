@@ -567,7 +567,7 @@ function _showWizard(startAtBuffStep = false) {
             if (statusEl) statusEl.textContent = "✅ Buff Cookie 已手动保存！";
             setTimeout(() => goToStep(currentStep + 1), 800);
           } else {
-            if (statusEl) statusEl.textContent = "❌ 打开失败：" + (r.error || "请检查运行环境");
+            if (statusEl) statusEl.textContent = "❌ 打开失败：" + compactLoginError(r.error || "请检查运行环境");
             buffOpenBtn.disabled = false;
           }
         }
@@ -577,7 +577,7 @@ function _showWizard(startAtBuffStep = false) {
           if (statusEl) statusEl.textContent = "✅ Buff Cookie 已手动保存！";
           setTimeout(() => goToStep(currentStep + 1), 800);
         } else {
-          if (statusEl) statusEl.textContent = "❌ 请求失败：" + (e.message || "");
+          if (statusEl) statusEl.textContent = "❌ 请求失败：" + compactLoginError(e.message || "");
           buffOpenBtn.disabled = false;
         }
       }

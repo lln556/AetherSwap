@@ -32,6 +32,7 @@ def _start_background_workers() -> None:
             return
         _bg_started = True
     q = get_task_queue()
+    q.submit(sync_account_region_worker, name="sync_account_region", max_retries=3, retry_base_delay=10.0)
     for fn in (
         receive_worker,
         listing_check_worker,
@@ -40,7 +41,6 @@ def _start_background_workers() -> None:
         session_keepalive_worker,
     ):
         q.submit(fn, name=fn.__name__, max_retries=3, retry_base_delay=5.0)
-    q.submit(sync_account_region_worker, name="sync_account_region", max_retries=3, retry_base_delay=10.0)
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
     _start_background_workers()

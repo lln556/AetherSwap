@@ -702,6 +702,23 @@ def _clean_logic(value: Any) -> str:
     return "any" if logic == "any" else "all"
 
 
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
+
+
 def _clean_stage_list(strategy_types: List[str], stage: Any, stages: Any) -> List[str]:
     raw = []
     if isinstance(stages, list):
@@ -853,7 +870,7 @@ def _normalize_step(raw: dict) -> dict:
     module_id = str(raw.get("module_id") or raw.get("module") or "").strip()
     return {
         "module_id": module_id,
-        "enabled": raw.get("enabled") is not False,
+        "enabled": _coerce_bool(raw.get("enabled"), True),
         "params": _sanitize_value(raw.get("params") if isinstance(raw.get("params"), dict) else {}),
     }
 
