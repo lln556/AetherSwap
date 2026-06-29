@@ -159,6 +159,38 @@ def test_refresh_account_region_currency_marks_missing_cookie_unsafe_when_strict
     assert "Cookie" in updates["payload"]["region_check_error"]
 
 
+def test_refresh_account_region_currency_rejects_cookie_for_different_account(monkeypatch):
+    from app.services import account_region
+    from app import gift_engine
+
+    updates = {}
+    monkeypatch.setattr(account_region, "get_account", lambda account_id: {"id": account_id, "steam_id": "222"})
+    monkeypatch.setattr(
+        account_region,
+        "get_steam_credentials",
+        lambda: {
+            "cookies": "sessionid=s; steamLoginSecure=111%7C%7Cold-token",
+            "steam_id": "111",
+        },
+    )
+    monkeypatch.setattr(
+        account_region,
+        "update_account",
+        lambda account_id, **kwargs: updates.setdefault("payload", kwargs) or {"id": account_id, **kwargs},
+    )
+    monkeypatch.setattr(
+        gift_engine,
+        "get_wallet_balance",
+        lambda cookies: (_ for _ in ()).throw(AssertionError("mismatched cookie must not fetch wallet")),
+    )
+
+    result = account_region.refresh_account_region_currency("acc1")
+
+    assert result["ok"] is False
+    assert "不一致" in result["error"]
+    assert updates["payload"]["region_check_ok"] is False
+
+
 def test_verify_account_triggers_region_currency_refresh(monkeypatch):
     from app.routes import accounts
 
@@ -222,6 +254,30 @@ def test_get_wallet_balance_returns_wallet_country(monkeypatch):
     assert wallet["country_code"] == "CN"
 
 
+def test_get_wallet_balance_fallback_returns_currency_for_zero_balance(monkeypatch):
+    from app import gift_engine
+    import utils.proxy_manager as proxy_manager
+
+    payload = {
+        "response": {
+            "balance": 0,
+            "delayed_balance": 0,
+            "currency": 23,
+            "country": "CN",
+        }
+    }
+
+    monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: _ProxyManager())
+    monkeypatch.setattr(gift_engine, "get_base_auth_status", lambda cookies: ("jwt-token", "CN", {}))
+    monkeypatch.setattr(gift_engine.requests, "get", lambda *args, **kwargs: _Response("", payload))
+
+    wallet = gift_engine.get_wallet_balance("steamLoginSecure=x")
+
+    assert wallet["balance_raw"] == 0
+    assert wallet["currency_code"] == "CNY"
+    assert wallet["currency_id"] == 23
+
+
 def test_get_wallet_balance_rejects_unknown_currency_id(monkeypatch):
     from app import gift_engine
     import utils.proxy_manager as proxy_manager
@@ -240,3 +296,63 @@ def test_get_wallet_balance_rejects_unknown_currency_id(monkeypatch):
         assert "未知 Steam 钱包币种 ID: 999" in str(exc)
     else:
         raise AssertionError("unknown wallet currency must not default to USD")
+
+
+def test_gift_balance_rejects_cookie_for_different_current_account(monkeypatch):
+    from app.routes import gift
+
+    monkeypatch.setattr(
+        gift,
+        "get_steam_credentials",
+        lambda: {
+            "cookies": "sessionid=old; steamLoginSecure=111%7C%7Cold-token",
+            "steam_id": "111",
+        },
+    )
+    monkeypatch.setattr(gift, "get_current_account", lambda: {"id": "acc-new", "steam_id": "222"})
+
+    result = gift.api_gift_balance()
+
+    assert result["ok"] is False
+    assert "不一致" in result["error"]
+
+
+def test_gift_balance_syncs_wallet_currency_to_current_account(monkeypatch):
+    from app.routes import gift
+
+    updates = {}
+    monkeypatch.setattr(
+        gift,
+        "get_steam_credentials",
+        lambda: {
+            "cookies": "sessionid=s; steamLoginSecure=222%7C%7Ctoken",
+            "steam_id": "222",
+        },
+    )
+    monkeypatch.setattr(gift, "get_current_account", lambda: {"id": "acc-new", "steam_id": "222"})
+    monkeypatch.setattr(
+        gift.gift_engine,
+        "get_wallet_balance",
+        lambda cookies: {
+            "balance_raw": 409,
+            "balance_display": "¥4.09",
+            "currency_code": "CNY",
+            "currency_symbol": "¥",
+            "currency_id": 23,
+            "wallet_country": "CN",
+            "country_code": "CN",
+        },
+    )
+    monkeypatch.setattr(
+        gift,
+        "update_account",
+        lambda account_id, **kwargs: updates.setdefault("payload", {"account_id": account_id, **kwargs}),
+    )
+
+    result = gift.api_gift_balance()
+
+    assert result["ok"] is True
+    assert result["currency_code"] == "CNY"
+    assert updates["payload"]["account_id"] == "acc-new"
+    assert updates["payload"]["currency_code"] == "CNY"
+    assert updates["payload"]["region_code"] == "CN"

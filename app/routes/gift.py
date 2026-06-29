@@ -1,11 +1,15 @@
 """Gift routes – Steam 自动赠礼 API."""
 import threading
+import time
 import uuid
 from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
 from app.config_loader import get_steam_credentials
 from app import gift_engine
+from app.accounts import get_current_account, update_account
+from app.services.account_region import _region_from_settlement_currency
+from app.services.steam_auth import steam_id_from_cookie_str
 router = APIRouter()
 _gift_tasks: dict[str, dict] = {}
 _task_lock = threading.Lock()
@@ -44,7 +48,39 @@ def _check_cookies(cookies_raw: str) -> Optional[dict]:
     lower = cookies_raw.lower()
     if "steamloginsecure=" not in lower:
         return {"ok": False, "error": "Steam 凭证未配置，请先登录 Steam"}
+    cur = get_current_account()
+    if cur:
+        expected_steam_id = str(cur.get("steam_id") or "").strip()
+        saved_steam_id = str((get_steam_credentials() or {}).get("steam_id") or "").strip()
+        cookie_steam_id = steam_id_from_cookie_str(cookies_raw)
+        actual_steam_id = cookie_steam_id or saved_steam_id
+        if expected_steam_id and actual_steam_id and expected_steam_id != actual_steam_id:
+            return {
+                "ok": False,
+                "error": "当前账号与已保存的 Steam Cookie 不一致，请在账号管理中重新验证当前账号，或重新登录 Steam 后再使用赠礼。",
+            }
     return None
+def _sync_wallet_info_to_current_account(info: dict) -> None:
+    cur = get_current_account()
+    if not cur:
+        return
+    currency_code = (info.get("currency_code") or "").strip().upper()
+    if not currency_code:
+        return
+    checked_at = time.time()
+    update_account(
+        cur["id"],
+        region_code=_region_from_settlement_currency(
+            currency_code,
+            info.get("country_code") or info.get("wallet_country") or "",
+        ),
+        currency_code=currency_code,
+        region_check_ok=True,
+        region_check_error="",
+        region_checked_at=checked_at,
+        currency_checked_at=checked_at,
+        wallet_currency_id=info.get("currency_id"),
+    )
 @router.get("/api/gift/friends")
 def api_get_friends():
     cookies_raw = _get_cookies_raw()
@@ -117,6 +153,7 @@ def api_gift_balance():
         return err
     try:
         info = gift_engine.get_wallet_balance(cookies_raw)
+        _sync_wallet_info_to_current_account(info)
         return {"ok": True, **info}
     except Exception as e:
         return {"ok": False, "error": str(e)}

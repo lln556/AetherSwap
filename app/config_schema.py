@@ -69,7 +69,7 @@ DEFAULTS = {
         "end_time_hour": 22,
     },
     "inventory": {
-        "refresh_seconds": 60,
+        "refresh_seconds": 600,
     },
     "notify": {
         "pushplus_token": "",
@@ -147,6 +147,7 @@ def _validate_ranges(cfg: dict) -> dict:
     pipe = cfg.get("pipeline") or {}
     stab = cfg.get("stability") or {}
     buff = cfg.get("buff") or {}
+    inv = cfg.get("inventory") or {}
 
     if isinstance(pipe.get("max_discount"), (int, float)):
         v = pipe["max_discount"]
@@ -183,6 +184,12 @@ def _validate_ranges(cfg: dict) -> dict:
         if v < 0:
             warnings.warn(f"[config] buff.price_tolerance={v} 不能为负数，已修正为0")
             buff["price_tolerance"] = 0.0
+
+    if isinstance(inv.get("refresh_seconds"), (int, float)):
+        v = inv["refresh_seconds"]
+        if 0 < v < 600:
+            warnings.warn(f"[config] inventory.refresh_seconds={v} 过短，已修正为600秒")
+            inv["refresh_seconds"] = 600
 
     return cfg
 

@@ -16,8 +16,9 @@ try:
 except Exception:
     pass
 CREDENTIALS_FILE = ROOT / "config" / "credentials.json"
-TRANSACTIONS_FILE = ROOT / "config" / "transactions.json"
 MYHISTORY_RENDER_URL = "https://steamcommunity.com/market/myhistory/render/"
+HISTORY_PAGE_SIZE = 500
+HISTORY_MAX_PAGES = 40
 HOVER_PATTERN = re.compile(
     r"CreateItemHoverFromContainer\s*\(\s*g_rgAssets\s*,\s*'(history_row_\d+_\d+)_name'\s*,\s*(\d+)\s*,\s*'(\d+)'\s*,\s*'(\d+)'"
 )
@@ -32,19 +33,35 @@ def _cookies_to_dict(cookies) -> dict:
             k, _, v = s.partition("=")
             out[k.strip()] = v.strip()
     return out
-def _fetch_sold_with_names(cookies: dict) -> tuple:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "X-Requested-With": "XMLHttpRequest",
-    }
-    params = {"query": "", "start": 0, "count": 500, "contextid": 2, "appid": 730}
-    r = requests.get(MYHISTORY_RENDER_URL, params=params, headers=headers, cookies=cookies, verify=False, timeout=TIMEOUT)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code}")
-    data = r.json() if r.text else {}
-    if not data.get("success"):
-        raise RuntimeError(data.get("message", "请求失败"))
+def _load_rate_map() -> dict:
+    try:
+        fx_file = ROOT / "config" / "exchange_rate.json"
+        if fx_file.exists():
+            with open(fx_file, "r", encoding="utf-8") as f:
+                fx = json.load(f)
+            if isinstance(fx, dict) and isinstance(fx.get("rates"), dict):
+                return {k: float(v) for k, v in fx["rates"].items() if isinstance(v, (int, float))}
+    except Exception:
+        pass
+    return {}
+def _currency_code_from_price_text(text: str) -> str:
+    s = text or ""
+    if "¥" in s or "￥" in s or "CNY" in s or "RMB" in s:
+        return "CNY"
+    if "HK" in s and "$" in s:
+        return "HKD"
+    if "₹" in s:
+        return "INR"
+    if "₽" in s:
+        return "RUB"
+    if "€" in s:
+        return "EUR"
+    if "USD" in s or "US$" in s:
+        return "USD"
+    if "$" in s:
+        return "USD"
+    return "CNY"
+def _parse_sold_history_page(data: dict, rate_map: dict) -> tuple:
     row_to_assetid = {}
     for m in HOVER_PATTERN.finditer(data.get("hovers") or ""):
         row_to_assetid[m.group(1)] = str(m.group(4))
@@ -52,37 +69,12 @@ def _fetch_sold_with_names(cookies: dict) -> tuple:
     sold_names = {}
     html = data.get("results_html") or ""
     soup = BeautifulSoup(html, "html.parser")
-    rate_map = {}
-    try:
-        fx_file = ROOT / "config" / "exchange_rate.json"
-        if fx_file.exists():
-            with open(fx_file, "r", encoding="utf-8") as f:
-                fx = json.load(f)
-            if isinstance(fx, dict) and isinstance(fx.get("rates"), dict):
-                rate_map = {k: float(v) for k, v in fx["rates"].items() if isinstance(v, (int, float))}
-    except Exception:
-        rate_map = {}
-    def _currency_code_from_price_text(text: str) -> str:
-        s = text or ""
-        if "¥" in s or "￥" in s or "CNY" in s or "RMB" in s:
-            return "CNY"
-        if "HK" in s and "$" in s:
-            return "HKD"
-        if "₹" in s:
-            return "INR"
-        if "₽" in s:
-            return "RUB"
-        if "€" in s:
-            return "EUR"
-        if "USD" in s or "US$" in s:
-            return "USD"
-        if "$" in s:
-            return "USD"
-        return "CNY"
+    row_count = 0
     for row in soup.find_all("div", class_="market_listing_row"):
         row_id = row.get("id") or ""
         if not row_id.startswith("history_row_"):
             continue
+        row_count += 1
         assetid = row_to_assetid.get(row_id)
         if not assetid:
             fallback = re.search(r"assetid[\"']?\s*[:=]\s*[\"']?(\d+)[\"']?", str(row), re.I)
@@ -134,6 +126,47 @@ def _fetch_sold_with_names(cookies: dict) -> tuple:
                 sold_names[assetid] = name
             except (ValueError, TypeError):
                 pass
+    return sold, sold_names, row_count
+def _history_total_count(data: dict):
+    for key in ("total_count", "totalCount", "total"):
+        try:
+            value = int(data.get(key))
+            if value >= 0:
+                return value
+        except Exception:
+            pass
+    return None
+def _fetch_sold_with_names(cookies: dict) -> tuple:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "X-Requested-With": "XMLHttpRequest",
+    }
+    sold = {}
+    sold_names = {}
+    rate_map = _load_rate_map()
+    start = 0
+    total_count = None
+    for _ in range(HISTORY_MAX_PAGES):
+        params = {"query": "", "start": start, "count": HISTORY_PAGE_SIZE, "contextid": 2, "appid": 730}
+        r = requests.get(MYHISTORY_RENDER_URL, params=params, headers=headers, cookies=cookies, verify=False, timeout=TIMEOUT)
+        if r.status_code != 200:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        data = r.json() if r.text else {}
+        if not data.get("success"):
+            raise RuntimeError(data.get("message", "请求失败"))
+        if total_count is None:
+            total_count = _history_total_count(data)
+        page_sold, page_names, row_count = _parse_sold_history_page(data, rate_map)
+        sold.update(page_sold)
+        sold_names.update(page_names)
+        if row_count <= 0:
+            break
+        start += HISTORY_PAGE_SIZE
+        if total_count is not None and start >= total_count:
+            break
+        if total_count is None and row_count < HISTORY_PAGE_SIZE:
+            break
     return sold, sold_names
 def _norm_name(s: str) -> str:
     s = (s or "").strip()
@@ -142,15 +175,13 @@ def _norm_name(s: str) -> str:
     s = s.replace("(Factory New)", "(FN)").replace("(Minimal Wear)", "(MW)")
     s = s.replace("(Field-Tested)", "(FT)").replace("(Well-Worn)", "(WW)").replace("(Battle-Scarred)", "(BS)")
     return s.strip()
-def _build_merged(inv_items: list, sold_map: dict, sold_names: dict, listing_assetids: set, listing_name_by_assetid: dict) -> tuple:
-    all_assetids = set()
+def _build_merged(inv_items: list, sold_map: dict, sold_names: dict, listing_assetids: set, listing_name_by_assetid: dict) -> dict:
     name_to_candidates = defaultdict(list)
     for it in inv_items or []:
         aid = str(it.get("assetid") or "").strip()
         name = _norm_name(it.get("market_hash_name") or it.get("name"))
         if not aid:
             continue
-        all_assetids.add(aid)
         if name:
             name_to_candidates[name].append({"assetid": aid, "source": "inventory", "sale_price": None})
     for aid, price in (sold_map or {}).items():
@@ -158,18 +189,16 @@ def _build_merged(inv_items: list, sold_map: dict, sold_names: dict, listing_ass
         name = _norm_name((sold_names or {}).get(aid, ""))
         if not aid:
             continue
-        all_assetids.add(aid)
         name_to_candidates[name].append({"assetid": aid, "source": "sold", "sale_price": price})
     for aid in listing_assetids or set():
         aid = str(aid).strip()
         name = _norm_name((listing_name_by_assetid or {}).get(aid, ""))
         if not aid:
             continue
-        all_assetids.add(aid)
         name_to_candidates[name].append({"assetid": aid, "source": "listing", "sale_price": None})
     for name in name_to_candidates:
         name_to_candidates[name].sort(key=lambda x: (0 if x["source"] == "sold" else 1 if x["source"] == "listing" else 2, x["assetid"]))
-    return all_assetids, name_to_candidates
+    return name_to_candidates
 def _record_name_counts(purchases: list) -> dict:
     out = defaultdict(int)
     for p in purchases:
@@ -177,66 +206,89 @@ def _record_name_counts(purchases: list) -> dict:
         if name:
             out[name] += 1
     return out
-def _gather_candidates_for_record_name(record_name: str, name_to_candidates: dict) -> list:
-    exact = list(name_to_candidates.get(record_name) or [])
-    prefix_match = []
-    for list_name, cands in name_to_candidates.items():
-        if list_name == record_name:
-            continue
-        if record_name.startswith(list_name + " "):
-            prefix_match.extend(cands)
-    combined = exact + prefix_match
-    combined.sort(key=lambda x: (0 if x["source"] == "sold" else 1 if x["source"] == "listing" else 2, x["assetid"]))
-    return combined
-def _filter_list_by_record_names(name_to_candidates: dict, record_name_counts: dict) -> dict:
-    filtered = defaultdict(list)
-    for name, need_count in record_name_counts.items():
-        if need_count <= 0:
-            continue
-        candidates = _gather_candidates_for_record_name(name, name_to_candidates)[:need_count]
-        filtered[name] = list(candidates)
-    return filtered
-def _pick_candidate(name_to_candidates: dict, name: str, used_assetids: set) -> dict:
+def _source_order(source: str, order: tuple) -> int:
+    try:
+        return order.index(source)
+    except ValueError:
+        return len(order) + 1
+def _pick_candidate(name_to_candidates: dict, name: str, used_assetids: set, source_order: tuple = ("listing", "inventory", "sold")) -> dict:
     candidates = name_to_candidates.get(name) or []
-    for c in candidates:
+    ordered = sorted(candidates, key=lambda x: (_source_order(x.get("source"), source_order), str(x.get("assetid") or "")))
+    for c in ordered:
         if c["assetid"] not in used_assetids:
             return c
     return None
+def _has_sale_price(purchase: dict) -> bool:
+    try:
+        return purchase.get("sale_price") is not None and float(purchase.get("sale_price") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+def _candidate_priority(candidate: dict) -> int:
+    return {"sold": 0, "listing": 1, "inventory": 2}.get(candidate.get("source"), 9)
+def _candidate_by_assetid(name_to_candidates: dict) -> dict:
+    by_assetid = {}
+    all_candidates = []
+    for candidates in (name_to_candidates or {}).values():
+        all_candidates.extend(candidates or [])
+    for candidate in sorted(all_candidates, key=lambda c: (_candidate_priority(c), str(c.get("assetid") or ""))):
+        aid = str(candidate.get("assetid") or "").strip()
+        if aid and aid not in by_assetid:
+            by_assetid[aid] = candidate
+    return by_assetid
 def _apply_candidate(purchase: dict, c: dict, sold_at: float) -> None:
+    existing_sold_at = purchase.get("sold_at")
     purchase["assetid"] = c["assetid"]
     if c["source"] == "sold":
         purchase["sale_price"] = c["sale_price"]
-        purchase["sold_at"] = sold_at
+        purchase["sold_at"] = existing_sold_at if existing_sold_at is not None else sold_at
         purchase["listing"] = False
         purchase["listing_status"] = None
+        purchase["pending_receipt"] = False
     elif c["source"] == "listing":
         purchase["listing"] = True
         purchase["listing_status"] = None
-        if "sale_price" not in purchase:
-            purchase["sale_price"] = None
-        if "sold_at" not in purchase:
-            purchase["sold_at"] = None
+        purchase["sale_price"] = None
+        purchase["sold_at"] = None
+        purchase["pending_receipt"] = False
     else:
         purchase["listing"] = False
         purchase["listing_status"] = None
-        if "sale_price" not in purchase:
-            purchase["sale_price"] = None
-        if "sold_at" not in purchase:
-            purchase["sold_at"] = None
-def _clear_assetids(purchases: list) -> None:
-    for p in purchases:
-        if "assetid" in p:
-            del p["assetid"]
-        p["listing"] = False
-        p["listing_status"] = None
-        if "sale_price" in p:
-            p["sale_price"] = None
-        if "sold_at" in p:
-            p["sold_at"] = None
-def _refill_from_list(purchases: list, name_to_candidates: dict, sold_at: float) -> int:
+        purchase["sale_price"] = None
+        purchase["sold_at"] = None
+        purchase["pending_receipt"] = False
+def _reset_unresolved_active_record(purchase: dict) -> None:
+    if _has_sale_price(purchase):
+        purchase["listing"] = False
+        purchase["listing_status"] = None
+        purchase["pending_receipt"] = False
+        return
+    if purchase.get("pending_receipt"):
+        return
+    purchase["assetid"] = None
+    purchase["listing"] = False
+    purchase["listing_status"] = "error"
+    purchase["sale_price"] = None
+    purchase["sold_at"] = None
+def _rebuild_records(purchases: list, name_to_candidates: dict, sold_at: float) -> tuple:
+    before_records = [dict(p) for p in purchases]
+    by_assetid = _candidate_by_assetid(name_to_candidates)
+    matched_indexes = set()
     used_assetids = set()
-    filled = 0
-    for p in purchases:
+    matched = 0
+    for i, p in enumerate(purchases):
+        original_assetid = str(p.get("assetid") or "").strip()
+        if not original_assetid:
+            continue
+        c = by_assetid.get(original_assetid)
+        if not c or c["assetid"] in used_assetids:
+            continue
+        _apply_candidate(p, c, sold_at)
+        used_assetids.add(c["assetid"])
+        matched_indexes.add(i)
+        matched += 1
+    for i, p in enumerate(purchases):
+        if i in matched_indexes or _has_sale_price(p) or p.get("pending_receipt"):
+            continue
         name = _norm_name(p.get("name") or "")
         if not name:
             continue
@@ -245,8 +297,28 @@ def _refill_from_list(purchases: list, name_to_candidates: dict, sold_at: float)
             continue
         _apply_candidate(p, c, sold_at)
         used_assetids.add(c["assetid"])
-        filled += 1
-    return filled
+        matched_indexes.add(i)
+        matched += 1
+    preserved_sold = 0
+    unresolved = 0
+    for i, p in enumerate(purchases):
+        if i in matched_indexes:
+            continue
+        if _has_sale_price(p):
+            p["listing"] = False
+            p["listing_status"] = None
+            p["pending_receipt"] = False
+            preserved_sold += 1
+            continue
+        if p.get("pending_receipt"):
+            unresolved += 1
+            continue
+        before_assetid = str(p.get("assetid") or "").strip()
+        _reset_unresolved_active_record(p)
+        if before_assetid or str(p.get("listing_status") or "").lower() == "error":
+            unresolved += 1
+    changed = sum(1 for before, after in zip(before_records, purchases) if before != after)
+    return matched, unresolved, len(purchases), preserved_sold, changed
 def run(log_fn=None):
     if not CREDENTIALS_FILE.exists():
         err = f"未找到 {CREDENTIALS_FILE}"
@@ -265,9 +337,11 @@ def run(log_fn=None):
     from app.state import get_purchases, get_sales, replace_transactions
     purchases = list(get_purchases() or [])
     sales = list(get_sales() or [])
-    _clear_assetids(purchases)
+    repair_total = len(purchases)
     if log_fn:
-        log_fn("已清空所有操作记录的 assetid", "info")
+        log_fn(f"开始全量重建操作记录，共 {repair_total} 条", "info")
+    if repair_total <= 0:
+        return True, {"filled": 0, "missing": 0, "total": 0, "list_by_name": {}}
     inv_items = []
     if log_fn:
         log_fn("正在拉取 CS2 库存…", "info")
@@ -287,8 +361,8 @@ def run(log_fn=None):
             log_fn(f"解析到售出 {len(sold_map)} 条", "info")
     except Exception as e:
         if log_fn:
-            log_fn(f"拉取售出历史异常: {e}", "error")
-        return False, {"error": str(e)[:200]}
+            log_fn(f"拉取售出历史异常: {e}，将只使用库存/在售列表重建，并保留已售记录", "warn")
+        sold_map, sold_names = {}, {}
     if log_fn:
         log_fn("正在拉取出售中列表…", "info")
     listing_assetids = set()
@@ -304,32 +378,40 @@ def run(log_fn=None):
     except Exception as e:
         if log_fn:
             log_fn(f"拉取在售列表异常: {e}", "warn")
-    _, name_to_candidates = _build_merged(inv_items, sold_map, sold_names, listing_assetids, listing_name_by_assetid)
+    name_to_candidates = _build_merged(inv_items, sold_map, sold_names, listing_assetids, listing_name_by_assetid)
     record_name_counts = _record_name_counts(purchases)
-    name_to_candidates = _filter_list_by_record_names(name_to_candidates, record_name_counts)
-    list_total = sum(len(cands) for cands in name_to_candidates.values())
-    record_total = sum(1 for p in purchases if _norm_name(p.get("name") or ""))
+    list_by_name = {name: len(name_to_candidates.get(name) or []) for name in record_name_counts.keys()}
+    list_total = sum(list_by_name.values())
     if log_fn:
-        log_fn(f"按操作记录名称筛选列表后，列表条数 {list_total}，待填记录数 {record_total}", "info")
+        log_fn(f"按操作记录名称统计候选条数 {list_total}，操作记录数 {repair_total}", "info")
     sold_at = time.time()
-    filled = _refill_from_list(purchases, name_to_candidates, sold_at)
-    missing = sum(1 for p in purchases if not p.get("assetid"))
+    filled, missing, repair_total, preserved_sold, changed = _rebuild_records(purchases, name_to_candidates, sold_at)
     if log_fn:
-        log_fn(f"按名称从列表重新填入 {filled} 条，状态已更新（持有中/已出售/出售中）", "info")
+        log_fn(f"全量重建确认 {filled} 条，保留已售 {preserved_sold} 条，变更 {changed} 条", "info")
         if missing:
-            log_fn(f"未填入 {missing} 条（名称在列表中无匹配或该名称列表数量不足）", "warn")
-    replace_transactions(purchases, sales)
-    if log_fn:
-        log_fn(f"已将修复后的交易记录保存到数据库", "info")
+            log_fn(f"仍有 {missing} 条记录未能从库存/在售/售出历史确认，已标记为待处理或保留待收货状态", "warn")
+    if changed > 0:
+        replace_transactions(purchases, sales)
+        if log_fn:
+            log_fn("已将重建后的交易记录保存到数据库", "info")
+    elif log_fn:
+        log_fn("重建结果与当前数据库一致，数据库未改动", "info")
     if log_fn:
         log_fn("--- 列表（仅操作记录中有的名称）各饰品数量 ---", "info")
         total_items = 0
-        for name in sorted(name_to_candidates.keys()):
-            cnt = len(name_to_candidates[name])
+        for name in sorted(list_by_name.keys()):
+            cnt = list_by_name[name]
             total_items += cnt
             log_fn(f"  {name}: {cnt} 个", "info")
-        log_fn(f"列表合计: {total_items} 个，不同饰品: {len(name_to_candidates)} 种", "info")
-    return True, {"filled": filled, "missing": missing, "total": len(purchases), "list_by_name": {k: len(v) for k, v in name_to_candidates.items()}}
+        log_fn(f"列表合计: {total_items} 个，不同饰品: {len(list_by_name)} 种", "info")
+    return True, {
+        "filled": filled,
+        "missing": missing,
+        "total": repair_total,
+        "preserved_sold": preserved_sold,
+        "changed": changed,
+        "list_by_name": list_by_name,
+    }
 def main():
     def log(msg, level="info"):
         print(f"[{level}] {msg}")
@@ -340,8 +422,8 @@ def main():
     filled = result.get("filled", 0)
     missing = result.get("missing", 0)
     total = result.get("total", 0)
-    print(f"完成. 填入 {filled}/{total} 条，状态已更新（持有中/已出售/出售中）. 已保存.")
+    print(f"完成. 重建确认 {filled}/{total} 条，状态已更新（持有中/已出售/出售中）.")
     if missing:
-        print(f"未填入 {missing} 条，请检查名称是否与列表一致或列表是否拉全（库存/售出500条/在售）. ")
+        print(f"仍有 {missing} 条未解决，请检查名称是否与列表一致或 Steam 列表是否拉全（库存/售出历史/在售）. ")
 if __name__ == "__main__":
     main()

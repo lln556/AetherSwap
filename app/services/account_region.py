@@ -3,6 +3,7 @@ from typing import Optional
 
 from app.accounts import get_account, get_current_account, update_account
 from app.config_loader import get_steam_credentials
+from app.services.steam_auth import steam_id_from_cookie_str
 
 _SETTLEMENT_CURRENCY_REGION = {
     "USD": "US",
@@ -86,6 +87,11 @@ def refresh_account_region_currency(
                     "checked_at": checked_at,
                 }
             raise RuntimeError("缺少有效 Steam Cookie，无法确认结算币种")
+        expected_steam_id = str(acc.get("steam_id") or "").strip()
+        saved_steam_id = str(get_steam_credentials().get("steam_id") or "").strip()
+        actual_steam_id = steam_id_from_cookie_str(cookies) or saved_steam_id
+        if expected_steam_id and actual_steam_id and expected_steam_id != actual_steam_id:
+            raise RuntimeError("当前账号与已保存的 Steam Cookie 不一致，请重新验证当前账号或重新登录 Steam")
 
         from app.gift_engine import get_wallet_balance
 

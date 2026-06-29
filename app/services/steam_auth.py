@@ -279,16 +279,25 @@ def _do_steampy_login(username: str, password: str, steam_guard_dict: Optional[d
         return False, network_error, {}
     finally:
         _req.Session.request = _old_request
+def steam_id_from_cookie_str(cookie_str: str) -> str:
+    slc = ""
+    for part in (cookie_str or "").split(";"):
+        if "=" not in part:
+            continue
+        key, _, value = part.partition("=")
+        if key.strip().lower() == "steamloginsecure":
+            slc = value.strip()
+            break
+    if "%7C%7C" in slc:
+        return slc.split("%7C%7C", 1)[0].strip()
+    elif "||" in slc:
+        return slc.split("||", 1)[0].strip()
+    return slc.strip() if slc.strip().isdigit() else ""
 def _extract_creds_from_cookie_dict(cookie_dict: dict) -> Tuple[str, str, str]:
     """From a cookie dict return (cookie_str, session_id, steam_id)."""
     cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
     session_id = cookie_dict.get("sessionid", "")
-    steam_id = ""
-    slc = cookie_dict.get("steamLoginSecure", "")
-    if "%7C%7C" in slc:
-        steam_id = slc.split("%7C%7C")[0].strip()
-    elif "||" in slc:
-        steam_id = slc.split("||")[0].strip()
+    steam_id = steam_id_from_cookie_str(cookie_str)
     return cookie_str, session_id, steam_id
 _auto_relogin_lock = threading.Lock()
 _auto_relogin_last_success = 0.0
@@ -319,12 +328,30 @@ def _try_steam_auto_relogin_impl() -> tuple:
     existing = get_steam_credentials()
     existing_cookies = existing.get("cookies") or existing.get("cookie") or ""
     if existing_cookies and "steamLoginSecure" in existing_cookies:
-        log("auto_relogin: 检测到现有 steamLoginSecure cookie，用 HTTP API 验证是否仍有效…", "info", category="steam")
-        if _verify_steam_cookies_valid(existing_cookies):
-            log("auto_relogin: HTTP 验证通过，Cookie 仍有效，无需重新登录", "info", category="steam")
-            _auto_relogin_last_success = time.time()
-            return True, "auto_ok", "Cookie 验证有效，无需重新登录"
-        log("auto_relogin: HTTP 验证显示现有 cookie 已过期，继续密码登录", "info", category="steam")
+        expected_steam_id = str(cur.get("steam_id") or "").strip()
+        existing_steam_id = str(existing.get("steam_id") or steam_id_from_cookie_str(existing_cookies) or "").strip()
+        can_reuse_existing = True
+        if expected_steam_id and existing_steam_id and expected_steam_id != existing_steam_id:
+            can_reuse_existing = False
+            log(
+                "auto_relogin: 现有 Steam Cookie 属于其他账号，跳过复用并重新登录当前账号",
+                "info",
+                category="steam",
+            )
+        elif existing_steam_id and not expected_steam_id:
+            can_reuse_existing = False
+            log(
+                "auto_relogin: 当前账号尚未绑定 steam_id，跳过复用旧 Cookie 并重新登录以绑定账号",
+                "info",
+                category="steam",
+            )
+        if can_reuse_existing:
+            log("auto_relogin: 检测到现有 steamLoginSecure cookie，用 HTTP API 验证是否仍有效…", "info", category="steam")
+            if _verify_steam_cookies_valid(existing_cookies):
+                log("auto_relogin: HTTP 验证通过，Cookie 仍有效，无需重新登录", "info", category="steam")
+                _auto_relogin_last_success = time.time()
+                return True, "auto_ok", "Cookie 验证有效，无需重新登录"
+            log("auto_relogin: HTTP 验证显示现有 cookie 已过期，继续密码登录", "info", category="steam")
     log("auto_relogin: 开始自动登录…", "info", category="steam")
     cfg = load_app_config_validated()
     steam_guard_dict = _build_steam_guard_dict(cur, cfg)

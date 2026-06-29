@@ -297,6 +297,8 @@ def api_repair_error_records():
             "filled": result.get("filled", 0),
             "missing": result.get("missing", 0),
             "total": result.get("total", 0),
+            "preserved_sold": result.get("preserved_sold", 0),
+            "changed": result.get("changed", 0),
         }
     except Exception as e:
         log(str(e), "error", category="repair")

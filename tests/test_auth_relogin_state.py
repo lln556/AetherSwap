@@ -129,3 +129,54 @@ def test_browser_launch_error_is_user_friendly():
     assert "Buff" in message
     assert "完整错误见调试日志" in message
     assert "Browser logs" not in message
+
+
+def test_steam_auto_relogin_does_not_reuse_cookie_from_different_account(monkeypatch):
+    from app.services import steam_auth
+
+    calls = []
+    monkeypatch.setattr(
+        steam_auth,
+        "get_current_account",
+        lambda: {"id": "acc-new", "username": "new-user", "password": "pw", "steam_id": "222"},
+    )
+    monkeypatch.setattr(steam_auth, "set_current", lambda account_id: calls.append(("set_current", account_id)))
+    monkeypatch.setattr(
+        steam_auth,
+        "get_steam_credentials",
+        lambda: {
+            "cookies": "sessionid=old; steamLoginSecure=111%7C%7Cold-token",
+            "steam_id": "111",
+        },
+    )
+    monkeypatch.setattr(
+        steam_auth,
+        "_verify_steam_cookies_valid",
+        lambda cookies: (_ for _ in ()).throw(AssertionError("mismatched cookie must not be reused")),
+    )
+    monkeypatch.setattr(
+        steam_auth,
+        "_do_steampy_login",
+        lambda username, password, guard: (
+            True,
+            "",
+            {"sessionid": "new-session", "steamLoginSecure": "222%7C%7Cnew-token"},
+        ),
+    )
+    monkeypatch.setattr(
+        steam_auth,
+        "update_steam_creds",
+        lambda cookie, session_id, steam_id=None: calls.append(("update_creds", cookie, session_id, steam_id)),
+    )
+    monkeypatch.setattr(steam_auth, "fetch_steam_profile_via_api", lambda steam_id, cookies: ("New User", "avatar"))
+    monkeypatch.setattr(
+        steam_auth,
+        "update_account",
+        lambda account_id, **kwargs: calls.append(("update_account", account_id, kwargs)),
+    )
+    monkeypatch.setattr(steam_auth, "load_app_config_validated", lambda: {})
+
+    result = steam_auth._try_steam_auto_relogin_impl()
+
+    assert result[0] is True
+    assert any(call[0] == "update_creds" and "222%7C%7Cnew-token" in call[1] for call in calls)

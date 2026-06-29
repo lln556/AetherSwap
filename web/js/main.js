@@ -648,8 +648,10 @@ function bindEvents() {
         const filled = r.filled ?? 0;
         const missing = r.missing ?? 0;
         const total = r.total ?? 0;
-        if (missing === 0) toast("紧急修复成功", `已填入 ${filled}/${total} 条，状态已更新`);
-        else toast("紧急修复完成", `填入 ${filled}/${total} 条，未填入 ${missing} 条`);
+        const changed = r.changed ?? 0;
+        if (total === 0) toast("无需紧急修复", "没有操作记录可重建");
+        else if (missing === 0) toast("紧急修复成功", `已确认 ${filled}/${total} 条，写入 ${changed} 条变更`);
+        else toast("紧急修复完成", `已确认 ${filled}/${total} 条，仍有 ${missing} 条待处理`);
       } else {
         toast("紧急修复失败", r.error || "接口未返回 error 字段");
       }

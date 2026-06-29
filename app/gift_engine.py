@@ -214,7 +214,8 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                 wallet_country = _normalize_country_code(wallet.get("wallet_country"))
                 currency_info = _CURRENCY_MAP.get(currency_id)
                 if not currency_info:
-                    unknown_currency_id = currency_id
+                    if currency_id > 0:
+                        unknown_currency_id = currency_id
                     raise RuntimeError(f"未知 Steam 钱包币种 ID: {currency_id}")
                 code, symbol = currency_info
                 display = (
@@ -252,10 +253,11 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                     or data.get("wallet_country")
                     or data.get("country_code")
                 )
-                if total_raw > 0 and currency_id > 0:
+                if currency_id > 0:
                     currency_info = _CURRENCY_MAP.get(currency_id)
                     if not currency_info:
-                        unknown_currency_id = currency_id
+                        if currency_id > 0:
+                            unknown_currency_id = currency_id
                         raise RuntimeError(f"未知 Steam 钱包币种 ID: {currency_id}")
                     code, symbol = currency_info
                     display = (
