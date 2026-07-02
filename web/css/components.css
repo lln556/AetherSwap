@@ -118,7 +118,8 @@ body {
   cursor: pointer;
   transition: background 0.25s var(--ease-spring), color 0.25s var(--ease-spring), box-shadow 0.25s var(--ease-spring), border-color 0.25s var(--ease-spring);
   position: relative;
-  overflow: hidden;
+  isolation: isolate;
+  overflow: visible;
 }
 
 .nav-item::before {
@@ -132,6 +133,22 @@ body {
   border-radius: 0 3px 3px 0;
   background: var(--gradient-accent);
   transition: transform 0.3s var(--ease-spring);
+  z-index: 1;
+}
+
+.nav-item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  border-radius: inherit;
+  background: transparent;
+  box-shadow: none;
+  opacity: 0;
+  transform: translateX(0);
+  transition: opacity 0.25s var(--ease-spring), transform 0.25s var(--ease-spring), background 0.25s var(--ease-spring), box-shadow 0.25s var(--ease-spring), border-color 0.25s var(--ease-spring);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .nav-item .icon {
@@ -140,15 +157,24 @@ body {
   opacity: 0.7;
   transition: opacity 0.2s, transform 0.25s var(--ease-spring);
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
 }
 
 .nav-item span {
   transition: transform 0.25s var(--ease-spring);
+  position: relative;
+  z-index: 2;
 }
 
 .nav-item:hover {
-  background: var(--primary-light);
   color: var(--text-main);
+}
+
+.nav-item:hover::after {
+  background: var(--primary-light);
+  opacity: 1;
+  transform: translateX(4px);
 }
 
 .nav-item:hover>.icon,
@@ -160,22 +186,43 @@ body {
 
 .nav-item:hover>.icon {
   opacity: 1;
+  animation: navIconBounceShift 0.4s var(--ease-spring);
 }
 
 .nav-item.active {
-  background: var(--bg-surface);
   color: var(--primary);
   font-weight: 600;
-  box-shadow: var(--shadow-sm);
-  border: 1px solid var(--border-color);
 }
 
 .nav-item.active::before {
-  transform: translateY(-50%) scaleY(1);
+  transform: translateX(4px) translateY(-50%) scaleY(1);
+}
+
+.nav-item.active::after {
+  background: var(--bg-surface);
+  border-color: var(--border-color);
+  box-shadow: var(--shadow-sm);
+  opacity: 1;
+  transform: translateX(4px);
 }
 
 .nav-item.active .icon {
   opacity: 1;
+}
+
+@keyframes navIconBounceShift {
+  0% {
+    transform: translateX(4px) scale(1);
+  }
+  40% {
+    transform: translateX(4px) scale(1.2);
+  }
+  70% {
+    transform: translateX(4px) scale(0.95);
+  }
+  100% {
+    transform: translateX(4px) scale(1);
+  }
 }
 
 .theme-toggle {
