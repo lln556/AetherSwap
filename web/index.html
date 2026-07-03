@@ -245,10 +245,12 @@
   <div class="app-container">
     <aside class="sidebar">
       <div class="brand">
-        <div class="logo-box">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
-          </svg>
+        <div class="logo-hitbox">
+          <div class="logo-box">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"></path>
+            </svg>
+          </div>
         </div>
         <div class="brand-info">
           <div class="brand-name">AetherSwap</div>
@@ -456,12 +458,14 @@
           <div class="control-actions">
             <button id="btn-quit" class="btn btn-danger-outline" style="margin-right: 12px;">退出程序</button>
             <button id="btn-stop" class="btn btn-secondary">停止运行</button>
-            <button id="btn-start" class="btn btn-primary">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                <polygon points="5 3 19 12 5 21 5 3"></polygon>
-              </svg>
-              启动任务
-            </button>
+            <span class="btn-hover-anchor">
+              <button id="btn-start" class="btn btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                启动任务
+              </button>
+            </span>
           </div>
         </div>
 
