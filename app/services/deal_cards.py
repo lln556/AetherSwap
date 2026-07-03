@@ -70,6 +70,29 @@ def _load_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
                 pass
     return ImageFont.load_default()
 
+def _load_currency_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+    candidates = []
+    if bold:
+        candidates.extend([
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/segoeuib.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+        ])
+    candidates.extend([
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+    ])
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size, index=0)
+            except Exception:
+                pass
+    return _load_font(size, bold=bold)
+
 def _download_banner(url: str) -> Optional[Image.Image]:
     if not url:
         return None
@@ -128,16 +151,41 @@ def draw_rounded_rect(canvas_im: Image.Image, xy, radius: int, fill, outline=Non
     draw_ov = ImageDraw.Draw(overlay)
     
     try:
-        draw_ov.rounded_rectangle((0, 0, w, h), radius=radius, fill=fill, outline=outline, width=width)
+        draw_ov.rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=fill, outline=outline, width=width)
     except AttributeError:
-        draw_ov.rectangle((0, 0, w, h), fill=fill, outline=outline, width=width)
+        draw_ov.rectangle((0, 0, w - 1, h - 1), fill=fill, outline=outline, width=width)
         
     canvas_im.alpha_composite(overlay, (int(x0), int(y0)))
 
+def draw_antialiased_circle(canvas_im: Image.Image, center, radius: int, fill, scale: int = 4):
+    cx, cy = center
+    pad = 2
+    size = (radius * 2 + pad * 2) * scale
+    overlay = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw_hi = ImageDraw.Draw(overlay)
+    bbox = (
+        pad * scale,
+        pad * scale,
+        (pad + radius * 2) * scale - 1,
+        (pad + radius * 2) * scale - 1,
+    )
+    draw_hi.ellipse(bbox, fill=fill)
+    overlay = overlay.resize((size // scale, size // scale), Image.LANCZOS)
+    canvas_im.alpha_composite(overlay, (int(cx - radius - pad), int(cy - radius - pad)))
+
+def get_text_bbox(draw, text, font):
+    if hasattr(draw, "textbbox"):
+        return draw.textbbox((0, 0), text, font=font)
+    if hasattr(draw, "textsize"):
+        w, h = draw.textsize(text, font=font)
+    else:
+        w, h = len(str(text)) * font.size * 0.6, font.size
+    return (0, 0, w, h)
+
 def get_text_size(draw, text, font):
     if hasattr(draw, "textbbox"):
-        bbox = draw.textbbox((0, 0), text, font=font)
-        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+        left, top, right, bottom = get_text_bbox(draw, text, font)
+        return right - left, bottom - top
     elif hasattr(draw, "textsize"):
         return draw.textsize(text, font=font)
     else:
@@ -145,14 +193,18 @@ def get_text_size(draw, text, font):
 
 def draw_text_middle(draw, xy, text, font, fill):
     x, y = xy
-    w, h = get_text_size(draw, text, font)
-    draw.text((x - w / 2, y - h / 2 - 4), text, font=font, fill=fill)
+    left, top, right, bottom = get_text_bbox(draw, text, font)
+    w = right - left
+    h = bottom - top
+    draw.text((x - w / 2 - left, y - h / 2 - top), text, font=font, fill=fill)
     return w, h
 
 def draw_text_left(draw, xy, text, font, fill):
     x, y = xy
-    w, h = get_text_size(draw, text, font)
-    draw.text((x, y - h / 2 - 4), text, font=font, fill=fill)
+    left, top, right, bottom = get_text_bbox(draw, text, font)
+    w = right - left
+    h = bottom - top
+    draw.text((x - left, y - h / 2 - top), text, font=font, fill=fill)
     return w, h
 
 def parse_price_to_rmb(price_str: str) -> float:
@@ -199,10 +251,15 @@ def parse_price_to_rmb(price_str: str) -> float:
         return val * EXRATES.get("CLP", 0.007)
     if "TRY" in s or "TL" in s:
         return val * EXRATES.get("TRY", 0.22)
-    if "P" in price_str and "PHP" not in price_str and "Rp" not in price_str:
+    if "₱" in price_str or "PHP" in s.upper() or ("P" in price_str and "Rp" not in price_str):
         return val * EXRATES.get("PHP", 0.12)
         
     return val 
+
+def format_original_price(region_code: str, price_text: str) -> str:
+    if region_code == "ph":
+        return re.sub(r"^(?:PHP\s*|P\s*)(?=\d)", "₱", price_text.strip(), flags=re.IGNORECASE)
+    return price_text
 
 def wrap_text(draw, text, font, max_width):
     if not text:
@@ -338,7 +395,7 @@ def generate_card(game: SteamDealGame, out_path: str) -> bool:
 
     f_row_reg = _load_font(34, bold=True)     
     f_row_prmb = _load_font(42, bold=True)    
-    f_row_porg = _load_font(26, bold=True)   
+    f_row_porg = _load_currency_font(26, bold=True)
     f_row_save = _load_font(22, bold=True)    
 
     cn_price_str = game.price_cn or ""
@@ -386,16 +443,17 @@ def generate_card(game: SteamDealGame, out_path: str) -> bool:
         draw_rounded_rect(canvas, (PANEL_X, current_y, PANEL_X + PANEL_W, current_y + ROW_H), 
                           radius=16, fill=(15, 20, 25, 180), outline=(255, 255, 255, 30), width=1)
         
-        circ_x = PANEL_X + 24
+        dot_cx = PANEL_X + 30
+        rank_x = PANEL_X + 43
         
         if idx == 0:     dot_clr = (171, 235, 45, 255) 
         elif idx == 1:   dot_clr = (56, 189, 248, 255) 
         elif idx == 2:   dot_clr = (192, 132, 252, 255)
         else:            dot_clr = (156, 163, 175, 255)
         
-        draw.ellipse((circ_x, row_cy - 6, circ_x + 12, row_cy + 6), fill=dot_clr)
+        draw_antialiased_circle(canvas, (dot_cx, row_cy), 6, dot_clr)
         f_rank = _load_font(20, bold=True)
-        draw_text_middle(draw, (circ_x + 30, row_cy), f"#{idx+1}", f_rank, fill=dot_clr)
+        draw_text_left(draw, (rank_x, row_cy), f"#{idx+1}", f_rank, fill=dot_clr)
 
         flag_im = _get_flag(reg["code"])
         if flag_im:
@@ -428,7 +486,7 @@ def generate_card(game: SteamDealGame, out_path: str) -> bool:
             draw_text_middle(draw, (obj_x - bw_s/2, row_cy), save_txt, f_row_save, fill=(74, 222, 128, 255)) 
             obj_x -= bw_s + 24
             
-        orig_str = reg["orig"]
+        orig_str = format_original_price(reg["code"], reg["orig"])
         ow, _ = get_text_size(draw, orig_str, f_row_porg)
         
         orig_color = (74, 222, 128, 255) if "%" in orig_str else (160, 170, 180, 255)
