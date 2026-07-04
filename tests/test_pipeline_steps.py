@@ -1,10 +1,17 @@
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.pipeline_steps import _compute_sell_pressure_from_orders, filter_iflow_rows
+from app.pipeline_steps import (
+    _adjust_ref_price_for_daily_high,
+    _compute_sell_pressure_from_orders,
+    filter_iflow_rows,
+)
 
 
 def _行(name="Test Item", min_price="10.00", platform="https://buff.163.com/goods/12345", **kw):
@@ -118,3 +125,50 @@ def test_过滤_goods_id从url解析():
     rows = [_行(platform="https://buff.163.com/goods/98765")]
     result = filter_iflow_rows(rows, _基础配置)
     assert result[0]["goods_id"] == 98765
+
+
+def _steam_history_rows(prices):
+    now = datetime.now()
+    return [
+        [(now - timedelta(hours=i + 1)).strftime("%b %d %Y %H"), price, "1"]
+        for i, price in enumerate(prices)
+    ]
+
+
+def test_daily_high_adjustment_uses_trimmed_average(monkeypatch):
+    history = _steam_history_rows([3.50, 3.54, 3.60, 3.65, 3.72, 11.45])
+
+    class DummySteamClient:
+        def fetch_history(self, market_hash_name, app_id=730, return_currency=False):
+            return {"history": history, "currency": "CNY"}
+
+    monkeypatch.setattr("app.pipeline_steps.SteamClient", DummySteamClient)
+
+    adjusted = _adjust_ref_price_for_daily_high(
+        "Test Item",
+        3.69,
+        {"pipeline": {"usd_to_cny": 7.2}},
+        lambda _msg, _level: None,
+    )
+
+    assert adjusted == pytest.approx(3.65875)
+    assert adjusted < 3.69
+
+
+def test_daily_high_adjustment_never_raises_reference_price(monkeypatch):
+    history = _steam_history_rows([1.0, 2.0, 8.0, 10.0, 10.0, 20.0])
+
+    class DummySteamClient:
+        def fetch_history(self, market_hash_name, app_id=730, return_currency=False):
+            return {"history": history, "currency": "CNY"}
+
+    monkeypatch.setattr("app.pipeline_steps.SteamClient", DummySteamClient)
+
+    adjusted = _adjust_ref_price_for_daily_high(
+        "Test Item",
+        7.0,
+        {"pipeline": {"usd_to_cny": 7.2}},
+        lambda _msg, _level: None,
+    )
+
+    assert adjusted == 7.0

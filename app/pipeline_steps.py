@@ -155,22 +155,25 @@ def _adjust_ref_price_for_daily_high(
     if len(prices_cny) < 2:
         return current_ref_price
     sorted_prices = sorted(prices_cny)
-    if len(sorted_prices) >= 3:
-        trimmed_high = sorted_prices[-2]
-        trimmed_low = sorted_prices[1]
-    else:
-        trimmed_high = sorted_prices[-1]
-        trimmed_low = sorted_prices[0]
-    daily_avg = statistics.mean(prices_cny)
+    trimmed_prices = sorted_prices[1:-1] if len(sorted_prices) >= 3 else sorted_prices
+    if not trimmed_prices:
+        return current_ref_price
+    trimmed_low = trimmed_prices[0]
+    trimmed_high = trimmed_prices[-1]
+    daily_avg = statistics.mean(trimmed_prices)
     if trimmed_high <= trimmed_low:
         return current_ref_price
     daily_position = (current_ref_price - trimmed_low) / (trimmed_high - trimmed_low)
     if daily_position <= 0.6:
         return current_ref_price
-    conservative_price = (current_ref_price + daily_avg) / 2
+    candidate_price = (current_ref_price + daily_avg) / 2
+    conservative_price = min(current_ref_price, candidate_price)
     if log_fn:
         log_fn(f"[Buff]   → 检测到 Steam 价格处于日内高位 (位置: {daily_position:.2f})，存在虚高风险", "warn")
-        log_fn(f"[Buff]   → 降级参考价: {current_ref_price:.2f} -> {conservative_price:.2f} (当前价与均价折中)", "info")
+        if conservative_price < current_ref_price:
+            log_fn(f"[Buff]   → 降级参考价: {current_ref_price:.2f} -> {conservative_price:.2f} (当前价与去极值均价折中)", "info")
+        else:
+            log_fn(f"[Buff]   → 降级参考价保持: {current_ref_price:.2f} (去极值均价不低于当前价，避免降级抬价)", "info")
     return conservative_price
 def _compute_sell_pressure_from_orders(
     sell_orders: list,
