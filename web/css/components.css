@@ -42,6 +42,15 @@ body {
   padding: 4px 12px;
 }
 
+.logo-hitbox {
+  width: 44px;
+  height: 44px;
+  margin: -4px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
 .logo-box {
   width: 36px;
   height: 36px;
@@ -53,13 +62,22 @@ body {
   justify-content: center;
   color: var(--primary-text);
   box-shadow: var(--shadow-sm);
-  flex-shrink: 0;
+  transform-origin: center center;
+  transform: translateZ(0) rotate(0deg) scale(1);
+  backface-visibility: hidden;
+  will-change: transform;
   transition: transform 0.4s var(--ease-spring), box-shadow 0.3s;
 }
 
-.logo-box:hover {
-  transform: rotate(8deg) scale(1.08);
+.logo-hitbox:hover .logo-box {
+  transform: translateZ(0) rotate(8deg) scale(1.08);
   box-shadow: var(--shadow-md);
+}
+
+.logo-box svg {
+  display: block;
+  width: 20px;
+  height: 20px;
 }
 
 .brand-name {
@@ -91,7 +109,7 @@ body {
   gap: 12px;
   padding: 10px 14px;
   border-radius: var(--radius-sm);
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
@@ -100,7 +118,8 @@ body {
   cursor: pointer;
   transition: all 0.25s var(--ease-spring);
   position: relative;
-  overflow: hidden;
+  isolation: isolate;
+  overflow: visible;
 }
 
 .nav-item::before {
@@ -109,25 +128,61 @@ body {
   left: 0;
   top: 50%;
   transform: translateY(-50%) scaleY(0);
+  translate: 0 0;
   width: 3px;
   height: 60%;
   border-radius: 0 3px 3px 0;
   background: var(--gradient-accent);
-  transition: transform 0.3s var(--ease-spring);
+  transition: transform 0.3s var(--ease-spring), translate 0.25s var(--ease-spring);
+  z-index: 1;
+}
+
+.nav-item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid transparent;
+  border-radius: inherit;
+  background: transparent;
+  box-shadow: none;
+  translate: 0 0;
+  transition: all 0.25s var(--ease-spring);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .nav-item .icon {
   width: 18px;
   height: 18px;
   opacity: 0.7;
-  transition: opacity 0.2s;
+  translate: 0 0;
+  transition: opacity 0.2s, translate 0.25s var(--ease-spring);
   flex-shrink: 0;
+  position: relative;
+  z-index: 2;
+}
+
+.nav-item span {
+  translate: 0 0;
+  transition: translate 0.25s var(--ease-spring);
+  position: relative;
+  z-index: 2;
 }
 
 .nav-item:hover {
-  background: var(--primary-light);
   color: var(--text-main);
-  transform: translateX(4px);
+}
+
+.nav-item:hover::after {
+  background: var(--primary-light);
+  translate: 4px 0;
+}
+
+.nav-item:hover>.icon,
+.nav-item:hover>span,
+.nav-item.active>.icon,
+.nav-item.active>span {
+  translate: 4px 0;
 }
 
 .nav-item:hover .icon {
@@ -139,16 +194,20 @@ body {
 }
 
 .nav-item.active {
-  background: var(--bg-surface);
   color: var(--primary);
   font-weight: 600;
-  box-shadow: var(--shadow-sm);
-  border: 1px solid var(--border-color);
-  transform: translateX(4px);
 }
 
 .nav-item.active::before {
   transform: translateY(-50%) scaleY(1);
+  translate: 4px 0;
+}
+
+.nav-item.active::after {
+  background: var(--bg-surface);
+  border-color: var(--border-color);
+  box-shadow: var(--shadow-sm);
+  translate: 4px 0;
 }
 
 .nav-item.active .icon {
@@ -531,7 +590,24 @@ body {
 .btn-primary:hover {
   background: var(--primary-hover);
   box-shadow: 0 4px 16px var(--glow-primary), var(--primary-shadow);
+}
+
+.btn-hover-anchor {
+  display: inline-flex;
+}
+
+.btn-hover-anchor:hover .btn-primary {
+  background: var(--primary-hover);
+  box-shadow: 0 4px 16px var(--glow-primary), var(--primary-shadow);
   transform: translateY(-2px);
+}
+
+.btn-hover-anchor:hover .btn-primary::after {
+  opacity: 1;
+}
+
+.btn-hover-anchor:hover .btn-primary:active {
+  transform: translateY(0) scale(0.96);
 }
 
 .btn-primary svg {
@@ -541,6 +617,10 @@ body {
 }
 
 .btn-primary:hover svg {
+  transform: scale(1.1);
+}
+
+.btn-hover-anchor:hover .btn-primary svg {
   transform: scale(1.1);
 }
 
