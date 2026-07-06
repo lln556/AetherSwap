@@ -43,11 +43,18 @@ class TransactionUpdateBody(BaseModel):
     assetid: Optional[str] = None
     listing: Optional[bool] = None
 def _name_from_steam_link(steam_link: str) -> Optional[str]:
-    from steam.client import market_hash_name_from_listing_url
+    from steam.client import resolve_market_hash_name_from_listing_url
+    from utils.proxy_manager import get_proxy_manager
     url = (steam_link or "").strip()
     if not url:
         return None
-    return market_hash_name_from_listing_url(url)
+    pm = get_proxy_manager()
+    for attempt in range(3):
+        proxies = pm.get_proxies_for_request(failed=(attempt > 0))
+        name = resolve_market_hash_name_from_listing_url(url, proxies=proxies)
+        if name:
+            return name
+    return None
 def _get_steam_smart_price_cny(session, market_hash_name: str, app_id: int = 730) -> Optional[float]:
     return get_steam_smart_price_cny(session, market_hash_name, app_id=app_id)
 def _fetch_steam_lowest_cny(market_hash_name: str, app_id: int = 730) -> Optional[float]:

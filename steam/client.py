@@ -1,7 +1,8 @@
 import json
 import os
-from typing import Optional, Union
-from urllib.parse import quote, unquote, urlparse
+import re
+from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import parse_qs, quote, unquote, urlparse
 import requests
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -13,6 +14,144 @@ DEFAULT_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Referer": "https://steamcommunity.com/market/",
 }
+_LISTING_URL_RE = re.compile(
+    r"https?://steamcommunity\.com/market/listings/[^\s\])]+",
+    re.I,
+)
+_MARKET_GROUP_ID_RE = re.compile(r"^G[A-Za-z0-9]{8,}$")
+_SSR_RENDER_CONTEXT_RE = re.compile(
+    r'window\.SSR\.renderContext=JSON\.parse\("((?:\\.|[^"\\])*)"\);',
+    re.S,
+)
+
+
+def _coerce_listing_url(value: str) -> str:
+    raw = (value or "").strip()
+    if raw.lower().startswith(("http://", "https://")):
+        return raw
+    m = _LISTING_URL_RE.search(raw)
+    return m.group(0) if m else raw
+
+
+def _parse_listing_url(url: str) -> Optional[Tuple[int, str]]:
+    url = _coerce_listing_url(url)
+    if not url:
+        return None
+    parsed = urlparse(url)
+    host = (parsed.netloc or "").lower()
+    if host not in {"steamcommunity.com", "www.steamcommunity.com"}:
+        return None
+    parts = [p for p in (parsed.path or "").split("/") if p]
+    if len(parts) < 4 or parts[0] != "market" or parts[1] != "listings":
+        return None
+    try:
+        app_id = int(parts[2])
+    except (TypeError, ValueError):
+        return None
+    name = unquote(parts[3]).strip()
+    return (app_id, name) if name else None
+
+
+def _is_market_group_id(value: str) -> bool:
+    return bool(_MARKET_GROUP_ID_RE.fullmatch((value or "").strip()))
+
+
+def _extract_ssr_render_context(html: str) -> Optional[dict]:
+    m = _SSR_RENDER_CONTEXT_RE.search(html or "")
+    if not m:
+        return None
+    try:
+        return json.loads(json.loads(f'"{m.group(1)}"'))
+    except Exception:
+        return None
+
+
+def _extract_ssr_queries(html: str) -> List[dict]:
+    ctx = _extract_ssr_render_context(html)
+    if not ctx:
+        return []
+    try:
+        query_data = json.loads(ctx.get("queryData") or "{}")
+    except Exception:
+        return []
+    queries = query_data.get("queries") if isinstance(query_data, dict) else None
+    return queries if isinstance(queries, list) else []
+
+
+def _extract_market_query_name(query_key: Any, kind: str) -> str:
+    if (
+        isinstance(query_key, list)
+        and len(query_key) >= 4
+        and query_key[0] == "market"
+        and query_key[1] == kind
+        and isinstance(query_key[3], str)
+    ):
+        return query_key[3].strip()
+    return ""
+
+
+def _normalize_market_tag(value: Any) -> str:
+    tag = str(value or "").strip()
+    if tag.startswith("tag_"):
+        tag = tag[4:]
+    return tag.casefold()
+
+
+def _extract_category_filters(url: str) -> List[set]:
+    parsed = urlparse(_coerce_listing_url(url))
+    groups: List[set] = []
+    for key, values in parse_qs(parsed.query, keep_blank_values=False).items():
+        if not key.startswith("category_"):
+            continue
+        tags = {_normalize_market_tag(v) for v in values if _normalize_market_tag(v)}
+        if tags:
+            groups.append(tags)
+    return groups
+
+
+def _description_matches_filters(data: Dict[str, Any], filter_groups: List[set]) -> bool:
+    if not filter_groups:
+        return False
+    tags = {
+        _normalize_market_tag(row.get("internal_name"))
+        for row in data.get("tags") or []
+        if isinstance(row, dict)
+    }
+    return bool(tags) and all(tags.intersection(group) for group in filter_groups)
+
+
+def _description_market_hash_name(data: Any) -> str:
+    if not isinstance(data, dict):
+        return ""
+    name = data.get("market_hash_name") or data.get("market_name") or ""
+    return name.strip() if isinstance(name, str) else ""
+
+
+def _extract_group_market_hash_name(html: str, source_url: str = "") -> Optional[str]:
+    queries = _extract_ssr_queries(html)
+    if not queries:
+        return None
+    filter_groups = _extract_category_filters(source_url) if source_url else []
+    descriptions: List[str] = []
+    for query in queries:
+        if not isinstance(query, dict):
+            continue
+        data = (query.get("state") or {}).get("data")
+        name = _description_market_hash_name(data)
+        if not name or _is_market_group_id(name):
+            continue
+        descriptions.append(name)
+        if isinstance(data, dict) and _description_matches_filters(data, filter_groups):
+            return name
+    for query in queries:
+        if not isinstance(query, dict):
+            continue
+        name = _extract_market_query_name(query.get("queryKey"), "orderbook")
+        if name and not _is_market_group_id(name):
+            return name
+    return descriptions[0] if descriptions else None
+
+
 def _extract_line1(html: str) -> Optional[list]:
     prefix = "var line1="
     i = html.find(prefix)
@@ -65,16 +204,49 @@ def build_listing_url(market_hash_name: str, app_id: int = 730) -> str:
     encoded = quote(market_hash_name, safe="")
     return f"https://steamcommunity.com/market/listings/{app_id}/{encoded}"
 def market_hash_name_from_listing_url(url: str) -> Optional[str]:
-    if not url or "steamcommunity.com/market/listings/" not in url:
+    parsed = _parse_listing_url(url)
+    if not parsed:
         return None
-    parsed = urlparse(url)
-    path = (parsed.path or "").rstrip("/")
-    if not path:
+    _, name = parsed
+    if _is_market_group_id(name):
         return None
-    name_encoded = path.split("/")[-1]
-    if not name_encoded:
+    return name
+
+
+def resolve_market_hash_name_from_listing_url(
+    url: str,
+    *,
+    timeout: int = 15,
+    session=None,
+    proxies: Optional[dict] = None,
+) -> Optional[str]:
+    parsed = _parse_listing_url(url)
+    if not parsed:
         return None
-    return unquote(name_encoded)
+    _, name = parsed
+    if not _is_market_group_id(name):
+        return name
+    request_url = _coerce_listing_url(url)
+    client = session or requests.Session()
+    headers = {**DEFAULT_HEADERS, "Referer": request_url}
+    kwargs = {
+        "headers": headers,
+        "timeout": timeout,
+        "proxies": proxies,
+        "allow_redirects": True,
+        "verify": False,
+    }
+    try:
+        try:
+            resp = client.get(request_url, **kwargs)
+        except TypeError:
+            kwargs.pop("verify", None)
+            resp = client.get(request_url, **kwargs)
+        if getattr(resp, "status_code", None) != 200:
+            return None
+        return _extract_group_market_hash_name(getattr(resp, "text", "") or "", request_url)
+    except Exception:
+        return None
 def _parse_cookie_str(s: str) -> dict:
     out = {}
     for part in (s or "").split(";"):
