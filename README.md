@@ -200,6 +200,43 @@ set AETHERSWAP_PORT=28472
 set AETHERSWAP_AGREE_DISCLAIMER=1
 ```
 
+#### Docker 部署
+
+使用 Docker 可在无桌面 Linux 服务器上一键启动，无需手动安装 Playwright 系统依赖。
+
+**前置条件**：已安装 [Docker](https://docs.docker.com/get-docker/) 与 [Docker Compose](https://docs.docker.com/compose/install/)。
+
+```bash
+# 1. 克隆项目并进入目录
+git clone https://gitee.com/vexed-wilson/AetherSwap.git
+cd AetherSwap
+
+# 2. 准备环境变量（可选，默认值已适用于大多数场景）
+cp .env.example .env
+
+# 3. 确保 config/ 目录存在（首次运行会自动创建数据库等文件）
+mkdir -p config log
+
+# 4. 构建并启动
+docker compose up -d --build
+
+# 5. 查看日志
+docker compose logs -f
+```
+
+启动后通过浏览器访问 `http://<服务器IP>:28472` 打开 Web 控制台。**强烈建议配置 Nginx 反向代理与访问鉴权，不要将管理面板直接暴露在公网。**
+
+常用命令：
+
+```bash
+docker compose ps          # 查看容器状态
+docker compose stop        # 停止服务
+docker compose down        # 停止并移除容器
+docker compose restart     # 重启服务
+```
+
+`config/` 与 `log/` 目录通过 volume 挂载持久化，容器重建后数据不会丢失。容器内以非 root 用户（uid 1000）运行；若遇到权限问题，请确保宿主机 `config/` 与 `log/` 目录对 uid 1000 可写。
+
 如果启动时报 `cannot import name 'Sentinel' from 'typing_extensions'`，说明本机 `typing_extensions` 版本过旧，请执行：
 
 ```bash
@@ -532,7 +569,7 @@ python -m uvicorn app.api:app --host 0.0.0.0 --port 28472
   - [x] 微信支付
   - [ ] 支付宝支付
 - [ ] **移动端 / 响应式 UI 适配**
-- [ ] **Docker 一键部署支持**
+- [x] **Docker 一键部署支持**
 - [ ] **多账号并发任务调度**
 
 ---
