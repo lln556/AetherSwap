@@ -462,6 +462,26 @@ def db_clear_steam_deals() -> None:
     with get_session() as session:
         session.exec(sql_delete(SteamDealGame))
         session.commit()
+def db_delete_steam_deals_except(app_ids: List[str]) -> int:
+    """Delete Steam deal rows whose app_id is not in the latest scan set."""
+    from sqlmodel import col, delete as sql_delete
+    keep = {str(app_id) for app_id in app_ids if app_id}
+    if not keep:
+        return 0
+    with get_session() as session:
+        existing = session.exec(select(SteamDealGame.app_id)).all()
+        stale = [str(app_id) for app_id in existing if str(app_id) not in keep]
+        deleted = 0
+        for i in range(0, len(stale), 500):
+            chunk = stale[i:i + 500]
+            if not chunk:
+                continue
+            session.exec(
+                sql_delete(SteamDealGame).where(col(SteamDealGame.app_id).in_(chunk))
+            )
+            deleted += len(chunk)
+        session.commit()
+        return deleted
 def db_get_steam_deals_price_snapshot() -> list:
     """Lightweight fetch: only price-related columns for ALL games.
     Used to build an in-memory sort index (price_diff / discount_abs) without

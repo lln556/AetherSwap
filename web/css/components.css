@@ -4083,6 +4083,13 @@ textarea.app-modal-input {
   animation: breathePulse 2s ease-in-out infinite;
 }
 
+.sd-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .sd-fetch-btn {
   gap: 6px;
   padding: 8px 18px;

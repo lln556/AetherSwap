@@ -257,7 +257,7 @@ def api_exchange_rates():
     rates = _load_exchange_rates()
     return {"rates": rates, "region_currency": _REGION_CURRENCY}
 @router.post("/api/steam-deals/fetch")
-def api_fetch_steam_deals():
+def api_fetch_steam_deals(force_refresh: bool = Query(False)):
     from app.services.steam_deals import get_fetch_state, run_fetch
 
     state = get_fetch_state()
@@ -280,7 +280,7 @@ def api_fetch_steam_deals():
 
     t = threading.Thread(
         target=run_fetch,
-        args=(max_games, max_regions),
+        args=(max_games, max_regions, force_refresh),
         daemon=True,
     )
     t.start()
@@ -288,8 +288,9 @@ def api_fetch_steam_deals():
 @router.get("/api/steam-deals/status")
 def api_steam_deals_status():
     """获取抓取状态和上次更新时间."""
-    from app.services.steam_deals import get_fetch_state
+    from app.services.steam_deals import get_fetch_state, get_resume_state
     state = get_fetch_state()
+    resume_state = get_resume_state()
     last_update = db_get_steam_deals_last_update()
     total_games = db_get_steam_deals_count()
     cfg = load_app_config_validated()
@@ -303,6 +304,7 @@ def api_steam_deals_status():
         "last_update": last_update,
         "total_games_in_db": total_games,
         "auto_refresh_days": auto_refresh_days,
+        "resume": resume_state,
     }
 
 @router.post("/api/steam-deals/generate-card/{app_id}")

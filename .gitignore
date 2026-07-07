@@ -13,6 +13,8 @@ config/exchange_rate.json
 config/steam_userdata.json
 config/holdings_report_last.json
 config/transactions.json.bak
+config/steam_deals_checkpoint.json
+config/steam_deals_checkpoint.json.tmp
 
 # 日志
 log/
