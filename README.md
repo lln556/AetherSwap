@@ -211,7 +211,7 @@ set AETHERSWAP_AGREE_DISCLAIMER=1
 git clone https://gitee.com/vexed-wilson/AetherSwap.git
 cd AetherSwap
 
-# 2. 准备环境变量（可选，默认值已适用于大多数场景）
+# 2. 准备环境变量（可选，Docker Compose 会自动读取 .env）
 cp .env.example .env
 
 # 3. 确保 config/ 目录存在（首次运行会自动创建数据库等文件）
@@ -224,7 +224,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-启动后通过浏览器访问 `http://<服务器IP>:28472` 打开 Web 控制台。**强烈建议配置 Nginx 反向代理与访问鉴权，不要将管理面板直接暴露在公网。**
+启动后通过浏览器访问 `http://<服务器IP>:28472` 打开 Web 控制台。若要修改宿主机访问端口，请在 `.env` 中设置 `AETHERSWAP_HOST_PORT`，容器内监听端口会保持为 `28472`。**强烈建议配置 Nginx 反向代理与访问鉴权，不要将管理面板直接暴露在公网。**
 
 常用命令：
 

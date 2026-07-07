@@ -25,6 +25,9 @@ htmlcov/
 *.swo
 .DS_Store
 Thumbs.db
+.env
+.env.*
+!.env.example
 
 # Local runtime data (mounted as volumes at runtime)
 config/app.db
@@ -37,6 +40,7 @@ config/playwright_buff/
 config/exchange_rate.json
 config/steam_userdata.json
 config/holdings_report_last.json
+config/transactions.json
 config/transactions.json.bak
 log/
 .agreed_disclaimer

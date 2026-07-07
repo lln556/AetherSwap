@@ -4,17 +4,17 @@ services:
     image: aetherswap:latest
     container_name: aetherswap
     ports:
-      - "${AETHERSWAP_PORT:-28472}:28472"
+      - "${AETHERSWAP_HOST_PORT:-28472}:28472"
     volumes:
       - ./config:/app/config
       - ./log:/app/log
-    env_file:
-      - .env
     environment:
       AETHERSWAP_MODE: ${AETHERSWAP_MODE:-server}
       AETHERSWAP_AGREE_DISCLAIMER: ${AETHERSWAP_AGREE_DISCLAIMER:-1}
-      AETHERSWAP_HOST: ${AETHERSWAP_HOST:-0.0.0.0}
-      AETHERSWAP_PORT: ${AETHERSWAP_PORT:-28472}
+      AETHERSWAP_HOST: "0.0.0.0"
+      AETHERSWAP_PORT: "28472"
+      AETHERSWAP_HEADLESS: ${AETHERSWAP_HEADLESS:-}
+      AETHERSWAP_MANUAL_LOGIN_ONLY: ${AETHERSWAP_MANUAL_LOGIN_ONLY:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-}
