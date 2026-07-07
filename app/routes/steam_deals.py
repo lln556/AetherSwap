@@ -285,6 +285,14 @@ def api_fetch_steam_deals(force_refresh: bool = Query(False)):
     )
     t.start()
     return {"ok": True, "message": "已开始获取"}
+@router.post("/api/steam-deals/pause")
+def api_pause_steam_deals():
+    """请求暂停当前 Steam 折扣抓取任务."""
+    from app.services.steam_deals import request_pause
+
+    if not request_pause():
+        return {"ok": False, "error": "当前没有正在运行的抓取任务"}
+    return {"ok": True, "message": "已请求暂停，当前请求完成后会保存进度"}
 @router.get("/api/steam-deals/status")
 def api_steam_deals_status():
     """获取抓取状态和上次更新时间."""
@@ -301,6 +309,7 @@ def api_steam_deals_status():
         "total": state["total"],
         "failed": state["failed"],
         "message": state["message"],
+        "pause_requested": state.get("pause_requested", False),
         "last_update": last_update,
         "total_games_in_db": total_games,
         "auto_refresh_days": auto_refresh_days,

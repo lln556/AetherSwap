@@ -4032,6 +4032,10 @@ textarea.app-modal-input {
   flex-wrap: wrap;
 }
 
+#panel-steam-deals {
+  padding-top: 10px;
+}
+
 .sd-header-left {
   display: flex;
   align-items: center;

@@ -11,7 +11,7 @@ import requests
 import urllib3
 import json
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from typing import List, Optional
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -30,12 +30,14 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/122.0.0.0 Safari/537.36",
 ]
 _fetch_lock = threading.Lock()
+_pause_event = threading.Event()
 _fetch_state = {
     "running": False,
     "progress": 0,        
     "total": 0,           
     "failed": 0,          
-    "message": "",        
+    "message": "",
+    "pause_requested": False,
 }
 def get_fetch_state() -> dict:
     with _fetch_lock:
@@ -43,6 +45,21 @@ def get_fetch_state() -> dict:
 def _update_state(**kwargs):
     with _fetch_lock:
         _fetch_state.update(kwargs)
+def request_pause() -> bool:
+    """Ask the running fetch worker to stop after the current safe checkpoint."""
+    with _fetch_lock:
+        if not _fetch_state.get("running"):
+            return False
+        _fetch_state["pause_requested"] = True
+        _fetch_state["message"] = "⏸️ 正在暂停，等待当前请求完成..."
+    _pause_event.set()
+    return True
+def _pause_requested() -> bool:
+    return _pause_event.is_set()
+def _clear_pause_request() -> None:
+    _pause_event.clear()
+    with _fetch_lock:
+        _fetch_state["pause_requested"] = False
 def _load_checkpoint() -> Optional[dict]:
     """Load persisted scan progress, if available."""
     try:
@@ -52,8 +69,11 @@ def _load_checkpoint() -> Optional[dict]:
             data = json.load(f)
         if data.get("version") != CHECKPOINT_VERSION:
             return None
-        appids = data.get("appids")
-        if not isinstance(appids, list) or not appids:
+        appids = data.get("appids", [])
+        phase = data.get("phase")
+        if not isinstance(appids, list):
+            return None
+        if not appids and phase != "discovering":
             return None
         data["appids"] = [str(appid) for appid in appids if appid]
         data["done"] = [str(appid) for appid in data.get("done", []) if appid]
@@ -98,18 +118,23 @@ def get_resume_state() -> dict:
             "updated_at": None,
             "started_at": None,
             "status": None,
+            "phase": None,
         }
     done = set(cp.get("done", []))
     failed = cp.get("failed", {}) or {}
     appids = cp.get("appids", [])
+    phase = cp.get("phase")
+    progress = len(appids) if phase == "discovering" else len(done)
+    total = cp.get("total_count") or len(appids)
     return {
         "has_checkpoint": True,
-        "progress": len(done),
-        "total": len(appids),
+        "progress": progress,
+        "total": total,
         "failed": len(failed),
         "updated_at": cp.get("updated_at"),
         "started_at": cp.get("started_at"),
         "status": cp.get("status"),
+        "phase": phase,
     }
 def _build_valid_proxies() -> list:
     """Read proxies from app config, test them, return sorted valid ones."""
@@ -174,18 +199,43 @@ def _fetch_with_proxy(url: str, valid_proxies: list, max_retries: int = 5):
         except Exception:
             continue
     return None
-def _get_discounted_appids(max_count: int = 20000, valid_proxies: Optional[list] = None) -> List[str]:
+def _get_discounted_appids(max_count: int = 20000, valid_proxies: Optional[list] = None, checkpoint: Optional[dict] = None) -> List[str]:
     """Fetch discounted game AppIDs from Steam search API, up to max_count.
     Uses Steam's native search endpoint with specials=1 filter, paginated via
     the `start` offset parameter (max 100 per page). Every request is routed
     through the proxy pool to avoid rate-limiting (HTTP 429).
     """
-    _update_state(message=f"🕵️ 正在从 Steam 获取打折游戏列表 (上限 {max_count})...")
     appids: List[str] = []
     seen: set = set()
     start = 0
     page_size = 100
     total_count: Optional[int] = None
+    consecutive_empty = 0
+    if checkpoint and checkpoint.get("phase") == "discovering":
+        appids = [str(appid) for appid in checkpoint.get("appids", []) if appid]
+        seen = set(appids)
+        start = int(checkpoint.get("discovery_start", 0) or 0)
+        total_count = checkpoint.get("total_count")
+        consecutive_empty = int(checkpoint.get("consecutive_empty", 0) or 0)
+        _update_state(
+            message=f"🔁 继续获取打折游戏 ID，已获取 {len(appids)} 个...",
+            progress=len(appids),
+            total=total_count or len(appids),
+        )
+    else:
+        _update_state(message=f"🕵️ 正在从 Steam 获取打折游戏列表 (上限 {max_count})...")
+        if checkpoint is not None:
+            checkpoint.update({
+                "phase": "discovering",
+                "status": "running",
+                "appids": [],
+                "done": [],
+                "failed": {},
+                "discovery_start": 0,
+                "total_count": None,
+                "consecutive_empty": 0,
+            })
+            _save_checkpoint(checkpoint)
     base_url = (
         "https://store.steampowered.com/search/results/"
         "?specials=1"          
@@ -194,13 +244,35 @@ def _get_discounted_appids(max_count: int = 20000, valid_proxies: Optional[list]
         "&json=1"
         "&count={count}&start={start}"
     )
-    consecutive_empty = 0
     while len(appids) < max_count:
+        if _pause_requested():
+            if checkpoint is not None:
+                checkpoint.update({
+                    "phase": "discovering",
+                    "status": "paused",
+                    "appids": appids,
+                    "discovery_start": start,
+                    "total_count": total_count,
+                    "consecutive_empty": consecutive_empty,
+                })
+                _save_checkpoint(checkpoint)
+            _update_state(message=f"⏸️ 已暂停：打折游戏 ID 已获取 {len(appids)} 个", progress=len(appids), total=total_count or len(appids))
+            return appids
         url = base_url.format(count=page_size, start=start)
         try:
             data = _fetch_with_proxy(url, valid_proxies or [], max_retries=5)
             if data is None:
                 consecutive_empty += 1
+                if checkpoint is not None:
+                    checkpoint.update({
+                        "phase": "discovering",
+                        "status": "running",
+                        "appids": appids,
+                        "discovery_start": start,
+                        "total_count": total_count,
+                        "consecutive_empty": consecutive_empty,
+                    })
+                    _save_checkpoint(checkpoint)
                 if consecutive_empty >= 3:
                     break
                 time.sleep(2)
@@ -230,16 +302,49 @@ def _get_discounted_appids(max_count: int = 20000, valid_proxies: Optional[list]
                     + (f"/{total_count}" if total_count else "")
                     + " 个打折游戏 ID..."
                 ),
-                total=len(appids),
+                progress=len(appids),
+                total=total_count or len(appids),
             )
             start += page_size
+            if checkpoint is not None:
+                checkpoint.update({
+                    "phase": "discovering",
+                    "status": "running",
+                    "appids": appids,
+                    "discovery_start": start,
+                    "total_count": total_count,
+                    "consecutive_empty": consecutive_empty,
+                })
+                _save_checkpoint(checkpoint)
             time.sleep(0.5)
         except Exception:
             consecutive_empty += 1
+            if checkpoint is not None:
+                checkpoint.update({
+                    "phase": "discovering",
+                    "status": "running",
+                    "appids": appids,
+                    "discovery_start": start,
+                    "total_count": total_count,
+                    "consecutive_empty": consecutive_empty,
+                })
+                _save_checkpoint(checkpoint)
             if consecutive_empty >= 3:
                 break
             time.sleep(2)
-    _update_state(message=f"✅ 获取到 {len(appids)} 个打折游戏 ID", total=len(appids))
+    if checkpoint is not None:
+        checkpoint.update({
+            "phase": "processing",
+            "status": "running",
+            "appids": appids,
+            "done": checkpoint.get("done", []),
+            "failed": checkpoint.get("failed", {}),
+            "discovery_start": start,
+            "total_count": total_count or len(appids),
+            "consecutive_empty": consecutive_empty,
+        })
+        _save_checkpoint(checkpoint)
+    _update_state(message=f"✅ 获取到 {len(appids)} 个打折游戏 ID", progress=len(appids), total=len(appids))
     return appids
 def _fetch_region_data(appid: str, cc_code: str, valid_proxies: list, max_region_retries: int = 3):
     """Fetch price data for a single game in a single region.
@@ -394,6 +499,7 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
     Designed to be called in a background thread.
     """
     from app.database import db_upsert_steam_deal, db_clear_steam_deals, db_delete_steam_deals_except
+    _clear_pause_request()
     with _fetch_lock:
         if _fetch_state["running"]:
             return
@@ -402,6 +508,7 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
             "progress": 0,
             "total": 0,
             "failed": 0,
+            "pause_requested": False,
             "message": "🚀 开始获取...",
         })
     try:
@@ -414,7 +521,19 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
             _update_state(message="⚠️ 无可用代理，尝试直连...")
         checkpoint = None if force_refresh else _load_checkpoint()
         resumed = bool(checkpoint)
-        if resumed:
+        if not checkpoint:
+            checkpoint = {
+                "version": CHECKPOINT_VERSION,
+                "status": "running",
+                "phase": "discovering",
+                "started_at": time.time(),
+                "appids": [],
+                "done": [],
+                "failed": {},
+                "force_refresh": bool(force_refresh),
+            }
+            _save_checkpoint(checkpoint)
+        if resumed and checkpoint.get("phase") != "discovering":
             appids = checkpoint.get("appids", [])
             done_set = set(checkpoint.get("done", []))
             failed_map = dict(checkpoint.get("failed", {}) or {})
@@ -425,22 +544,21 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
                 message=f"🔁 检测到未完成任务，继续扫描 {len(appids) - len(done_set)} 款游戏...",
             )
         else:
-            appids = _get_discounted_appids(max_count=20000, valid_proxies=valid_proxies)
+            appids = _get_discounted_appids(max_count=20000, valid_proxies=valid_proxies, checkpoint=checkpoint)
             done_set = set()
             failed_map = {}
-            if appids:
-                checkpoint = {
-                    "version": CHECKPOINT_VERSION,
-                    "status": "running",
-                    "started_at": time.time(),
-                    "appids": appids,
-                    "done": [],
-                    "failed": {},
-                    "force_refresh": bool(force_refresh),
-                }
-                _save_checkpoint(checkpoint)
+            if _pause_requested():
+                _update_state(
+                    running=False,
+                    pause_requested=False,
+                    progress=len(appids),
+                    total=checkpoint.get("total_count") or len(appids),
+                    message=f"⏸️ 已暂停：打折游戏 ID 已获取 {len(appids)} 个",
+                )
+                return
         if not appids:
-            _update_state(running=False, message="❌ 未获取到任何游戏 ID")
+            _clear_checkpoint()
+            _update_state(running=False, pause_requested=False, message="❌ 未获取到任何游戏 ID")
             return
         remaining_appids = [appid for appid in appids if str(appid) not in done_set]
         if not remaining_appids:
@@ -448,6 +566,7 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
             _clear_checkpoint()
             _update_state(
                 running=False,
+                pause_requested=False,
                 progress=len(appids),
                 total=len(appids),
                 failed=0,
@@ -470,53 +589,87 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
                     rates = json.load(f).get("rates", {})
         except Exception:
             pass
-        with ThreadPoolExecutor(max_workers=max_game_threads) as executor:
-            future_map = {
-                executor.submit(_process_single_game, appid, valid_proxies, max_region_threads, rates): appid
-                for appid in remaining_appids
-            }
-            count = len(done_set)
-            for future in as_completed(future_map):
-                appid = str(future_map[future])
-                count += 1
+        count = len(done_set)
+        appid_iter = iter(remaining_appids)
+        future_map = {}
+        pause_after_batch = False
+
+        def _save_processing_checkpoint(status: str = "running") -> None:
+            if checkpoint is not None:
+                checkpoint.update({
+                    "phase": "processing",
+                    "status": status,
+                    "appids": appids,
+                    "done": _ordered_done(),
+                    "failed": failed_map,
+                    "last_progress": count,
+                })
+                _save_checkpoint(checkpoint)
+
+        def _submit_more(executor: ThreadPoolExecutor) -> None:
+            while len(future_map) < max_game_threads and not _pause_requested():
                 try:
-                    game = future.result()
-                    if game is None:
-                        done_set.add(appid)
-                        failed_map.pop(appid, None)
+                    next_appid = next(appid_iter)
+                except StopIteration:
+                    break
+                future = executor.submit(_process_single_game, next_appid, valid_proxies, max_region_threads, rates)
+                future_map[future] = str(next_appid)
+
+        with ThreadPoolExecutor(max_workers=max_game_threads) as executor:
+            _submit_more(executor)
+            if _pause_requested() and not future_map:
+                pause_after_batch = True
+            while future_map:
+                done_futures, _pending = wait(future_map.keys(), return_when=FIRST_COMPLETED)
+                for future in done_futures:
+                    appid = str(future_map.pop(future))
+                    count += 1
+                    try:
+                        game = future.result()
+                        if game is None:
+                            done_set.add(appid)
+                            failed_map.pop(appid, None)
+                            _update_state(
+                                progress=count,
+                                failed=len(failed_map),
+                                message=f"⏭️ [{count}/{len(appids)}] 质量不达标，跳过",
+                            )
+                        else:
+                            db_upsert_steam_deal(game)
+                            done_set.add(appid)
+                            failed_map.pop(appid, None)
+                            _update_state(
+                                progress=count,
+                                failed=len(failed_map),
+                                message=f"✅ [{count}/{len(appids)}] {game['name']}",
+                            )
+                    except Exception as e:
+                        failed_map[appid] = str(e)[:120]
                         _update_state(
                             progress=count,
                             failed=len(failed_map),
-                            message=f"⏭️ [{count}/{len(appids)}] 质量不达标，跳过",
+                            message=f"⚠️ [{count}/{len(appids)}] 处理失败: {str(e)[:60]}",
                         )
-                    else:
-                        db_upsert_steam_deal(game)
-                        done_set.add(appid)
-                        failed_map.pop(appid, None)
-                        _update_state(
-                            progress=count,
-                            failed=len(failed_map),
-                            message=f"✅ [{count}/{len(appids)}] {game['name']}",
-                        )
-                except Exception as e:
-                    failed_map[appid] = str(e)[:120]
-                    _update_state(
-                        progress=count,
-                        failed=len(failed_map),
-                        message=f"⚠️ [{count}/{len(appids)}] 处理失败: {str(e)[:60]}",
-                    )
-                if checkpoint is not None:
-                    checkpoint.update({
-                        "status": "running",
-                        "appids": appids,
-                        "done": _ordered_done(),
-                        "failed": failed_map,
-                        "last_progress": count,
-                    })
-                    _save_checkpoint(checkpoint)
+                    _save_processing_checkpoint("running")
+                if _pause_requested():
+                    pause_after_batch = True
+                    _update_state(message=f"⏸️ 正在暂停：等待当前 {len(future_map)} 个游戏请求完成...")
+                if not pause_after_batch:
+                    _submit_more(executor)
+        if pause_after_batch:
+            _save_processing_checkpoint("paused")
+            _update_state(
+                running=False,
+                pause_requested=False,
+                progress=count,
+                failed=len(failed_map),
+                message=f"⏸️ 已暂停：已处理 {count}/{len(appids)} 款游戏",
+            )
+            return
         if failed_map:
             if checkpoint is not None:
                 checkpoint.update({
+                    "phase": "processing",
                     "status": "incomplete",
                     "done": _ordered_done(),
                     "failed": failed_map,
@@ -525,6 +678,7 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
                 _save_checkpoint(checkpoint)
             _update_state(
                 running=False,
+                pause_requested=False,
                 progress=count,
                 failed=len(failed_map),
                 message=f"⚠️ 本轮完成，仍有 {len(failed_map)} 款失败；再次点击可继续补扫",
@@ -534,6 +688,7 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
         _clear_checkpoint()
         _update_state(
             running=False,
+            pause_requested=False,
             failed=0,
             message=f"🎉 完成！共处理 {count} 款游戏，清理过期记录 {deleted} 款",
         )
@@ -543,4 +698,4 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
             checkpoint["status"] = "interrupted"
             checkpoint["last_error"] = str(e)[:200]
             _save_checkpoint(checkpoint)
-        _update_state(running=False, message=f"❌ 抓取出错: {str(e)[:100]}")
+        _update_state(running=False, pause_requested=False, message=f"❌ 抓取出错: {str(e)[:100]}")

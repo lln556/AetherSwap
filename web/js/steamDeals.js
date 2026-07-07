@@ -19,6 +19,8 @@
     let _dealStatusFilter = '';
     let _pollTimer = null;
     let _initialized = false;
+    let _fetchRunning = false;
+    let _pauseRequested = false;
     const $ = id => document.getElementById(id);
     const esc = (value) => typeof escapeHtml === 'function'
         ? escapeHtml(value)
@@ -234,11 +236,14 @@
     function _resumeText(resume) {
         if (!resume?.has_checkpoint || !resume.total) return '';
         const failed = resume.failed ? `，失败 ${resume.failed}` : '';
-        return `可续扫：${resume.progress || 0}/${resume.total}${failed}`;
+        const phase = resume.phase === 'discovering' ? 'ID' : '游戏';
+        return `可续扫${phase}：${resume.progress || 0}/${resume.total}${failed}`;
     }
     async function fetchData(forceRefresh = false) {
         const btn = $('steam-deals-fetch-btn');
         const resetBtn = $('steam-deals-reset-btn');
+        _fetchRunning = true;
+        _pauseRequested = false;
         if (btn) { btn.disabled = true; btn.textContent = '获取中...'; }
         if (resetBtn) resetBtn.disabled = true;
         try {
@@ -254,8 +259,25 @@
             if (typeof toast === "function") {
                 toast("获取失败", err.message || "");
             }
+            _fetchRunning = false;
             if (btn) { btn.disabled = false; btn.innerHTML = REFRESH_SVG + ' 获取数据'; }
             if (resetBtn) resetBtn.disabled = false;
+        }
+    }
+    async function pauseFetch() {
+        const btn = $('steam-deals-fetch-btn');
+        if (btn) { btn.disabled = true; btn.textContent = '正在暂停...'; }
+        _pauseRequested = true;
+        try {
+            const resp = await fetch('/api/steam-deals/pause', { method: 'POST' });
+            const r = await resp.json();
+            if (!r.ok) throw new Error(r.error || '暂停失败');
+            startPolling();
+        } catch (err) {
+            console.error('暂停失败:', err);
+            _pauseRequested = false;
+            if (typeof toast === "function") toast("暂停失败", err.message || "");
+            if (btn) { btn.disabled = false; btn.textContent = '暂停扫描'; }
         }
     }
     function startPolling() {
@@ -273,10 +295,17 @@
             const resetBtn = $('steam-deals-reset-btn');
             const tcEl = $('steam-deals-total-count');
             if (s.running) {
+                _fetchRunning = true;
+                _pauseRequested = !!s.pause_requested;
                 if (prog) { prog.classList.remove('hidden'); prog.textContent = s.message || `${s.progress}/${s.total}`; }
-                if (btn) { btn.disabled = true; btn.textContent = '获取中...'; }
+                if (btn) {
+                    btn.disabled = _pauseRequested;
+                    btn.textContent = _pauseRequested ? '正在暂停...' : '暂停扫描';
+                }
                 if (resetBtn) resetBtn.disabled = true;
             } else {
+                _fetchRunning = false;
+                _pauseRequested = false;
                 if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
                 const resumeInfo = _resumeText(s.resume);
                 if (prog) {
@@ -345,7 +374,10 @@
             loadGames(true);
         });
         const fetchBtn = $('steam-deals-fetch-btn');
-        if (fetchBtn) fetchBtn.addEventListener('click', () => fetchData(false));
+        if (fetchBtn) fetchBtn.addEventListener('click', () => {
+            if (_fetchRunning) pauseFetch();
+            else fetchData(false);
+        });
         const resetBtn = $('steam-deals-reset-btn');
         if (resetBtn) resetBtn.addEventListener('click', () => {
             const ok = window.confirm('重新扫描会清空当前断点进度和已有 Steam 折扣数据，然后全量重扫。确定继续吗？');
