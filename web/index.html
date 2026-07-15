@@ -1573,13 +1573,18 @@
             <span id="steam-deals-total-count" class="sd-count-badge"></span>
             <span id="steam-deals-progress" class="sd-progress-badge hidden"></span>
           </div>
-          <button id="steam-deals-fetch-btn" class="btn btn-primary btn-sm sd-fetch-btn">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <polyline points="23 4 23 10 17 10"></polyline>
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
-            </svg>
-            获取数据
-          </button>
+          <div class="sd-header-actions">
+            <button id="steam-deals-fetch-btn" class="btn btn-primary btn-sm sd-fetch-btn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+              </svg>
+              获取数据
+            </button>
+            <button id="steam-deals-reset-btn" class="btn btn-secondary btn-sm sd-fetch-btn" title="清空旧进度和旧数据后重新全量扫描">
+              重新扫描
+            </button>
+          </div>
         </div>
 
 

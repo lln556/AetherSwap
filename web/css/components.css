@@ -4032,6 +4032,10 @@ textarea.app-modal-input {
   flex-wrap: wrap;
 }
 
+#panel-steam-deals {
+  padding-top: 10px;
+}
+
 .sd-header-left {
   display: flex;
   align-items: center;
@@ -4081,6 +4085,13 @@ textarea.app-modal-input {
   padding: 4px 12px;
   border-radius: 999px;
   animation: breathePulse 2s ease-in-out infinite;
+}
+
+.sd-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .sd-fetch-btn {
