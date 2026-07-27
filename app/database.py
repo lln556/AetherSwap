@@ -35,6 +35,12 @@ class Purchase(SQLModel, table=True):
     assetid: Optional[str] = None
     listing: Optional[bool] = None
     listing_status: Optional[str] = None
+    # External BUFF identifiers make a completed checkout reconcilable after a
+    # restart and allow the database to reject accidental duplicate recording.
+    buff_order_id: Optional[str] = Field(default=None, index=True)
+    buff_sell_order_id: Optional[str] = None
+    batch_id: Optional[str] = Field(default=None, index=True)
+    bill_order_id: Optional[str] = None
 class Sale(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = ""
@@ -119,6 +125,36 @@ def init_db() -> None:
             conn.commit()
         except Exception:
             pass  
+    purchase_columns = (
+        ("buff_order_id", "TEXT"),
+        ("buff_sell_order_id", "TEXT"),
+        ("batch_id", "TEXT"),
+        ("bill_order_id", "TEXT"),
+    )
+    with engine.connect() as conn:
+        for column_name, column_type in purchase_columns:
+            try:
+                conn.execute(
+                    sa_text(
+                        f"ALTER TABLE purchase ADD COLUMN {column_name} {column_type}"
+                    )
+                )
+                conn.commit()
+            except Exception:
+                pass
+        # Empty/NULL legacy values are intentionally excluded.  Every real
+        # BUFF bill/order id may be recorded at most once.
+        try:
+            conn.execute(
+                sa_text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "ux_purchase_buff_order_id ON purchase(buff_order_id) "
+                    "WHERE buff_order_id IS NOT NULL AND buff_order_id != ''"
+                )
+            )
+            conn.commit()
+        except Exception:
+            pass
     with engine.connect() as conn:
         rows = conn.execute(
             sa_text("SELECT id, positive_rate, total_reviews FROM steamdealgame WHERE wilson_score IS NULL")
@@ -144,6 +180,10 @@ def _purchase_from_dict(d: dict) -> Purchase:
         assetid=str(d["assetid"]) if d.get("assetid") is not None else None,
         listing=bool(d["listing"]) if d.get("listing") is not None else None,
         listing_status=str(d["listing_status"]) if d.get("listing_status") is not None else None,
+        buff_order_id=str(d["buff_order_id"]) if d.get("buff_order_id") else None,
+        buff_sell_order_id=str(d["buff_sell_order_id"]) if d.get("buff_sell_order_id") else None,
+        batch_id=str(d["batch_id"]) if d.get("batch_id") else None,
+        bill_order_id=str(d["bill_order_id"]) if d.get("bill_order_id") else None,
     )
 def _sale_from_dict(d: dict) -> Sale:
     return Sale(
@@ -175,6 +215,14 @@ def _purchase_to_dict(p: Purchase) -> dict:
         d["listing"] = p.listing
     if p.listing_status is not None:
         d["listing_status"] = p.listing_status
+    if p.buff_order_id is not None:
+        d["buff_order_id"] = p.buff_order_id
+    if p.buff_sell_order_id is not None:
+        d["buff_sell_order_id"] = p.buff_sell_order_id
+    if p.batch_id is not None:
+        d["batch_id"] = p.batch_id
+    if p.bill_order_id is not None:
+        d["bill_order_id"] = p.bill_order_id
     return d
 def _sale_to_dict(s: Sale) -> dict:
     d = {
@@ -220,6 +268,7 @@ def migrate_from_json() -> bool:
 _PURCHASE_UPDATABLE = frozenset({
     "name", "price", "goods_id", "market_price", "sale_price",
     "sold_at", "pending_receipt", "assetid", "listing", "listing_status",
+    "buff_order_id", "buff_sell_order_id", "batch_id", "bill_order_id",
 })
 _SALE_UPDATABLE = frozenset({"name", "price", "goods_id", "assetid", "at"})
 def db_append_purchase(p: dict) -> None:

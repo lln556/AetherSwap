@@ -6,7 +6,6 @@ import pathlib
 import sys
 import re
 import time
-from datetime import datetime
 from typing import Optional
 
 import requests
@@ -16,8 +15,13 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from app.database import SteamDealGame, get_engine
+from app.config_loader import load_app_config_validated
 from sqlmodel import Session, select, col
 from utils.proxy_manager import get_proxy_manager
+from utils.time import (
+    resolve_configured_timezone,
+    timestamp_in_configured_timezone,
+)
 
 EXCHANGE_RATE_FILE = ROOT / "config" / "exchange_rate.json"
 EXRATES = {}
@@ -387,7 +391,17 @@ def generate_card(game: SteamDealGame, out_path: str) -> bool:
     f_footer_bold = _load_font(26, bold=True)
     f_footer_light = _load_font(24, bold=False)
     draw.text((MARGIN_LEFT, H - 140), "AETHER SWAP", font=f_footer_bold, fill=(255, 255, 255, 140))
-    dt_str = datetime.fromtimestamp(game.fetched_at).strftime("%Y.%m.%d") if game.fetched_at else "-"
+    configured_timezone, _timezone_label = resolve_configured_timezone(
+        (load_app_config_validated().get("system") or {})
+    )
+    dt_str = (
+        timestamp_in_configured_timezone(
+            game.fetched_at,
+            configured_timezone,
+        ).strftime("%Y.%m.%d")
+        if game.fetched_at
+        else "-"
+    )
     draw.text((MARGIN_LEFT, H - 105), f"UPDATE • {dt_str}", font=f_footer_light, fill=(255, 255, 255, 90))
 
     PANEL_X = 860   

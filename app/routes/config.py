@@ -1,4 +1,6 @@
 """Config, data init, export/import, holdings report routes."""
+from typing import Optional
+
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
 from app.state import (
@@ -13,14 +15,26 @@ from app.config_loader import load_app_config_validated, save_app_config_validat
 from config import load_app_config, save_credentials, get_all_credentials
 from app.accounts import list_accounts, replace_all as accounts_replace_all
 router = APIRouter()
+def _save_credentials_with_auth_lock(data: dict) -> None:
+    """Serialize bulk credential replacement with active BUFF operations."""
+    from app.services.buff_auth import (
+        buff_credential_replacement_block_reason,
+        get_buff_auth_lock,
+    )
+
+    with get_buff_auth_lock():
+        block_reason = buff_credential_replacement_block_reason()
+        if block_reason:
+            raise RuntimeError(block_reason)
+        save_credentials(data)
 class ConfigBody(BaseModel):
     config: dict
 class ImportFullBody(BaseModel):
-    app_config: dict = {}
-    credentials: dict = {}
-    transactions: dict = {}
-    accounts: dict = {}
-    log: list = []
+    app_config: Optional[dict] = None
+    credentials: Optional[dict] = None
+    transactions: Optional[dict] = None
+    accounts: Optional[dict] = None
+    log: Optional[list] = None
 @router.get("/api/config")
 def api_get_config():
     return {"config": load_app_config_validated()}
@@ -33,11 +47,9 @@ def api_save_config(body: ConfigBody):
             merged[k] = {**current[k], **v}
     save_app_config_validated(merged)
     return {"ok": True}
-@router.post("/api/data/init")
-def api_data_init():
+def _api_data_init_unlocked():
     from app.state import clear_log
     from pathlib import Path
-    import glob
 
     # 清理内存状态
     clear_transactions()
@@ -46,6 +58,7 @@ def api_data_init():
     import app.accounts as _accounts_mod
     _accounts_mod._cache = None
     accounts_replace_all({"accounts": [], "current_id": None})
+    # The route-level maintenance coordinator already owns the BUFF auth lock.
     save_credentials({})
 
     # 构建一份干净的默认配置（保留功能性默认值，清除所有个人凭据）
@@ -95,12 +108,24 @@ def api_data_init():
         "holdings_report_last.json",
         "steam_userdata.json",
         "transactions.json.bak",
+        "buff_request_policy.json",
+        "buff_request_policy.json.tmp",
+        "buff_checkout_guard.json",
     ]
     for file_name in files_to_remove:
         file_path = config_dir / file_name
         if file_path.exists():
             try:
                 file_path.unlink()
+            except Exception:
+                pass
+    for pattern in (
+        ".buff_request_policy.json.*.tmp",
+        ".buff_checkout_guard.json.*.tmp",
+    ):
+        for temp_file in config_dir.glob(pattern):
+            try:
+                temp_file.unlink()
             except Exception:
                 pass
                 
@@ -150,6 +175,27 @@ def api_data_init():
 
     return {"ok": True}
 
+
+@router.post("/api/data/init")
+def api_data_init():
+    from app.pipeline import (
+        PipelineMaintenanceBlocked,
+        exclusive_pipeline_maintenance,
+        mark_shutdown_pending,
+    )
+
+    try:
+        with exclusive_pipeline_maintenance("data_init"):
+            mark_shutdown_pending()
+            result = _api_data_init_unlocked()
+            return result
+    except PipelineMaintenanceBlocked as exc:
+        return {
+            "ok": False,
+            "reconciliation_required": True,
+            "error": str(exc),
+        }
+
 @router.get("/api/export_full")
 def api_export_full():
     from datetime import datetime, timezone
@@ -171,6 +217,11 @@ def api_export_full_download():
     from datetime import datetime, timezone
     from fastapi.responses import Response
     from app.accounts import get_current_id
+    from utils.time import (
+        now_in_configured_timezone,
+        resolve_configured_timezone,
+    )
+    app_config = load_app_config_validated()
     data = {
         "version": 1,
         "exported_at": datetime.now(timezone.utc).isoformat(),
@@ -180,7 +231,12 @@ def api_export_full_download():
         "accounts": {"accounts": list_accounts(), "current_id": get_current_id()},
         "log": get_log(0),
     }
-    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    configured_timezone, _timezone_label = resolve_configured_timezone(
+        app_config.get("system") or {}
+    )
+    ts = now_in_configured_timezone(configured_timezone).strftime(
+        "%Y-%m-%dT%H-%M-%S"
+    )
     filename = f"full_backup_{ts}.json"
     return Response(
         content=json.dumps(data, ensure_ascii=False, indent=2),
@@ -189,18 +245,93 @@ def api_export_full_download():
     )
 @router.post("/api/import_full")
 def api_import_full(body: ImportFullBody):
+    from app.accounts import get_current_id
+    from app.pipeline import (
+        PipelineMaintenanceBlocked,
+        exclusive_pipeline_maintenance,
+    )
+
     try:
-        if body.app_config:
-            save_app_config_validated(body.app_config)
-        if body.credentials:
-            save_credentials(body.credentials)
-        tx = body.transactions or {}
-        replace_transactions(tx.get("purchases", []), tx.get("sales", []))
-        if body.accounts:
-            accounts_replace_all(body.accounts)
-        if body.log is not None:
-            replace_log(body.log)
-        return {"ok": True}
+        with exclusive_pipeline_maintenance("full_import"):
+            snapshot = {
+                "app_config": load_app_config(),
+                "credentials": get_all_credentials(),
+                "transactions": {
+                    "purchases": get_purchases(),
+                    "sales": get_sales(),
+                },
+                "accounts": {
+                    "accounts": list_accounts(),
+                    "current_id": get_current_id(),
+                },
+                "log": get_log(0),
+            }
+            try:
+                if body.app_config is not None:
+                    save_app_config_validated(body.app_config)
+                if body.credentials is not None:
+                    save_credentials(body.credentials)
+                if body.transactions is not None:
+                    tx = body.transactions
+                    replace_transactions(
+                        tx.get("purchases", []),
+                        tx.get("sales", []),
+                    )
+                if body.accounts is not None:
+                    accounts_replace_all(body.accounts)
+                if body.log is not None:
+                    replace_log(body.log)
+            except Exception as import_exc:
+                # The stores are heterogeneous (JSON + SQLite + memory), so a
+                # best-effort rollback is required while all exclusion locks
+                # are still held.
+                restorations = [
+                    (
+                        "app_config",
+                        lambda: save_app_config_validated(
+                            snapshot["app_config"]
+                        ),
+                    ),
+                    (
+                        "credentials",
+                        lambda: save_credentials(snapshot["credentials"]),
+                    ),
+                    (
+                        "transactions",
+                        lambda: replace_transactions(
+                        snapshot["transactions"]["purchases"],
+                        snapshot["transactions"]["sales"],
+                        ),
+                    ),
+                    (
+                        "accounts",
+                        lambda: accounts_replace_all(snapshot["accounts"]),
+                    ),
+                    ("log", lambda: replace_log(snapshot["log"])),
+                ]
+                rollback_errors = []
+                for label, restore in restorations:
+                    try:
+                        restore()
+                    except Exception as rollback_exc:
+                        rollback_errors.append(
+                            f"{label}: {type(rollback_exc).__name__}: "
+                            f"{rollback_exc}"
+                        )
+                if rollback_errors:
+                    raise RuntimeError(
+                        f"完整导入失败 ({type(import_exc).__name__}: "
+                        f"{import_exc})；部分回滚失败: "
+                        + "; ".join(rollback_errors)
+                    ) from import_exc
+                raise
+            return {"ok": True}
+    except PipelineMaintenanceBlocked as exc:
+        return {
+            "ok": False,
+            "reconciliation_required": True,
+            "error": str(exc),
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
 @router.post("/api/holdings_report/send")

@@ -23,6 +23,17 @@ from app.accounts import (
     update_account,
 )
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+_STEAM_AUTH_POLL_MAX_ATTEMPTS = 10
+_STEAM_AUTH_POLL_INTERVAL_SECONDS = 1.0
+_STEAM_LOGIN_REQUEST_TIMEOUT = (10, 25)
+_steampy_login_patch_lock = threading.Lock()
+
+
+class SteamAuthTokenPending(RuntimeError):
+    """Steam accepted the auth flow but has not returned its refresh token yet."""
+
+
 def _verify_steam_cookies_valid(cookie_str: str, steam_id: str = "") -> bool:
     """Use an actual HTTP request to verify if Steam cookies are truly valid.
     Returns True if cookies are valid, False if expired/invalid.
@@ -183,12 +194,36 @@ def _build_steam_guard_dict(cur: dict, cfg: dict) -> Optional[dict]:
 def _short_error_detail(exc: Exception, limit: int = 220) -> str:
     detail = str(exc).strip()
     detail = re.sub(r"\s+", " ", detail)
+    detail = re.sub(
+        r"(https?://)[^/@\s]+@",
+        r"\g<1>***@",
+        detail,
+        flags=re.IGNORECASE,
+    )
     if len(detail) > limit:
         detail = detail[: limit - 3] + "..."
     return detail
+
+
 def _classify_steam_login_exception(exc: Exception) -> str:
     detail = _short_error_detail(exc)
     err = detail.lower()
+    if (
+        "status code: 443" in err
+        or "status code 443" in err
+        or "http 443" in err
+    ):
+        return (
+            "network_error: Steam 登录请求收到非标准 HTTP 443 响应；"
+            "这通常由代理、加速器或安全网关返回，不是 Steam 账号错误。"
+            f" 原始错误: {detail}"
+        )
+    if isinstance(exc, _req.exceptions.SSLError) or "ssl" in err or "certificate" in err:
+        return (
+            "network_error: Steam 登录 HTTPS/SSL 握手失败；通常是代理、加速器、"
+            "证书拦截或本机网络环境导致。"
+            f" 原始错误: {detail}"
+        )
     network_markers = (
         "max retries exceeded",
         "newconnectionerror",
@@ -202,6 +237,8 @@ def _classify_steam_login_exception(exc: Exception) -> str:
         "timed out",
         "read timed out",
         "connect timeout",
+        "proxy not working",
+        "proxyconnectionerror",
     )
     request_network_types = (
         _req.exceptions.ConnectionError,
@@ -210,23 +247,99 @@ def _classify_steam_login_exception(exc: Exception) -> str:
     )
     if isinstance(exc, request_network_types) or any(m in err for m in network_markers):
         return (
-            "network_error: Steam 登录网络连接失败，程序没有成功连上 "
-            "steamcommunity.com:443；这不是账号密码或 Steam Guard 错误。"
+            "network_error: Steam 登录网络连接失败，未能建立到 Steam 的 HTTPS 连接；"
+            "错误中的 :443 是 HTTPS 端口，不是账号验证错误码。"
+            "这不是账号密码或 Steam Guard 错误。"
             "请检查本机直连、加速器/代理、DNS 或稍后重试。"
             f" 原始错误: {detail}"
         )
-    if isinstance(exc, _req.exceptions.SSLError) or "ssl" in err or "certificate" in err:
-        return (
-            "network_error: Steam 登录 HTTPS/SSL 握手失败；通常是代理、加速器、"
-            "证书拦截或本机网络环境导致。"
-            f" 原始错误: {detail}"
-        )
     return detail[:120]
-def _do_steampy_login(username: str, password: str, steam_guard_dict: Optional[dict]) -> Tuple[bool, str, dict]:
+
+
+def _poll_steam_refresh_token(
+    executor,
+    client_id: str,
+    request_id: str,
+    *,
+    max_attempts: int = _STEAM_AUTH_POLL_MAX_ATTEMPTS,
+    interval_seconds: float = _STEAM_AUTH_POLL_INTERVAL_SECONDS,
+    sleeper=None,
+) -> str:
+    """Poll Steam until the auth session actually contains a refresh token.
+
+    steampy 1.2.0 polls ``PollAuthSessionStatus`` only once and indexes
+    ``response["refresh_token"]`` directly.  Steam is allowed to return an
+    otherwise successful, still-pending response first, which used to leak a
+    bare ``KeyError('refresh_token')`` to the account verification endpoint.
+    """
+    if sleeper is None:
+        sleeper = time.sleep
+    attempts = max(1, int(max_attempts))
+    delay = max(0.0, float(interval_seconds))
+    current_client_id = client_id
+    last_status = None
+
+    for attempt in range(attempts):
+        response = executor._api_call(
+            "POST",
+            "IAuthenticationService",
+            "PollAuthSessionStatus",
+            params={
+                "client_id": current_client_id,
+                "request_id": request_id,
+            },
+        )
+        last_status = getattr(response, "status_code", None)
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+        response_data = payload.get("response") if isinstance(payload, dict) else None
+        if not isinstance(response_data, dict):
+            response_data = {}
+
+        refresh_token = response_data.get("refresh_token")
+        if refresh_token:
+            executor.refresh_token = refresh_token
+            return refresh_token
+
+        # Steam may rotate the client id while the auth session is pending.
+        new_client_id = response_data.get("new_client_id")
+        if new_client_id:
+            current_client_id = new_client_id
+
+        if last_status not in (None, 200):
+            raise SteamAuthTokenPending(
+                f"Steam 登录状态查询失败（HTTP {last_status}），请稍后重试"
+            )
+        if attempt + 1 < attempts:
+            sleeper(delay)
+
+    raise SteamAuthTokenPending(
+        "Steam 登录确认尚未返回凭证；已自动重试。"
+        "请确认 shared_secret 与当前账号匹配、系统时间准确，然后稍后重试"
+    )
+
+
+def _steampy_pool_sessions_with_retry(self, client_id: str, request_id: str) -> None:
+    _poll_steam_refresh_token(
+        self,
+        client_id,
+        request_id,
+        max_attempts=_STEAM_AUTH_POLL_MAX_ATTEMPTS,
+        interval_seconds=_STEAM_AUTH_POLL_INTERVAL_SECONDS,
+    )
+
+
+def _do_steampy_login_once(
+    username: str,
+    password: str,
+    steam_guard_dict: Optional[dict],
+    request_proxies: Optional[dict] = None,
+) -> Tuple[bool, str, dict]:
     """Core Steam login using steampy's SteamClient with JWT/Protobuf protocol.
-    Uses class-level requests.Session.request monkey-patch to bypass SSL
-    verification for ALL internal steampy requests (including those made
-    by LoginExecutor), exactly matching the user's reference implementation.
+    Applies SSL, timeout, and proxy settings only to this SteamClient session,
+    including the LoginExecutor requests that reuse it.
     Returns (ok, error_code, cookie_dict).
     """
     import json
@@ -234,18 +347,29 @@ def _do_steampy_login(username: str, password: str, steam_guard_dict: Optional[d
     import requests.utils as rutils
     import urllib3
     urllib3.disable_warnings()
-    _old_request = _req.Session.request
-    def _bypass_ssl(self, method, url, **kwargs):
+    _steampy_login_patch_lock.acquire()
+    _old_pool_sessions = None
+    client = None
+    old_client_request = None
+    active_proxies = dict(request_proxies or {})
+
+    def _steam_request(method, url, **kwargs):
         kwargs['verify'] = False
-        kwargs.setdefault('proxies', {})
-        kwargs['proxies'] = {}
-        return _old_request(self, method, url, **kwargs)
-    _req.Session.request = _bypass_ssl
+        kwargs['proxies'] = dict(active_proxies)
+        kwargs.setdefault('timeout', _STEAM_LOGIN_REQUEST_TIMEOUT)
+        return old_client_request(method, url, **kwargs)
+
     try:
         from steampy.client import SteamClient
+        from steampy.login import LoginExecutor
+        _old_pool_sessions = getattr(LoginExecutor, "_pool_sessions_steam", None)
+        if _old_pool_sessions is not None:
+            LoginExecutor._pool_sessions_steam = _steampy_pool_sessions_with_retry
         sg_str = json.dumps(steam_guard_dict) if steam_guard_dict else None
         client = SteamClient(api_key="", username=username, password=password,
                              steam_guard=sg_str)
+        old_client_request = client._session.request
+        client._session.request = _steam_request
         client._session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'application/json, text/plain, */*',
@@ -265,6 +389,16 @@ def _do_steampy_login(username: str, password: str, steam_guard_dict: Optional[d
         return True, '', merged
     except Exception as e:
         err = str(e).lower()
+        if isinstance(e, SteamAuthTokenPending) or (
+            isinstance(e, KeyError) and e.args == ("refresh_token",)
+        ):
+            detail = str(e).strip("'\" ")
+            if not detail or detail == "refresh_token":
+                detail = (
+                    "Steam 登录确认尚未返回凭证，请确认 shared_secret 与当前账号匹配、"
+                    "系统时间准确，然后稍后重试"
+                )
+            return False, f"auth_pending: {detail}", {}
         network_error = _classify_steam_login_exception(e)
         if network_error.startswith("network_error:"):
             return False, network_error, {}
@@ -278,7 +412,115 @@ def _do_steampy_login(username: str, password: str, steam_guard_dict: Optional[d
             return False, 'ip_blocked: Steam API无响应，请尝试重启加速器或更换IP', {}
         return False, network_error, {}
     finally:
-        _req.Session.request = _old_request
+        if _old_pool_sessions is not None:
+            LoginExecutor._pool_sessions_steam = _old_pool_sessions
+        if client is not None and old_client_request is not None:
+            client._session.request = old_client_request
+        _steampy_login_patch_lock.release()
+
+
+def _get_steam_login_proxy_manager():
+    from utils.proxy_manager import get_proxy_manager
+
+    return get_proxy_manager()
+
+
+def _do_steampy_login(
+    username: str,
+    password: str,
+    steam_guard_dict: Optional[dict],
+) -> Tuple[bool, str, dict]:
+    """Log in once or retry through the configured proxy policy.
+
+    Strategy 1 retries through one proxy only after a network failure.
+    Strategy 2 uses a proxy immediately and rotates once on a network failure.
+    Disabled/strategy 3 keeps the original direct path. Authentication errors
+    are never retried, which avoids unnecessary Steam login attempts.
+    """
+    try:
+        proxy_cfg = (load_app_config_validated().get("proxy_pool") or {})
+        strategy = int(proxy_cfg.get("strategy", 3))
+        proxy_enabled = bool(proxy_cfg.get("enabled")) and strategy in (1, 2)
+    except Exception as exc:
+        log(
+            f"Steam 登录读取代理配置失败，将使用本机网络: {_short_error_detail(exc)}",
+            "warn",
+            category="steam",
+        )
+        proxy_enabled = False
+        strategy = 3
+
+    if not proxy_enabled:
+        return _do_steampy_login_once(username, password, steam_guard_dict)
+
+    try:
+        proxy_manager = _get_steam_login_proxy_manager()
+        first_proxy = proxy_manager.get_proxies_for_request(failed=False)
+    except Exception as exc:
+        detail = _short_error_detail(exc)
+        if strategy == 2:
+            return (
+                False,
+                "network_error: Steam 登录已配置为完全走代理，但代理池初始化失败。"
+                f" 原始错误: {detail}",
+                {},
+            )
+        log(
+            f"Steam 登录代理池初始化失败，将仅尝试本机网络: {detail}",
+            "warn",
+            category="steam",
+        )
+        return _do_steampy_login_once(username, password, steam_guard_dict)
+
+    if strategy == 2 and not first_proxy:
+        return (
+            False,
+            "network_error: Steam 登录已配置为完全走代理，但代理池当前没有可用节点；"
+            "请检查代理配置和节点检测结果。",
+            {},
+        )
+
+    first_result = _do_steampy_login_once(
+        username,
+        password,
+        steam_guard_dict,
+        first_proxy,
+    )
+    if first_result[0] or not first_result[1].startswith("network_error:"):
+        return first_result
+
+    try:
+        retry_proxy = proxy_manager.get_proxies_for_request(failed=True)
+    except Exception as exc:
+        log(
+            f"Steam 登录切换代理失败: {_short_error_detail(exc)}",
+            "warn",
+            category="steam",
+        )
+        return first_result
+    if not retry_proxy:
+        return first_result
+
+    if strategy == 1:
+        log(
+            "Steam 登录本机连接失败，按代理策略切换节点重试一次",
+            "info",
+            category="steam",
+        )
+    else:
+        log(
+            "Steam 登录代理连接失败，轮换节点重试一次",
+            "info",
+            category="steam",
+        )
+    return _do_steampy_login_once(
+        username,
+        password,
+        steam_guard_dict,
+        retry_proxy,
+    )
+
+
 def steam_id_from_cookie_str(cookie_str: str) -> str:
     slc = ""
     for part in (cookie_str or "").split(";"):
@@ -393,6 +635,10 @@ def _try_steam_auto_relogin_impl() -> tuple:
     if err_code == "captcha":
         log("auto_relogin: Steam 要求人机验证（Captcha），自动登录暂时失败", "warn", category="steam")
         return False, "captcha", "Steam 触发了人机验证，请稍后重试或手动登录"
+    if err_code.startswith("auth_pending:"):
+        msg = err_code.split(": ", 1)[1] if ": " in err_code else err_code
+        log(f"auto_relogin: {msg}", "warn", category="steam")
+        return False, "auth_pending", msg
     if err_code.startswith("network_error:"):
         msg = err_code.split(": ", 1)[1] if ": " in err_code else err_code
         log(f"auto_relogin: {msg}", "warn", category="steam")
@@ -431,6 +677,9 @@ def verify_steam_auto_login(account_id: str) -> dict:
         return {"ok": False, "status": "wrong_creds", "message": "账号或密码错误"}
     if err_code == "captcha":
         return {"ok": False, "status": "captcha", "message": "Steam 触发了人机验证，请稍后重试"}
+    if err_code.startswith("auth_pending:"):
+        msg = err_code.split(": ", 1)[1] if ": " in err_code else err_code
+        return {"ok": False, "status": "auth_pending", "message": msg}
     if err_code.startswith("network_error:"):
         msg = err_code.split(": ", 1)[1] if ": " in err_code else err_code
         return {"ok": False, "status": "network_error", "message": msg}

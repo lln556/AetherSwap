@@ -76,3 +76,22 @@ def test_代理池关闭时不预热():
         mgr.warmup()
     mock_test.assert_not_called()
     assert mgr._warming_up is False
+
+
+def test_新配置代理在异步预热完成前可用():
+    from utils import proxy_manager
+
+    config = {
+        "enabled": True,
+        "strategy": 2,
+        "proxies": [{"host": "fresh-proxy.example", "port": 8080}],
+    }
+    with patch.object(proxy_manager, "_load_proxy_pool_cfg", return_value=config):
+        mgr = proxy_manager.ProxyManager()
+
+    selected = mgr.get_proxies_for_request()
+
+    assert selected == {
+        "http": "http://fresh-proxy.example:8080/",
+        "https": "http://fresh-proxy.example:8080/",
+    }

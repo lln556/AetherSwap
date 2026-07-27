@@ -3,6 +3,28 @@ let inventoryRefreshSeconds = 600;
 let inventoryTimer = null;
 let currentPriceRefreshMinutes = 10;
 let currentPriceTimer = null;
+function detectBrowserTimezone() {
+  let name = "";
+  try {
+    name = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+  } catch (_err) {
+    name = "";
+  }
+  const offsetMinutes = -new Date().getTimezoneOffset();
+  return {
+    name,
+    offsetMinutes: Number.isFinite(offsetMinutes)
+      ? Math.trunc(offsetMinutes)
+      : undefined,
+  };
+}
+function browserTimezoneLabel(timezone = detectBrowserTimezone()) {
+  const offset = timezone.offsetMinutes;
+  const offsetLabel = Number.isFinite(offset)
+    ? `UTC${offset >= 0 ? "+" : "-"}${String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0")}:${String(Math.abs(offset) % 60).padStart(2, "0")}`
+    : "UTC offset unavailable";
+  return timezone.name ? `${timezone.name} (${offsetLabel})` : offsetLabel;
+}
 async function loadConfig() {
   const d = await fetchJson(API + "/config");
   const c = d.config || {};
@@ -101,6 +123,10 @@ async function loadConfig() {
   if (gStartTimeHour) gStartTimeHour.value = p.start_time_hour ?? "";
   const gEndTimeHour = el("cfg-end-time-hour");
   if (gEndTimeHour) gEndTimeHour.value = p.end_time_hour ?? "";
+  const timezoneDisplay = el("cfg-timezone-display");
+  if (timezoneDisplay) {
+    timezoneDisplay.textContent = `时间判断采用当前浏览器时区：${browserTimezoneLabel()}`;
+  }
   const invInput = el("cfg-inv-refresh");
   if (invInput) invInput.value = inv.refresh_seconds ?? "";
   inventoryRefreshSeconds = parseInt(inv.refresh_seconds, 10) || inventoryRefreshSeconds || 600;
@@ -141,6 +167,10 @@ async function loadConfig() {
   if (gDeviceId) gDeviceId.value = sc.device_id ?? "";
   const gFx = el("cfg-exchange-refresh-hours");
   if (gFx) gFx.value = sys.exchange_rate_refresh_hours ?? "";
+  const gBuffKeepalive = el("cfg-buff-session-keepalive-enabled");
+  if (gBuffKeepalive) gBuffKeepalive.checked = sys.buff_session_keepalive_enabled === true;
+  const gKeepaliveHours = el("cfg-session-keepalive-hours");
+  if (gKeepaliveHours) gKeepaliveHours.value = sys.session_keepalive_hours ?? 4;
   const gUiScale = el("cfg-ui_scale");
   if (gUiScale) {
     gUiScale.value = sys.ui_scale || "0.7";
@@ -163,6 +193,7 @@ async function loadConfig() {
 }
 
 function formToConfig() {
+  const browserTimezone = detectBrowserTimezone();
   const readNumberInput = (id) => {
     const node = el(id);
     if (!node) return undefined;
@@ -266,6 +297,10 @@ function formToConfig() {
     },
     system: {
       exchange_rate_refresh_hours: el("cfg-exchange-refresh-hours") ? parseFloat(el("cfg-exchange-refresh-hours").value) || undefined : undefined,
+      buff_session_keepalive_enabled: !!el("cfg-buff-session-keepalive-enabled")?.checked,
+      session_keepalive_hours: readNumberInput("cfg-session-keepalive-hours"),
+      timezone: browserTimezone.name,
+      timezone_offset_minutes: browserTimezone.offsetMinutes,
       ui_scale: el("cfg-ui_scale") ? el("cfg-ui_scale").value : undefined,
     },
     steam_deals: {
@@ -301,9 +336,53 @@ async function startPipeline() {
   try {
     await saveConfigFromForm();
     const d = await fetchJson(API + "/config");
-    const result = await fetchJson(API + "/pipeline/start", { method: "POST", body: JSON.stringify({ config: d.config || {} }) });
+    const payload = { config: d.config || {} };
+    let result = await fetchJson(API + "/pipeline/start", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    if (result && result.reconciliation_required) {
+      const checkout = result.checkout || {};
+      if (!checkout.intent_id) {
+        toast(
+          "BUFF 对账门禁文件异常",
+          "无法安全识别原 checkout，请先备份并人工检查 config/buff_checkout_guard.json",
+        );
+        return;
+      }
+      const refs = [
+        checkout.stage ? `stage=${checkout.stage}` : "",
+        checkout.order_id ? `order_id=${checkout.order_id}` : "",
+        checkout.batch_id ? `batch_id=${checkout.batch_id}` : "",
+        checkout.goods_id ? `goods_id=${checkout.goods_id}` : "",
+        Array.isArray(checkout.completed_order_ids) && checkout.completed_order_ids.length
+          ? `completed_order_ids=${checkout.completed_order_ids.join(",")}`
+          : "",
+        checkout.reason ? `reason=${checkout.reason}` : "",
+      ].filter(Boolean).join("\n");
+      const confirmed = await appConfirm(
+        `检测到上一次 BUFF 下单结果尚未对账。\n\n${refs || "未取得外部订单号"}\n\n请先在 BUFF 官网检查订单/批次状态。只有确认不会重复下单后，才能解除门禁并重新启动。`,
+        {
+          title: "BUFF 订单对账确认",
+          danger: true,
+          confirmText: "我已核对，解除门禁",
+        },
+      );
+      if (!confirmed) {
+        toast("启动已取消", "请先完成 BUFF 订单对账");
+        return;
+      }
+      payload.acknowledge_buff_reconciliation = true;
+      payload.buff_reconciliation_intent_id = checkout.intent_id || "";
+      result = await fetchJson(API + "/pipeline/start", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    }
     if (result && result.already_running) {
       toast("买入流水线已在运行");
+    } else if (result && result.ok === false) {
+      toast("启动失败", result.error || "请检查 BUFF 状态");
     } else {
       toast("启动请求已发送");
     }

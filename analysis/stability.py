@@ -1,8 +1,9 @@
 import statistics
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
-DATE_FMT = "%b %d %Y %H"
+from utils.time import parse_steam_history_date
+
 CV_STABLE = 0.15
 CV_STABLE_LOW = 0.05
 MIN_TRADES = 5
@@ -68,11 +69,7 @@ def _apply_currency(prices: list, currency: Optional[str], usd_to_cny: float) ->
     from utils.money import apply_currency
     return apply_currency(prices, currency, usd_to_cny)
 def _parse_item_date(date_str: str) -> Optional[datetime]:
-    try:
-        part = date_str.split(":")[0].strip()
-        return datetime.strptime(part, DATE_FMT)
-    except (ValueError, IndexError):
-        return None
+    return parse_steam_history_date(date_str)
 def _safe_volume(item: list) -> int:
     if len(item) < 3:
         return 0
@@ -163,7 +160,7 @@ def analyze_by_time(
 ) -> dict:
     if not history:
         return {"valid": False, "msg": "无历史数据"}
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     dt_prices: List[Tuple[datetime, float]] = []
     volumes = []
     for item in history:
@@ -270,7 +267,7 @@ def analyze_by_time(
         price_percentile = 0.5
 
     recent_percentile: Optional[float] = None
-    cutoff_14 = datetime.now() - timedelta(days=14)
+    cutoff_14 = datetime.now(timezone.utc) - timedelta(days=14)
     recent_prices_cny = [p for dt, p in dt_prices_cny if dt >= cutoff_14]
     if recent_prices_cny:
         recent_clean = clean_prices_iqr(recent_prices_cny)

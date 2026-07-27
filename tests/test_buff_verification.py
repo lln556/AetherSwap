@@ -17,7 +17,9 @@ def test_make_request_raises_verification_required(monkeypatch):
         def json(self):
             return {"code": "FAIL", "msg": "页面已过期，请刷新当前页面"}
 
-    monkeypatch.setattr("requests.request", lambda *args, **kwargs: FakeResponse())
+    monkeypatch.setattr(
+        "requests.Session.request", lambda self, *args, **kwargs: FakeResponse()
+    )
     buyer = BuffBuyer("csrf_token=abc")
 
     with pytest.raises(BuffVerificationRequired):

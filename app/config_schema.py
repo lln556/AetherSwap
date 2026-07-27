@@ -18,6 +18,10 @@ DEFAULTS = {
         "pay_method": "alipay",
         "game": "csgo",
         "price_tolerance": 0.5,
+        # Optional ancillary POSTs add traffic and can themselves have an
+        # unknown result. Keep seller reminders manual unless explicitly opted
+        # in by an advanced user.
+        "auto_ask_seller_to_send": False,
     },
     "stability": {
         "days": 30,
@@ -95,6 +99,13 @@ DEFAULTS = {
     },
     "system": {
         "exchange_rate_refresh_hours": 24,
+        "buff_session_keepalive_enabled": False,
+        "session_keepalive_hours": 4.0,
+        # The web UI records the browser clock zone here.  Keeping both an
+        # IANA name and an offset lets containers/Windows hosts without a
+        # matching zone database still evaluate schedule windows correctly.
+        "timezone": "Asia/Shanghai",
+        "timezone_offset_minutes": 480,
         "ui_scale": "0.7",
     },
     "proxy_pool": {
@@ -148,6 +159,7 @@ def _validate_ranges(cfg: dict) -> dict:
     stab = cfg.get("stability") or {}
     buff = cfg.get("buff") or {}
     inv = cfg.get("inventory") or {}
+    system = cfg.get("system") or {}
 
     if isinstance(pipe.get("max_discount"), (int, float)):
         v = pipe["max_discount"]
@@ -191,6 +203,24 @@ def _validate_ranges(cfg: dict) -> dict:
             warnings.warn(f"[config] inventory.refresh_seconds={v} 过短，已修正为600秒")
             inv["refresh_seconds"] = 600
 
+    timezone_name = system.get("timezone")
+    system["timezone"] = (
+        timezone_name.strip()[:128]
+        if isinstance(timezone_name, str)
+        else ""
+    )
+    offset = system.get("timezone_offset_minutes")
+    if isinstance(offset, bool):
+        offset = None
+    if offset is not None:
+        try:
+            parsed_offset = float(offset)
+            if not parsed_offset.is_integer() or not -840 <= parsed_offset <= 840:
+                raise ValueError("timezone offset out of range")
+            system["timezone_offset_minutes"] = int(parsed_offset)
+        except (TypeError, ValueError, OverflowError):
+            system["timezone_offset_minutes"] = None
+
     return cfg
 
 
@@ -209,16 +239,24 @@ def validate_and_fill(data: dict, defaults: Optional[dict] = None) -> dict:
             val = data[k]
             if isinstance(default, bool) and not isinstance(val, bool):
                 val = _coerce_bool(val, default)
-            elif isinstance(default, int) and isinstance(val, (float, str)):
-                try:
-                    val = int(float(val))
-                except (ValueError, TypeError):
+            elif isinstance(default, int):
+                if isinstance(val, bool):
                     val = default
-            elif isinstance(default, float) and isinstance(val, (int, str)):
-                try:
-                    val = float(val)
-                except (ValueError, TypeError):
+                elif not isinstance(val, int):
+                    try:
+                        val = int(float(val))
+                    except (ValueError, TypeError, OverflowError):
+                        val = default
+            elif isinstance(default, float):
+                if isinstance(val, bool):
                     val = default
+                elif not isinstance(val, float):
+                    try:
+                        val = float(val)
+                    except (ValueError, TypeError, OverflowError):
+                        val = default
+            elif isinstance(default, str) and not isinstance(val, str):
+                val = default
             elif isinstance(default, list) and not isinstance(val, list):
                 val = default
             out[k] = val

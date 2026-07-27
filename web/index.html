@@ -856,6 +856,9 @@
                     title="0–23，例 22 表示 22:00" />
                 </div>
               </div>
+              <span class="field-hint" id="cfg-timezone-display">
+                时间判断采用当前浏览器时区。
+              </span>
             </div>
           </div>
 
@@ -974,6 +977,17 @@
                   <label for="cfg-exchange-refresh-hours">汇率刷新间隔(小时)</label>
                   <input type="number" id="cfg-exchange-refresh-hours" min="0" step="0.5" placeholder="0"
                     title="每隔多少小时自动查询一次汇率，0 表示关闭" />
+                </div>
+                <div class="field field--switch">
+                  <label class="checkbox-wrapper" title="默认关闭。仅对本程序浏览器登录生成的 Buff 会话生效；手工 Cookie 不会被浏览器 profile 覆盖。">
+                    <input type="checkbox" id="cfg-buff-session-keepalive-enabled" />
+                    <span>启用 Buff 浏览器会话保活</span>
+                  </label>
+                </div>
+                <div class="field">
+                  <label for="cfg-session-keepalive-hours">会话保活间隔(小时)</label>
+                  <input type="number" id="cfg-session-keepalive-hours" min="0.5" step="0.5" placeholder="4"
+                    title="开启后首次保活也会等待完整间隔；流水线或结账期间不会执行" />
                 </div>
                 <div class="field">
                   <label for="cfg-ui_scale">界面缩放比例(内部浏览器)</label>
@@ -1733,8 +1747,9 @@
       <h3>售出</h3>
       <p class="muted small" id="sell-tx-item-name"></p>
       <div class="field" style="margin:12px 0">
-        <label for="sell-tx-price">售出价格</label>
-        <input type="number" id="sell-tx-price" step="0.01" min="0.01" placeholder="填写实际到手金额" />
+        <label for="sell-tx-price">实际到手金额（税后）</label>
+        <input type="number" id="sell-tx-price" step="0.01" min="0.01" placeholder="填写 Steam 实际到账金额" />
+        <span class="field-hint">记录时会换算为税前出售价，与自动售出记录保持一致。</span>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
         <button type="button" id="sell-tx-cancel" class="btn btn-secondary">取消</button>
