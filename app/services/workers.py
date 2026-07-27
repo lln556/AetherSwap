@@ -8,10 +8,13 @@ import time
 from pathlib import Path
 from typing import Optional
 from app.state import (
+    get_status,
     get_purchases,
     get_sales,
     is_steam_background_allowed,
     log,
+    set_buff_auth_expired,
+    set_buff_verification_required,
     set_inventory,
     update_purchase,
     update_purchase_by_id,
@@ -227,28 +230,102 @@ def exchange_rate_worker() -> None:
         except Exception as e:
             log(f"exchange_rate: worker 异常 {type(e).__name__}: {e}, 5 分钟后重试", "error", category="exchange_rate")
             time.sleep(300)
+_BUFF_RECONCILIATION_REQUIRED_STEPS = frozenset(
+    {
+        "BUFF_WRITE_RESULT_UNKNOWN",
+        "BUFF_ORDER_CREATED_PENDING",
+        "BUFF_COOLING_DOWN",
+        "PIPELINE_UNEXPECTED_ERROR",
+    }
+)
+
+
+def _buff_background_request_is_safe() -> bool:
+    """BUFF background reads must never overlap a buy pipeline or checkout."""
+
+    from app.pipeline import is_shutdown_pending
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+
+    if is_shutdown_pending() or get_unresolved_checkout() is not None:
+        return False
+    status = get_status() or {}
+    return (
+        status.get("status") != "running"
+        and status.get("step") != "CHECKOUT_PENDING"
+        and status.get("step") not in _BUFF_RECONCILIATION_REQUIRED_STEPS
+        and not status.get("buff_auth_expired")
+        and not status.get("buff_verification_required")
+    )
+
+
 def receive_worker() -> None:
     from app.receive_flow import try_receive_once
+    from app.services.buff_auth import get_buff_auth_lock
+    from app.services.buff_client import create_buff_client_from_config
+    from app.services.buff_checkout_guard import buff_activity_guard
+    from buff import (
+        BuffAuthExpired,
+        BuffRateLimited,
+        BuffRequestBlocked,
+        BuffVerificationRequired,
+    )
+
+    buff_client = None
     while True:
         try:
             cfg = load_app_config_validated()
             interval = max(10, int(cfg.get("pipeline", {}).get("receive_poll_interval_seconds", 30) or 30))
             time.sleep(interval)
-            if not is_steam_background_allowed():
+            if not is_steam_background_allowed() or not _buff_background_request_is_safe():
                 continue
-            purchases = get_purchases()
-            if not any(p.get("pending_receipt") and not p.get("assetid") for p in purchases):
-                continue
-            n = try_receive_once(
-                get_purchases,
-                update_purchase,
-                lambda: (get_buff_credentials() or {}).get("cookies", ""),
-                get_steam_credentials,
-                scan_inventory=scan_cs2_inventory,
-                update_purchase_by_id=update_purchase_by_id,
-            )
+            # Hold the complete receive transaction (BUFF task lookup, Steam
+            # offer acceptance and DB update) outside pipeline start/import/
+            # data reset.  The inner BuffClient calls are re-entrant.
+            with get_buff_auth_lock():
+                with buff_activity_guard():
+                    if (
+                        not is_steam_background_allowed()
+                        or not _buff_background_request_is_safe()
+                    ):
+                        continue
+                    purchases = get_purchases()
+                    if not any(
+                        p.get("pending_receipt") and not p.get("assetid")
+                        for p in purchases
+                    ):
+                        continue
+                    credentials = get_buff_credentials() or {}
+                    if not credentials.get("cookies"):
+                        continue
+                    if buff_client is None:
+                        buff_client = create_buff_client_from_config(
+                            credentials,
+                            cfg,
+                        )
+                    n = try_receive_once(
+                        get_purchases,
+                        update_purchase,
+                        lambda: buff_client,
+                        get_steam_credentials,
+                        scan_inventory=scan_cs2_inventory,
+                        update_purchase_by_id=update_purchase_by_id,
+                    )
             if n > 0:
                 log(f"receive_worker: 本轮收取到 {n} 件物品", "info", category="receive")
+        except BuffRateLimited as e:
+            log(f"receive_worker: Buff 请求处于限流冷却: {e}", "warn", category="receive")
+            time.sleep(min(60, max(1, int(e.retry_after))))
+        except BuffVerificationRequired as e:
+            set_buff_verification_required(True, str(e))
+            log(f"receive_worker: Buff 需要安全验证: {e}", "warn", category="receive")
+            time.sleep(60)
+        except BuffAuthExpired:
+            set_buff_auth_expired(True)
+            log("receive_worker: Buff 登录已失效，暂停待收货查询", "warn", category="receive")
+            time.sleep(60)
+        except BuffRequestBlocked as e:
+            log(f"receive_worker: Buff 请求策略已阻止后台查询: {e}", "warn", category="receive")
+            time.sleep(60)
         except Exception as e:
             log(f"receive_worker 异常 {type(e).__name__}: {e}", "error", category="receive")
             _worker_alert("receive_worker", e)
@@ -450,39 +527,75 @@ def sync_account_region_worker() -> None:
     except Exception as e:
         log(f"account_region: 同步异常 {str(e)[:120]}", "error", category="account")
         return
+def _session_keepalive_enabled(cfg: dict) -> bool:
+    return bool((cfg.get("system") or {}).get("buff_session_keepalive_enabled", False))
+
+
+def _session_keepalive_is_safe() -> bool:
+    """Never open an auth browser while a pipeline or checkout is active."""
+
+    from app.pipeline import is_shutdown_pending
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+
+    if is_shutdown_pending() or get_unresolved_checkout() is not None:
+        return False
+    status = get_status() or {}
+    return (
+        status.get("status") != "running"
+        and status.get("step") != "CHECKOUT_PENDING"
+        and status.get("step") not in _BUFF_RECONCILIATION_REQUIRED_STEPS
+    )
+
+
 def session_keepalive_worker() -> None:
-    from app.services.steam_auth import try_steam_auto_relogin
     from app.services.buff_auth import try_buff_auto_relogin
-    first_run = True
+
     while True:
         try:
             cfg = load_app_config_validated()
+            if not _session_keepalive_enabled(cfg):
+                # Poll the opt-in switch without touching either remote service.
+                time.sleep(60)
+                continue
+
             sys_cfg = cfg.get("system") or {}
             interval_h = float(sys_cfg.get("session_keepalive_hours", 4.0))
             if interval_h <= 0:
-                log("keepalive: 已关闭, system.session_keepalive_hours<=0", "debug", category="keepalive")
-                time.sleep(3600)
-                continue
-            if first_run:
-                first_run = False
-                time.sleep(300) 
-            else:
-                time.sleep(interval_h * 3600)
-            while not is_steam_background_allowed():
+                log(
+                    "keepalive: 已开启但 system.session_keepalive_hours<=0，等待配置修正",
+                    "debug",
+                    category="keepalive",
+                )
                 time.sleep(60)
-            log("keepalive: 开始本轮定期后台会话保活 (Steam & Buff)...", "info", category="keepalive")
-            buff_ok, buff_status, buff_msg = try_buff_auto_relogin()
+                continue
+
+            # The first request waits the complete configured interval; startup
+            # no longer forces a browser visit after five minutes.
+            time.sleep(interval_h * 3600)
+
+            cfg = load_app_config_validated()
+            if not _session_keepalive_enabled(cfg):
+                continue
+            while not _session_keepalive_is_safe():
+                log("keepalive: 流水线或结账正在进行，延后会话保活", "debug", category="keepalive")
+                time.sleep(60)
+                cfg = load_app_config_validated()
+                if not _session_keepalive_enabled(cfg):
+                    break
+            if not _session_keepalive_enabled(cfg):
+                continue
+
+            # Re-check immediately before launching the browser to close the
+            # race between the wait loop and a newly started pipeline.
+            if not _session_keepalive_is_safe():
+                continue
+            log("keepalive: 开始本轮 Buff 后台会话保活...", "info", category="keepalive")
+            buff_ok, _buff_status, buff_msg = try_buff_auto_relogin()
             if not buff_ok:
-                log(f"keepalive: Buff 保活失败: {buff_msg}", "warn", category="keepalive")
+                log(f"keepalive: Buff 保活未完成: {buff_msg}", "warn", category="keepalive")
             else:
                 log(f"keepalive: Buff 保活成功: {buff_msg}", "info", category="keepalive")
-            time.sleep(10) 
-            steam_ok, steam_status, steam_msg = try_steam_auto_relogin()
-            if not steam_ok:
-                log(f"keepalive: Steam 保活失败: {steam_msg}", "warn", category="keepalive")
-            else:
-                log(f"keepalive: Steam 保活成功: {steam_msg}", "info", category="keepalive")
-            log("keepalive: 本轮后台会话保活已完成", "info", category="keepalive")
+            log("keepalive: 本轮 Buff 后台会话保活已完成", "info", category="keepalive")
         except Exception as e:
             log(f"keepalive: worker 异常 {e}, 15 分钟后重试", "error", category="keepalive")
             time.sleep(900)

@@ -23,6 +23,9 @@ from app.config_loader import (
 )
 from app.shared_market import get_steam_smart_price_cny, batch_fetch_prices
 router = APIRouter()
+STEAM_FEE_FACTOR = 1.15
+
+
 class AddPurchaseBody(BaseModel):
     name: str = ""
     price: float = 0
@@ -38,6 +41,11 @@ class TransactionUpdateBody(BaseModel):
     price: Optional[float] = None
     goods_id: Optional[int] = None
     market_price: Optional[float] = None
+    # ``sale_price`` is the historical, buyer-paid (pre-fee) value used by
+    # automatic Steam history sync.  The holdings UI asks for the seller's
+    # actual proceeds instead, so it sends this explicit field and the backend
+    # normalizes it to the legacy ``sale_price`` representation.
+    sale_proceeds: Optional[float] = None
     sale_price: Optional[float] = None
     pending_receipt: Optional[bool] = None
     assetid: Optional[str] = None
@@ -138,6 +146,14 @@ def api_transactions(enrich_current_price: bool = False):
             row["listing"] = bool(p.get("listing"))
         if p.get("listing_status") is not None:
             row["listing_status"] = p.get("listing_status")
+        for key in (
+            "buff_order_id",
+            "buff_sell_order_id",
+            "batch_id",
+            "bill_order_id",
+        ):
+            if p.get(key) is not None:
+                row[key] = str(p.get(key))
         out.append(row)
     for i, s in enumerate(sales):
         row = {"type": "sale", "idx": i, "name": s.get("name", ""), "goods_id": s.get("goods_id", ""), "price": float(s.get("price", 0)), "at": s.get("at", 0), "assetid": s.get("assetid") or ""}
@@ -175,7 +191,17 @@ def api_update_transaction(body: TransactionUpdateBody):
             data["market_price"] = round(float(body.market_price), 2)
         else:
             data["market_price"] = None
-    if body.sale_price is not None:
+    if body.sale_proceeds is not None:
+        if float(body.sale_proceeds) > 0:
+            data["sale_price"] = round(
+                float(body.sale_proceeds) * STEAM_FEE_FACTOR,
+                2,
+            )
+            data["sold_at"] = __import__("time").time()
+        else:
+            data["sale_price"] = None
+            data["sold_at"] = None
+    elif body.sale_price is not None:
         if float(body.sale_price) > 0:
             data["sale_price"] = round(float(body.sale_price), 2)
             data["sold_at"] = __import__("time").time()
@@ -232,43 +258,132 @@ def api_stats():
         "discount_ratio": round(discount_ratio, 4) if discount_ratio is not None else None,
     }
 @router.post("/api/purchase/{idx}/delist")
-def api_delist_purchase(idx: int):
+def api_delist_purchase(idx: int, db_id: int = 0):
     from app.steam_delist import delist_item
-    purchases = get_purchases()
-    if idx < 0 or idx >= len(purchases):
-        return {"ok": False, "error": "索引无效"}
-    p = purchases[idx]
+
+    try:
+        purchases = get_purchases()
+    except Exception as exc:
+        error = f"读取本地交易记录失败: {type(exc).__name__}"
+        log(error, "error", category="delist")
+        return {"ok": False, "error": error}
+
+    record_idx = idx
+    if db_id:
+        match = next(
+            (
+                (pos, purchase)
+                for pos, purchase in enumerate(purchases)
+                if int(purchase.get("_db_id") or 0) == db_id
+            ),
+            None,
+        )
+        if match is None:
+            return {"ok": False, "error": "记录已变化或不存在，请刷新后重试"}
+        record_idx, p = match
+    else:
+        if idx < 0 or idx >= len(purchases):
+            return {"ok": False, "error": "索引无效"}
+        p = purchases[idx]
+
     if not p.get("listing"):
         return {"ok": False, "error": "该记录非出售中状态"}
     assetid = str(p.get("assetid") or "").strip()
     if not assetid:
         return {"ok": False, "error": "无 assetid"}
     name = (p.get("name") or "").strip()
+    stable_db_id = int(p.get("_db_id") or 0)
+
     def log_fn(msg: str, level: str = "info"):
         log(msg, level, category="delist")
-    ok, new_assetid, err = delist_item(assetid, name, log_fn=log_fn)
-    if not ok:
-        log(err or "下架失败", "error", category="delist")
+
+    try:
+        ok, new_assetid, err = delist_item(assetid, name, log_fn=log_fn)
+    except Exception as exc:
+        err = f"下架请求异常: {type(exc).__name__}: {str(exc)[:120]}"
+        log_fn(err, "error")
         return {"ok": False, "error": err}
-    update_purchase(idx, {"assetid": new_assetid, "listing": False, "listing_status": None})
-    out = {"ok": True, "assetid": new_assetid}
+    if not ok:
+        error = err or "下架失败"
+        log_fn(error, "error")
+        return {"ok": False, "error": error}
+
+    update_data = {
+        "assetid": new_assetid,
+        "listing": False,
+        "listing_status": None,
+    }
+    try:
+        record_updated = (
+            update_purchase_by_id(stable_db_id, update_data)
+            if stable_db_id
+            else update_purchase(record_idx, update_data)
+        )
+    except Exception as exc:
+        record_updated = False
+        log_fn(
+            f"Steam 已下架，但本地记录写入异常: {type(exc).__name__}: {str(exc)[:120]}",
+            "error",
+        )
+
+    out = {
+        "ok": True,
+        "assetid": new_assetid,
+        "record_updated": bool(record_updated),
+    }
+    if err:
+        out["warning"] = err
+    if not record_updated:
+        local_warning = "Steam 已完成下架，但本地记录更新失败；请刷新后使用“同步售出/持有”修复，勿重复下架"
+        out["warning"] = "；".join(
+            part for part in (out.get("warning"), local_warning) if part
+        )
+
     if new_assetid is None:
         out["message"] = "下架成功，但未检测到新 assetid，正自动尝试同步补全..."
         log_fn("未检测到新 assetid，开始自动同步售出/持有", "info")
-        from app.sync_sold import run_sync_sold_from_history
         try:
+            from app.sync_sold import run_sync_sold_from_history
+
             ok_s, res_s = run_sync_sold_from_history(log_fn=log_fn)
             if ok_s:
                 reload_transactions()
                 pur = get_purchases()
-                if 0 <= idx < len(pur):
-                    auto_assetid = pur[idx].get("assetid")
-                    if auto_assetid:
-                        out["assetid"] = auto_assetid
-                        out["message"] = f"自动同步成功，已补全 assetid: {auto_assetid}"
-                        update_purchase(idx, {"assetid": auto_assetid, "listing": False, "listing_status": None})
+                current = next(
+                    (
+                        purchase
+                        for purchase in pur
+                        if stable_db_id
+                        and int(purchase.get("_db_id") or 0) == stable_db_id
+                    ),
+                    None,
+                )
+                if current is None:
+                    identity_matches = [
+                        purchase
+                        for purchase in pur
+                        if purchase.get("name") == p.get("name")
+                        and purchase.get("at") == p.get("at")
+                    ]
+                    current = identity_matches[0] if len(identity_matches) == 1 else None
+                auto_assetid = current.get("assetid") if current else None
+                if auto_assetid:
+                    out["assetid"] = auto_assetid
+                    out["record_updated"] = True
+                    out.pop("warning", None)
+                    out["message"] = f"自动同步成功，已补全 assetid: {auto_assetid}"
+            else:
+                sync_error = (res_s or {}).get("error", "未知错误")
+                sync_warning = f"Steam 已完成下架，但自动同步失败: {sync_error}"
+                out["warning"] = "；".join(
+                    part for part in (out.get("warning"), sync_warning) if part
+                )
         except Exception as e:
             log_fn(f"自动同步失败: {e}", "error")
+            sync_warning = "Steam 已完成下架，但自动同步异常；请稍后手动同步，勿重复下架"
+            out["warning"] = "；".join(
+                part for part in (out.get("warning"), sync_warning) if part
+            )
     return out
 @router.post("/api/sync_sold_from_history")
 def api_sync_sold_from_history():

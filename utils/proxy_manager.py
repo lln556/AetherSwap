@@ -79,7 +79,9 @@ class ProxyManager:
     def _reload(self):
         cfg = _load_proxy_pool_cfg()
         raw = cfg.get("proxies", [])
-        self._proxies = [{"config": p, "score": 0} for p in raw if p.get("host")]
+        # A configured node is eligible before the asynchronous warmup has
+        # completed. Warmup will promote healthy nodes or set failed ones to 0.
+        self._proxies = [{"config": p, "score": 1} for p in raw if p.get("host")]
         self._cached_strategy = int(cfg.get("strategy", 1))
         self._cached_enabled = bool(cfg.get("enabled", False))
         self._sync_cycle()

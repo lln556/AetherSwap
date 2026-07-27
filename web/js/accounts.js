@@ -123,6 +123,8 @@ function renderAccountDetail(acc, currentId) {
         showReloginModal("steam");
         const btnOpen = el("relogin-btn-open");
         if (btnOpen) btnOpen.click();
+      } else if (r.status === "network_error") {
+        toast("Steam 网络连接失败", r.message || "请检查加速器或代理设置");
       } else {
         toast("验证未通过", r.message || "请检查账号密码");
       }
@@ -135,9 +137,13 @@ function renderAccountDetail(acc, currentId) {
   });
 }
 async function saveManualCookie(type, cookies) {
+  const payload = { cookies };
+  if (type === "buff" && typeof navigator !== "undefined") {
+    payload.user_agent = navigator.userAgent || "";
+  }
   const r = await fetchJson(API + "/auth/" + type + "/manual_cookie", {
     method: "POST",
-    body: JSON.stringify({ cookies }),
+    body: JSON.stringify(payload),
   });
   if (!r.ok) throw new Error(r.error || "Cookie 保存失败");
   return r;
@@ -145,7 +151,10 @@ async function saveManualCookie(type, cookies) {
 async function promptManualCookieLogin(type, reason = "", options = {}) {
   const isSteam = type === "steam";
   const reasonText = compactLoginError(reason);
-  const message = options.message || ((reasonText ? `浏览器打开失败：${reasonText}\n\n` : "") + "请从已登录的浏览器复制 Cookie 后粘贴到下方。");
+  const defaultHint = isSteam
+    ? "请从已登录的浏览器复制 Cookie 后粘贴到下方。"
+    : "请从已登录且尽量与本服务使用同一固定网络出口的浏览器复制 Cookie（必须包含 session 与 csrf_token）。保存前会执行一次只读在线验证，受限会话不会强行解除熔断。";
+  const message = options.message || ((reasonText ? `浏览器打开失败：${reasonText}\n\n` : "") + defaultHint);
   const exportText = options.exportText || (reason ? String(reason) : "");
   const cookie = await appPrompt(isSteam ? "手动输入 Steam Cookie" : "手动输入 Buff Cookie", "", {
     message,

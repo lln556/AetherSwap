@@ -24,8 +24,18 @@ def get_buff_credentials() -> dict:
     return get_buff()
 def update_steam_creds(cookies: str, session_id: str, steam_id: str = None) -> None:
     update_steam_credentials(cookies, session_id, steam_id)
-def update_buff_creds(cookies: str) -> None:
-    update_buff_credentials(cookies)
+def update_buff_creds(
+    cookies: str,
+    user_agent: str = None,
+    source: str = None,
+) -> None:
+    update_buff_credentials(cookies, user_agent=user_agent, source=source)
+def get_buff_credentials_generation() -> int:
+    """Return the credential revision used by long-lived BUFF clients."""
+    try:
+        return int((get_buff_credentials() or {}).get("generation", 0))
+    except (TypeError, ValueError):
+        return 0
 def load_app_config_validated() -> dict:
     global _config_cache, _config_cache_ts
     now = _time.monotonic()

@@ -377,14 +377,36 @@ def _build_listing_plan(
 
 
 def _find_buy_record(purchases_snapshot: list, aid: str, market_hash_name: str) -> Optional[dict]:
-    """Return the most relevant purchase record for a given asset."""
-    if aid:
-        for p in purchases_snapshot:
-            if str(p.get("assetid") or "") == aid:
-                return p
+    """Return the current purchase record that owns *aid*.
+
+    A market name is not an ownership identifier: the inventory may contain a
+    personal drop or a later acquisition with the same name as an old purchase.
+    Automatic listing therefore fails closed unless a current, exact asset-id
+    record exists.
+    """
+    aid = str(aid or "").strip()
+    if not aid:
+        return None
+
     for p in purchases_snapshot:
-        if ((p.get("market_hash_name") or p.get("name") or "").strip() == market_hash_name):
-            return p
+        if str(p.get("assetid") or "").strip() != aid:
+            continue
+
+        # Do not let stale/finished records authorize another listing.  These
+        # checks also protect against a stale inventory snapshot immediately
+        # after a listing or sale.
+        sale_price = p.get("sale_price")
+        if sale_price is not None:
+            try:
+                if float(sale_price) > 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+        if p.get("sold_at") not in (None, "", 0, 0.0):
+            continue
+        if p.get("pending_receipt") or p.get("listing"):
+            continue
+        return p
     return None
 
 

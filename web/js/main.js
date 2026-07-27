@@ -737,7 +737,7 @@ function bindEvents() {
       for (const idx of indices) {
         const r = await fetchJson(API + "/transaction", {
           method: "PUT",
-          body: JSON.stringify({ type: "purchase", idx, sale_price: priceRounded }),
+          body: JSON.stringify({ type: "purchase", idx, sale_proceeds: priceRounded }),
         });
         if (!r.ok) {
           toast("操作失败", r.error || "");

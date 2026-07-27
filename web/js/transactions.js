@@ -160,7 +160,8 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
     } else {
       deviationCell = `<td class="mono">—</td>`;
     }
-    const delistBtn = !multiSelectMode && t.listing ? `<button type="button" class="btn btn-sm btn-warning-outline ph-btn-delist" data-type="purchase" data-idx="${idx}">下架</button> ` : "";
+    const dbId = Number(t.db_id) || 0;
+    const delistBtn = !multiSelectMode && t.listing ? `<button type="button" class="btn btn-sm btn-warning-outline ph-btn-delist" data-type="purchase" data-idx="${idx}" data-db-id="${dbId}">下架</button> ` : "";
     const actHtml = !multiSelectMode ? (delistBtn + `<button type="button" class="btn btn-sm btn-danger-outline ph-btn-del" data-type="purchase" data-idx="${idx}">删除</button>`) : "";
     const assetidStr = t.assetid ?? "—";
     rowHtmls.push(`<tr>${checkCell}<td class="mono">${escapeHtml(timeStr)}</td><td>${escapeHtml(nameText)}</td><td class="mono">${escapeHtml(assetidStr)}</td><td class="mono">${escapeHtml(Number(t.price).toFixed(2))}</td><td class="mono">${escapeHtml(mp)}</td><td class="status-cell ${statusCellClass}">${escapeHtml(statusStr)}</td><td class="mono">${escapeHtml(salePriceStr)}</td><td class="mono ${discountRatioClass}">${escapeHtml(discountRatioStr)}</td><td class="mono ${cashClass}">${escapeHtml(cashProfitStr)}</td><td class="mono ${selfUseClass}">${escapeHtml(selfUseStr)}</td>${deviationCell}<td class="tx-actions">${actHtml}</td></tr>`);
@@ -173,9 +174,12 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
       btn.disabled = true;
       toast("下架中", "请稍候…");
       try {
-        const r = await fetchJson(API + "/purchase/" + idx + "/delist", { method: "POST" });
+        const dbId = parseInt(btn.dataset.dbId, 10) || 0;
+        const query = dbId ? "?" + new URLSearchParams({ db_id: dbId }) : "";
+        const r = await fetchJson(API + "/purchase/" + idx + "/delist" + query, { method: "POST" });
         if (r.ok) {
-          const detail = r.assetid != null && r.assetid !== "" ? "新 assetid: " + r.assetid : "新 assetid 为空，请使用「同步售出/持有」补全";
+          const assetDetail = r.assetid != null && r.assetid !== "" ? "新 assetid: " + r.assetid : "新 assetid 为空，请使用「同步售出/持有」补全";
+          const detail = [assetDetail, r.warning || r.message || ""].filter(Boolean).join("；");
           toast("下架成功", detail);
           refreshTransactions();
           refreshStatus();

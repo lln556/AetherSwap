@@ -143,7 +143,7 @@ def _get_asset_class_instance_from_market_page(html: str, assetid: str) -> Optio
     return None
 def _get_assetids_by_class_instance(
     session, steam_id: str, appid: str, contextid: str, classid: str, instanceid: str
-) -> set:
+) -> Optional[set]:
     result = set()
     url = f"https://steamcommunity.com/inventory/{steam_id}/{appid}/{contextid}"
     last_assetid = None
@@ -154,10 +154,13 @@ def _get_assetids_by_class_instance(
                 params["start_assetid"] = last_assetid
             r = session.get(url, params=params, verify=False, timeout=20)
             if r.status_code != 200:
-                break
-            data = r.json() if r.text else {}
+                return None
+            try:
+                data = r.json() if r.text else {}
+            except (ValueError, TypeError):
+                return None
             if data.get("success") != 1:
-                break
+                return None
             assets = data.get("assets") or []
             for asset in assets:
                 cid = str(asset.get("classid", ""))
@@ -175,15 +178,23 @@ def _get_assetids_by_class_instance(
                 break
             jittered_sleep(0.5)
     except Exception:
-        pass
+        return None
     return result
 def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], None]] = None) -> Tuple[bool, Optional[str], Optional[str]]:
-    cred = get_steam()
+    try:
+        cred = get_steam()
+    except Exception as exc:
+        return False, None, f"读取 Steam 配置失败: {type(exc).__name__}"
+    if not isinstance(cred, dict):
+        return False, None, "Steam 配置格式无效，请重新保存账号配置"
     cookies_str = cred.get("cookies", "")
     steam_id = cred.get("steam_id", "")
     if not cookies_str or not steam_id:
         return False, None, "未配置 Steam Cookie 或 steam_id"
-    c = _cookies_to_dict(cookies_str)
+    try:
+        c = _cookies_to_dict(cookies_str)
+    except (AttributeError, TypeError, ValueError):
+        return False, None, "Steam Cookie 格式无效，请重新登录 Steam"
     if not c.get("steamLoginSecure"):
         return False, None, "Cookie 中无 steamLoginSecure，请重新登录 Steam"
     sessionid = (c.get("sessionid") or "").strip()
@@ -273,6 +284,8 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
         if not classid:
             return False, None, "无法获取物品的 classid/instanceid，请先打开 Steam 市场「我的上架」页确认该物品在售"
         set_before = _get_assetids_by_class_instance(session, steam_id, appid, contextid, classid, instanceid)
+        if set_before is None:
+            return False, None, "下架前读取 Steam 库存失败，尚未提交下架请求，请稍后重试"
         if log_fn:
             log_fn("已获取下架前库存 assetid 集合", "info")
         remove_url = f"{REMOVE_LISTING_URL}{listing_id}"
@@ -285,17 +298,49 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
         resp = session.post(remove_url, data={"sessionid": sessionid}, headers=post_headers, timeout=TIMEOUT)
         if resp.status_code != 200:
             return False, None, f"下架请求失败 HTTP {resp.status_code}"
+        response_text = (resp.text or "").strip()
+        if response_text:
+            try:
+                response_data = resp.json()
+            except (ValueError, TypeError):
+                response_data = None
+            if isinstance(response_data, dict) and "success" in response_data:
+                success = response_data.get("success")
+                if success not in (1, True, "1"):
+                    detail = response_data.get("message") or response_data.get("error") or ""
+                    suffix = f": {str(detail)[:100]}" if detail else ""
+                    return False, None, f"Steam 拒绝了下架请求{suffix}"
+            elif response_data in (False, 0, "0", "false", "failure", "failed"):
+                return False, None, "Steam 返回下架失败"
+            elif "<html" in response_text.lower() and (
+                "login" in response_text.lower()
+                or "sign in" in response_text.lower()
+            ):
+                return False, None, "Steam 返回登录页面，Cookie 可能已失效，请重新登录"
+            elif response_text.lower() in {"false", "failure", "failed", "error"}:
+                return False, None, "Steam 返回下架失败"
         if log_fn:
             log_fn("等待 3 秒让 Steam 后端刷新库存…", "info")
         jittered_sleep(3)
         new_ids = set()
+        inventory_checked = False
         for attempt in range(3):
             set_after = _get_assetids_by_class_instance(session, steam_id, appid, contextid, classid, instanceid)
+            if set_after is None:
+                if attempt < 2:
+                    jittered_sleep(2)
+                continue
+            inventory_checked = True
             new_ids = set_after - set_before
             if len(new_ids) == 1:
                 break
             if attempt < 2:
                 jittered_sleep(2)
+        if not inventory_checked:
+            warning = "下架请求已提交，但 Steam 库存暂时无法读取，结果尚未确认；请刷新市场状态，勿立即重复下架"
+            if log_fn:
+                log_fn(warning, "warn")
+            return True, None, warning
         if len(new_ids) == 1:
             new_assetid = next(iter(new_ids))
             if log_fn:

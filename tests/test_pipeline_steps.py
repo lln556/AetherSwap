@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -128,9 +128,13 @@ def test_过滤_goods_id从url解析():
 
 
 def _steam_history_rows(prices):
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     return [
-        [(now - timedelta(hours=i + 1)).strftime("%b %d %Y %H"), price, "1"]
+        [
+            (now - timedelta(hours=i + 1)).strftime("%b %d %Y %H: +0"),
+            price,
+            "1",
+        ]
         for i, price in enumerate(prices)
     ]
 

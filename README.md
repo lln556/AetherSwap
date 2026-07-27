@@ -415,7 +415,8 @@ SteamDT 行情接口 → 折扣筛选 → 稳定性分析(CV/R²) → 防呆校�
 ```
 AetherSwap/
 ├── app/                   # FastAPI 后端核心
-│   ├── main.py            # 应用入口 & 路由注册
+│   ├── api.py             # FastAPI/ASGI 应用实例与路由注册
+│   ├── main.py            # 桌面 / 服务器运行启动器
 │   ├── runtime_env.py     # 桌面/服务器模式自动判断
 │   ├── strategy_engine.py # 策略中心、模块校验、模拟运行与运行时接入
 │   ├── pipeline_steps.py  # 采买 / 出售 Pipeline 逻辑
