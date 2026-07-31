@@ -347,13 +347,20 @@ def test_browser_verification_script_has_hard_timeout_and_global_pacing(
 
         def evaluate(self, script):
             captured.append(script)
+            body = (
+                '{"code":"OK"}'
+                if "page_size=10&state=wait_pay" in script
+                else '{"code":"PARAM_ERROR","error":"Not a valid choice"}'
+            )
             return {
                 "status": 200,
                 "url": "https://buff.163.com/api/market/buy_order/history",
-                "body": '{"code":"OK"}',
+                "body": body,
             }
 
     assert verify_buff_browser_session(Page())[0] is True
+    assert "page_size=10&state=wait_pay" in captured[0]
+    assert "page_size=1&" not in captured[0]
     assert "AbortController" in captured[0]
     assert "15000" in captured[0]
     assert "signal: controller.signal" in captured[0]

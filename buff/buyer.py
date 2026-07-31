@@ -508,7 +508,7 @@ class BuffBuyer:
         params = {
             "game": game,
             "page_num": "1",
-            "page_size": "1",
+            "page_size": "10",
             "state": "wait_pay",
             "_": str(int(time.time() * 1000)),
         }

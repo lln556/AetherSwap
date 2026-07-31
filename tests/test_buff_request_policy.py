@@ -1002,7 +1002,8 @@ def test_verify_session_is_one_lightweight_get_and_trade_poll_uses_same_session(
     assert buyer.get_steam_trades() == [{"tradeofferid": "1"}]
     assert [call[0] for call in session.calls] == ["GET", "GET"]
     assert session.calls[0][1] == API_HISTORY
-    assert session.calls[0][2]["params"]["page_size"] == "1"
+    assert session.calls[0][2]["params"]["page_size"] == "10"
+    assert session.calls[0][2]["params"]["state"] == "wait_pay"
     assert session.calls[1][1] == API_STEAM_TRADE
     assert "to_receive" in session.calls[1][2]["headers"]["Referer"]
 

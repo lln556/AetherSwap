@@ -343,8 +343,9 @@ def verify_buff_browser_session(page: Any) -> tuple[bool, str, str]:
 
     A ``session`` cookie alone is not proof of a usable session: stale cookies
     and risk-control pages can retain it.  This endpoint is authenticated and
-    requests only one history row, so an ``OK`` response proves the profile can
-    actually use the account without generating a write operation.
+    requests only the smallest BUFF-supported history page, so an ``OK``
+    response proves the profile can actually use the account without generating
+    a write operation.
     """
 
     challenge = detect_buff_challenge(page)
@@ -354,7 +355,7 @@ def verify_buff_browser_session(page: Any) -> tuple[bool, str, str]:
 
     script = """
         async () => {
-          const url = "/api/market/buy_order/history?game=csgo&page_num=1&page_size=1&state=wait_pay";
+          const url = "/api/market/buy_order/history?game=csgo&page_num=1&page_size=10&state=wait_pay";
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 15000);
           try {
