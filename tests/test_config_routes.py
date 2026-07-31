@@ -16,15 +16,15 @@ def test_config_route_persists_all_settings_checkboxes(monkeypatch):
         "steam_deals": {},
     }
 
-    def fake_load():
+    def fake_update(patch):
+        from app.config_schema import merge
+
+        updated = merge(state, patch)
+        state.clear()
+        state.update(copy.deepcopy(updated))
         return copy.deepcopy(state)
 
-    def fake_save(data):
-        state.clear()
-        state.update(copy.deepcopy(data))
-
-    monkeypatch.setattr(config, "load_app_config_validated", fake_load)
-    monkeypatch.setattr(config, "save_app_config_validated", fake_save)
+    monkeypatch.setattr(config, "update_app_config_validated", fake_update)
 
     result = config.api_save_config(
         config.ConfigBody(

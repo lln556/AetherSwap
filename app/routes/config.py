@@ -11,7 +11,11 @@ from app.state import (
     replace_log,
     replace_transactions,
 )
-from app.config_loader import load_app_config_validated, save_app_config_validated
+from app.config_loader import (
+    load_app_config_validated,
+    save_app_config_validated,
+    update_app_config_validated,
+)
 from config import load_app_config, save_credentials, get_all_credentials
 from app.accounts import list_accounts, replace_all as accounts_replace_all
 router = APIRouter()
@@ -41,13 +45,8 @@ def api_get_config(response: Response):
     return {"config": load_app_config_validated()}
 @router.post("/api/config")
 def api_save_config(body: ConfigBody):
-    current = load_app_config_validated()
-    merged = {**current, **body.config}
-    for k, v in body.config.items():
-        if isinstance(v, dict) and k in current and isinstance(current[k], dict):
-            merged[k] = {**current[k], **v}
-    save_app_config_validated(merged)
-    return {"ok": True, "config": load_app_config_validated()}
+    saved = update_app_config_validated(body.config)
+    return {"ok": True, "config": saved}
 def _api_data_init_unlocked():
     from app.state import clear_log
     from pathlib import Path
