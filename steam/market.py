@@ -1,15 +1,29 @@
 import json
 from typing import Optional, Union
 SELL_ITEM_URL = "https://steamcommunity.com/market/sellitem/"
-def _parse_sell_response(text: str) -> tuple[bool, Optional[dict]]:
+
+
+def parse_sell_response(text: object) -> tuple[bool, Optional[dict]]:
+    """Parse a Steam listing response without assuming a JSON object.
+
+    Steam, a CDN, or an intermediary may occasionally return valid JSON such
+    as ``null`` or a non-object payload.  Callers use mapping keys like
+    ``success`` and ``message``, so only a JSON object is a usable response.
+    """
     try:
         data = json.loads(text)
         if isinstance(data, dict):
             ok = data.get("success") is True
             return ok, data
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
         pass
     return False, None
+
+
+# Compatibility for any existing internal imports of the old private helper.
+_parse_sell_response = parse_sell_response
+
+
 def list_item(
     session,
     session_id: str,
@@ -61,7 +75,7 @@ def list_item_by_name(
     )
     if not out:
         return {"ok": False, "error": "上架请求异常"}
-    ok, parsed = _parse_sell_response(out["text"])
+    ok, parsed = parse_sell_response(out["text"])
     ok = ok and out["status_code"] == 200
     result = {
         "ok": ok,

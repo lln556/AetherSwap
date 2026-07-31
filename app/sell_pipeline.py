@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import time
 from collections import defaultdict
@@ -16,7 +17,7 @@ from app.strategy_engine import apply_strategy_to_config, evaluate_strategy_runt
 from app.state import get_state, append_sale
 from app.steam_confirm import auto_confirm_once
 from app.steam_listings import fetch_my_listings
-from steam.market import list_item
+from steam.market import list_item, parse_sell_response
 from steam.market_orders import compute_smart_list_price, get_sell_orders_cny
 from steam.session import create_market_session
 from utils.delay import jittered_sleep
@@ -410,6 +411,78 @@ def _find_buy_record(purchases_snapshot: list, aid: str, market_hash_name: str) 
     return None
 
 
+def _listing_response_body_preview(value: object, limit: int = 160) -> str:
+    """Return a compact, bounded response excerpt suitable for logs."""
+    if value is None:
+        return "<empty>"
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+    source_was_truncated = len(text) > max(limit * 4, 640)
+    if source_was_truncated:
+        text = text[: max(limit * 4, 640)]
+    text = " ".join(text.split())
+    if not text:
+        return "<empty>"
+    text = re.sub(
+        r"(?i)\b(bearer)\s+[a-z0-9._~+/=-]+",
+        r"\1 ***",
+        text,
+    )
+    text = re.sub(
+        (
+            r"(?i)\b("
+            r"steamloginsecure|sessionid|access[_-]?token|"
+            r"refresh[_-]?token|token|cookie"
+            r")(\s*[\"']?\s*[:=]\s*[\"']?)([^\"'\s,;&}<]+)"
+        ),
+        r"\1\2***",
+        text,
+    )
+    if source_was_truncated or len(text) > limit:
+        return text[: limit - 3] + "..."
+    return text
+
+
+def _parse_listing_response(out: object) -> tuple[Optional[dict], str]:
+    """Validate a low-level listing response and return diagnostics on failure."""
+    if out is None:
+        return None, "无响应"
+    if not isinstance(out, dict):
+        return None, f"返回类型异常: {type(out).__name__}"
+
+    status_code = out.get("status_code")
+    status_label = str(status_code) if status_code is not None else "unknown"
+    raw_text = out.get("text")
+    _, data = parse_sell_response(raw_text)
+    if data is None:
+        return (
+            None,
+            f"HTTP {status_label}; body={_listing_response_body_preview(raw_text)}",
+        )
+    return data, ""
+
+
+def _listing_response_message(data: dict, limit: int = 80) -> str:
+    value = data.get("message")
+    if value in (None, ""):
+        return ""
+    return _listing_response_body_preview(value, limit=limit)
+
+
+def _listing_response_is_success(out: object, data: dict, message: str) -> bool:
+    """Accept success only from the expected Steam HTTP response contract."""
+    if not isinstance(out, dict) or out.get("status_code") != 200:
+        return False
+    message_lower = message.lower()
+    return (
+        data.get("success") is True
+        or "pending confirmation" in message_lower
+        or "already have a listing" in message_lower
+    )
+
+
 def _submit_listings(
     ctx: PipelineContext,
     to_list: list,
@@ -445,18 +518,22 @@ def _submit_listings(
                 price_cents,
             )
 
-        out = _do_list()
-        if not out:
-            ctx.log(f"[出售] {name} assetid={aid} 上架请求异常(无响应)", "warn", category="steam")
-            jittered_sleep(listing_delay)
-            continue
-
         try:
-            data = json.loads(out.get("text") or "{}")
-            msg = (data.get("message") or "")[:80]
+            out = _do_list()
+            data, response_error = _parse_listing_response(out)
+            if data is None:
+                ctx.log(
+                    f"[出售] {name} assetid={aid} 上架响应异常: {response_error}",
+                    "warn",
+                    category="steam",
+                )
+                jittered_sleep(listing_delay)
+                continue
+
+            msg = _listing_response_message(data)
             msg_lower = msg.lower()
 
-            if data.get("success") or "pending confirmation" in msg_lower or "already have a listing" in msg_lower:
+            if _listing_response_is_success(out, data, msg):
                 listed += 1
                 ctx.log(f"[出售] 已上架 assetid={aid} {name} 价格={list_price:.2f} ({reason})", "info", category="steam")
                 _record_listing_success(ctx, aid, name, list_price, listing_delay)
@@ -466,21 +543,30 @@ def _submit_listings(
                 ctx.log(f"[出售] {name} assetid={aid} 前一操作未完成，等待 5s 后重试", "info", category="steam")
                 jittered_sleep(5)
                 out2 = _do_list()
-                if out2:
-                    try:
-                        data2 = json.loads(out2.get("text") or "{}")
-                        msg2 = (data2.get("message") or "")[:80].lower()
-                        if data2.get("success") or "pending confirmation" in msg2 or "already have a listing" in msg2:
-                            listed += 1
-                            ctx.log(f"[出售] 已上架 assetid={aid} {name} 价格={list_price:.2f} ({reason}) [重试成功]", "info", category="steam")
-                            _record_listing_success(ctx, aid, name, list_price, listing_delay)
-                            continue
-                    except Exception:
-                        pass  # retry response unparseable, fall through to failure log
+                data2, retry_error = _parse_listing_response(out2)
+                if data2 is None:
+                    ctx.log(
+                        f"[出售] {name} assetid={aid} 上架重试响应异常: {retry_error}",
+                        "warn",
+                        category="steam",
+                    )
+                else:
+                    msg2 = _listing_response_message(data2).lower()
+                    if _listing_response_is_success(out2, data2, msg2):
+                        listed += 1
+                        ctx.log(f"[出售] 已上架 assetid={aid} {name} 价格={list_price:.2f} ({reason}) [重试成功]", "info", category="steam")
+                        _record_listing_success(ctx, aid, name, list_price, listing_delay)
+                        continue
 
-            ctx.log(f"[出售] 上架失败 assetid={aid} {name}: {msg or out.get('text', '')[:80]}", "warn", category="steam")
+            response_preview = (
+                _listing_response_body_preview(out.get("text"))
+                if isinstance(out, dict)
+                else type(out).__name__
+            )
+            ctx.log(f"[出售] 上架失败 assetid={aid} {name}: {msg or response_preview}", "warn", category="steam")
         except Exception as ex:
-            ctx.log(f"[出售] 上架时发生未捕获异常 assetid={aid} {name}: {type(ex).__name__} - {ex}", "error", category="steam")
+            error_detail = _listing_response_body_preview(ex)
+            ctx.log(f"[出售] 上架时发生未捕获异常 assetid={aid} {name}: {type(ex).__name__} - {error_detail}", "error", category="steam")
 
         jittered_sleep(listing_delay)
 
