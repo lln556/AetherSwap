@@ -140,6 +140,7 @@ function escapeHtml(s) {
 async function fetchJson(url, opts = {}) {
   const res = await fetch(url, {
     ...opts,
+    cache: opts.cache ?? "no-store",
     headers: {
       "Content-Type": "application/json",
       ...(opts.headers || {}),

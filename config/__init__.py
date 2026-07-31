@@ -140,16 +140,19 @@ def update_buff_credentials(
         _atomic_write_json(_CREDENTIALS_FILE, data)
         _cache = {}
 _APP_CONFIG_FILE = _CONFIG_DIR / "app_config.json"
+_app_config_lock = threading.RLock()
 def get_app_config_path() -> Path:
     return _APP_CONFIG_FILE
 def load_app_config() -> dict:
-    if _APP_CONFIG_FILE.exists():
-        try:
-            with open(_APP_CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
+    with _app_config_lock:
+        if _APP_CONFIG_FILE.exists():
+            try:
+                with open(_APP_CONFIG_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                return loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                pass
     return {}
 def save_app_config(data: dict) -> None:
-    with open(_APP_CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    with _app_config_lock:
+        _atomic_write_json(_APP_CONFIG_FILE, data)

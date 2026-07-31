@@ -326,9 +326,14 @@ function compactConfig(value) {
   return value;
 }
 async function saveConfigFromForm() {
-  const d = await fetchJson(API + "/config");
-  const merged = deepMerge(d.config || {}, formToConfig());
-  await fetchJson(API + "/config", { method: "POST", body: JSON.stringify({ config: merged }) });
+  // Capture the form before awaiting I/O so a concurrent refresh cannot
+  // replace the user's pending checkbox values.
+  const pending = formToConfig();
+  const saved = await fetchJson(API + "/config", {
+    method: "POST",
+    body: JSON.stringify({ config: pending }),
+  });
+  if (!saved.ok) throw new Error(saved.error || "配置写入失败");
   await loadConfig();
   setupInventoryAutoRefresh();
 }

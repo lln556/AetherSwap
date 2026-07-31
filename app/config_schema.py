@@ -237,8 +237,9 @@ def validate_and_fill(data: dict, defaults: Optional[dict] = None) -> dict:
             out[k] = validate_and_fill(merge(default, data[k]), default)
         else:
             val = data[k]
-            if isinstance(default, bool) and not isinstance(val, bool):
-                val = _coerce_bool(val, default)
+            if isinstance(default, bool):
+                if not isinstance(val, bool):
+                    val = _coerce_bool(val, default)
             elif isinstance(default, int):
                 if isinstance(val, bool):
                     val = default

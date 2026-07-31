@@ -1,7 +1,61 @@
 import sys
+import copy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+def test_config_route_persists_all_settings_checkboxes(monkeypatch):
+    from app.routes import config
+
+    state = {
+        "pipeline": {"max_discount": 0.8},
+        "notify": {},
+        "steam_confirm": {},
+        "system": {},
+        "steam_deals": {},
+    }
+
+    def fake_load():
+        return copy.deepcopy(state)
+
+    def fake_save(data):
+        state.clear()
+        state.update(copy.deepcopy(data))
+
+    monkeypatch.setattr(config, "load_app_config_validated", fake_load)
+    monkeypatch.setattr(config, "save_app_config_validated", fake_save)
+
+    result = config.api_save_config(
+        config.ConfigBody(
+            config={
+                "pipeline": {"start_time_limit_enabled": True},
+                "notify": {"holdings_report_drop_enabled": False},
+                "steam_confirm": {"enabled": True},
+                "system": {"buff_session_keepalive_enabled": True},
+                "steam_deals": {"enabled": True},
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert result["config"]["pipeline"]["max_discount"] == 0.8
+    assert result["config"]["pipeline"]["start_time_limit_enabled"] is True
+    assert result["config"]["notify"]["holdings_report_drop_enabled"] is False
+    assert result["config"]["steam_confirm"]["enabled"] is True
+    assert result["config"]["system"]["buff_session_keepalive_enabled"] is True
+    assert result["config"]["steam_deals"]["enabled"] is True
+
+
+def test_config_get_disables_http_caching(monkeypatch):
+    from fastapi import Response
+    from app.routes import config
+
+    monkeypatch.setattr(config, "load_app_config_validated", lambda: {})
+    response = Response()
+
+    assert config.api_get_config(response) == {"config": {}}
+    assert response.headers["cache-control"] == "no-store"
 
 
 def test_full_import_uses_validated_config_save(monkeypatch):

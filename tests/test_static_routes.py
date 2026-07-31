@@ -16,6 +16,7 @@ def test_static_route_serves_files_inside_web_root(tmp_path, monkeypatch):
     response = static.static_or_index("app.js")
 
     assert Path(response.path) == asset
+    assert response.headers["cache-control"] == "no-cache"
 
 
 def test_static_route_blocks_path_traversal(tmp_path, monkeypatch):
@@ -33,3 +34,26 @@ def test_static_route_blocks_path_traversal(tmp_path, monkeypatch):
 
     assert Path(response.path) == index
     assert Path(response.path) != secret
+    assert response.headers["cache-control"] == "no-cache"
+
+
+def test_versioned_settings_assets_and_uncached_api_fetches():
+    root = Path(__file__).resolve().parent.parent
+    index_html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    utils_js = (root / "web" / "js" / "utils.js").read_text(
+        encoding="utf-8"
+    )
+    settings_js = (root / "web" / "js" / "settings.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert '<script src="/js/settings.js?v=2"></script>' in index_html
+    assert '<script src="/js/main.js?v=4"></script>' in index_html
+    assert 'cache: opts.cache ?? "no-store"' in utils_js
+    save_start = settings_js.index("async function saveConfigFromForm()")
+    save_end = settings_js.index("async function startPipeline()", save_start)
+    save_source = settings_js[save_start:save_end]
+    assert save_source.index("const pending = formToConfig();") < save_source.index(
+        "await fetchJson"
+    )
+    assert 'fetchJson(API + "/config");' not in save_source

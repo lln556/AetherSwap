@@ -575,10 +575,17 @@ function bindEvents() {
   el("log-level")?.addEventListener("change", () => renderLogFull());
   el("cfg-verbose-debug")?.addEventListener("change", async () => {
     try {
-      const d = await fetchJson(API + "/config");
-      const cfg = d.config || {};
-      const pipeline = { ...(cfg.pipeline || {}), verbose_debug: el("cfg-verbose-debug").checked };
-      await fetchJson(API + "/config", { method: "POST", body: JSON.stringify({ config: { ...cfg, pipeline } }) });
+      const result = await fetchJson(API + "/config", {
+        method: "POST",
+        body: JSON.stringify({
+          config: {
+            pipeline: {
+              verbose_debug: el("cfg-verbose-debug").checked,
+            },
+          },
+        }),
+      });
+      if (!result.ok) throw new Error(result.error || "配置写入失败");
       toast("已保存", "详细调试 " + (el("cfg-verbose-debug").checked ? "已开启，下次运行生效" : "已关闭"));
     } catch (e) {
       toast("保存失败", e.message || "");
@@ -586,10 +593,17 @@ function bindEvents() {
   });
   el("cfg-steam-listings-debug")?.addEventListener("change", async () => {
     try {
-      const d = await fetchJson(API + "/config");
-      const cfg = d.config || {};
-      const pipeline = { ...(cfg.pipeline || {}), steam_listings_debug: el("cfg-steam-listings-debug").checked };
-      await fetchJson(API + "/config", { method: "POST", body: JSON.stringify({ config: { ...cfg, pipeline } }) });
+      const result = await fetchJson(API + "/config", {
+        method: "POST",
+        body: JSON.stringify({
+          config: {
+            pipeline: {
+              steam_listings_debug: el("cfg-steam-listings-debug").checked,
+            },
+          },
+        }),
+      });
+      if (!result.ok) throw new Error(result.error || "配置写入失败");
       toast("已保存", "Steam 在售/历史调试 " + (el("cfg-steam-listings-debug").checked ? "已开启" : "已关闭"));
     } catch (e) {
       toast("保存失败", e.message || "");

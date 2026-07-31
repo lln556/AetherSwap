@@ -1,7 +1,9 @@
+import copy
 import threading
 import time as _time
 from app.config_schema import DEFAULTS, _validate_ranges, merge, validate_and_fill
 from config import (
+    get_app_config_path,
     get_buff,
     get_steam,
     load_app_config,
@@ -11,13 +13,21 @@ from config import (
 )
 _config_cache: dict = {}
 _config_cache_ts: float = 0.0
+_config_cache_revision = None
 _CONFIG_CACHE_TTL = 5.0  
 _config_cache_lock = threading.Lock()
+def _config_file_revision():
+    try:
+        stat = get_app_config_path().stat()
+        return stat.st_mtime_ns, stat.st_size
+    except OSError:
+        return None
 def _invalidate_config_cache() -> None:
-    global _config_cache, _config_cache_ts
+    global _config_cache, _config_cache_ts, _config_cache_revision
     with _config_cache_lock:
         _config_cache = {}
         _config_cache_ts = 0.0
+        _config_cache_revision = None
 def get_steam_credentials() -> dict:
     return get_steam()
 def get_buff_credentials() -> dict:
@@ -37,16 +47,22 @@ def get_buff_credentials_generation() -> int:
     except (TypeError, ValueError):
         return 0
 def load_app_config_validated() -> dict:
-    global _config_cache, _config_cache_ts
+    global _config_cache, _config_cache_ts, _config_cache_revision
     now = _time.monotonic()
     with _config_cache_lock:
-        if _config_cache and (now - _config_cache_ts) < _CONFIG_CACHE_TTL:
-            return _config_cache
+        revision = _config_file_revision()
+        if (
+            _config_cache
+            and revision == _config_cache_revision
+            and (now - _config_cache_ts) < _CONFIG_CACHE_TTL
+        ):
+            return copy.deepcopy(_config_cache)
         raw = load_app_config()
         result = _validate_ranges(validate_and_fill(merge(DEFAULTS, raw)))
         _config_cache = result
         _config_cache_ts = now
-        return result
+        _config_cache_revision = _config_file_revision()
+        return copy.deepcopy(result)
 def save_app_config_validated(data: dict) -> None:
     filled = _validate_ranges(validate_and_fill(merge(DEFAULTS, data)))
     save_app_config(filled)

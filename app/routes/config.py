@@ -1,7 +1,7 @@
 """Config, data init, export/import, holdings report routes."""
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Response
 from pydantic import BaseModel
 from app.state import (
     clear_transactions,
@@ -36,7 +36,8 @@ class ImportFullBody(BaseModel):
     accounts: Optional[dict] = None
     log: Optional[list] = None
 @router.get("/api/config")
-def api_get_config():
+def api_get_config(response: Response):
+    response.headers["Cache-Control"] = "no-store"
     return {"config": load_app_config_validated()}
 @router.post("/api/config")
 def api_save_config(body: ConfigBody):
@@ -46,7 +47,7 @@ def api_save_config(body: ConfigBody):
         if isinstance(v, dict) and k in current and isinstance(current[k], dict):
             merged[k] = {**current[k], **v}
     save_app_config_validated(merged)
-    return {"ok": True}
+    return {"ok": True, "config": load_app_config_validated()}
 def _api_data_init_unlocked():
     from app.state import clear_log
     from pathlib import Path
