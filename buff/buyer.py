@@ -131,6 +131,7 @@ def _html_looks_like_login(text: str) -> bool:
 PAY_METHOD_ALIPAY = 51
 PAY_METHOD_WECHAT = 6
 API_HISTORY = "https://buff.163.com/api/market/buy_order/history"
+API_USER_INFO = "https://buff.163.com/account/api/user/info/v2"
 API_SELL_ORDER = "https://buff.163.com/api/market/goods/sell_order"
 API_GOODS = "https://buff.163.com/api/market/goods"
 API_BUY = "https://buff.163.com/api/market/goods/buy"
@@ -503,17 +504,24 @@ class BuffBuyer:
             return data
 
     def verify_session(self, game: str = "csgo") -> bool:
-        """Verify the current credentials with exactly one lightweight GET."""
+        """Verify credentials through BUFF's current user-info endpoint."""
 
-        params = {
-            "game": game,
-            "page_num": "1",
-            "page_size": "10",
-            "state": "wait_pay",
-            "_": str(int(time.time() * 1000)),
-        }
-        response = self._make_request("GET", API_HISTORY, params=params)
-        return response.get("code") == "OK"
+        # BUFF's own web client uses this read-only endpoint to load the signed-
+        # in user and buy-order metadata.  The history endpoint is unsuitable as
+        # a login probe because its state choices change independently of auth.
+        response = self._make_request(
+            "GET",
+            API_USER_INFO,
+            params={"meta_list": "buy_order_state"},
+            headers={"Referer": "https://buff.163.com/"},
+        )
+        data = response.get("data")
+        user_info = data.get("user_info") if isinstance(data, dict) else None
+        return (
+            response.get("code") == "OK"
+            and isinstance(user_info, dict)
+            and bool(user_info)
+        )
 
     def get_steam_trades(self) -> Optional[list]:
         """Return pending BUFF-to-Steam trade records through this session."""

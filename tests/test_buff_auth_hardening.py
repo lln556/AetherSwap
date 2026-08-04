@@ -348,25 +348,53 @@ def test_browser_verification_script_has_hard_timeout_and_global_pacing(
         def evaluate(self, script):
             captured.append(script)
             body = (
-                '{"code":"OK"}'
-                if "page_size=10&state=wait_pay" in script
-                else '{"code":"PARAM_ERROR","error":"Not a valid choice"}'
+                '{"code":"OK","data":{"user_info":{"id":"masked"},"meta_list":{}}}'
+                if "/account/api/user/info/v2?meta_list=buy_order_state" in script
+                else '{"code":"Invalid Argument","error":"Not a valid choice"}'
             )
             return {
                 "status": 200,
-                "url": "https://buff.163.com/api/market/buy_order/history",
+                "url": "https://buff.163.com/account/api/user/info/v2",
                 "body": body,
             }
 
     assert verify_buff_browser_session(Page())[0] is True
-    assert "page_size=10&state=wait_pay" in captured[0]
-    assert "page_size=1&" not in captured[0]
+    assert "/account/api/user/info/v2?meta_list=buy_order_state" in captured[0]
+    assert "/api/market/buy_order/history" not in captured[0]
     assert "AbortController" in captured[0]
     assert "15000" in captured[0]
     assert "signal: controller.signal" in captured[0]
     assert "retry-after" in captured[0]
     account_key = account_fingerprint({}, account_id="default")
     assert account_key in _isolated_global_buff_policy._last_started
+
+
+def test_browser_verification_rejects_ok_without_user_info(
+    _isolated_global_buff_policy,
+):
+    from app.services.buff_auth import verify_buff_browser_session
+
+    class Page:
+        url = "https://buff.163.com/"
+
+        def title(self):
+            return "BUFF"
+
+        def content(self):
+            return "market"
+
+        def evaluate(self, _script):
+            return {
+                "status": 200,
+                "url": "https://buff.163.com/account/api/user/info/v2",
+                "body": '{"code":"OK","data":{"meta_list":{}}}',
+            }
+
+    verified, status, message = verify_buff_browser_session(Page())
+
+    assert verified is False
+    assert status == "error"
+    assert "用户信息格式异常" in message
 
 
 @pytest.mark.parametrize("status_code", [403, 412])

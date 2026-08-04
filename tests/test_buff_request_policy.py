@@ -11,6 +11,7 @@ from buff.buyer import (
     API_PAGE_PAY,
     API_SELL_ORDER,
     API_STEAM_TRADE,
+    API_USER_INFO,
     API_WX_PAY_QRCODE,
     DEFAULT_USER_AGENT,
     PAY_METHOD_WECHAT,
@@ -991,7 +992,12 @@ def test_initial_cookie_is_domain_scoped_and_expiration_removes_it():
 
 def test_verify_session_is_one_lightweight_get_and_trade_poll_uses_same_session():
     session = FakeSession(
-        FakeResponse({"code": "OK", "data": {"items": []}}),
+        FakeResponse(
+            {
+                "code": "OK",
+                "data": {"user_info": {"id": "masked"}, "meta_list": {}},
+            }
+        ),
         FakeResponse({"code": "OK", "data": [{"tradeofferid": "1"}]}),
     )
     buyer = BuffBuyer(
@@ -1001,11 +1007,34 @@ def test_verify_session_is_one_lightweight_get_and_trade_poll_uses_same_session(
     assert buyer.verify_session() is True
     assert buyer.get_steam_trades() == [{"tradeofferid": "1"}]
     assert [call[0] for call in session.calls] == ["GET", "GET"]
-    assert session.calls[0][1] == API_HISTORY
-    assert session.calls[0][2]["params"]["page_size"] == "10"
-    assert session.calls[0][2]["params"]["state"] == "wait_pay"
+    assert session.calls[0][1] == API_USER_INFO
+    assert session.calls[0][2]["params"] == {
+        "meta_list": "buy_order_state"
+    }
+    assert session.calls[0][2]["headers"]["Referer"] == "https://buff.163.com/"
     assert session.calls[1][1] == API_STEAM_TRADE
     assert "to_receive" in session.calls[1][2]["headers"]["Referer"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"code": "OK", "data": {"meta_list": {}}},
+        {"code": "OK", "data": {"user_info": {}}},
+        {"code": "Invalid Argument", "error": "Not a valid choice"},
+    ],
+)
+def test_verify_session_rejects_responses_without_a_real_user(payload):
+    session = FakeSession(FakeResponse(payload))
+    buyer = BuffBuyer(
+        "session=s; csrf_token=c",
+        session=session,
+        request_policy=no_wait_policy(),
+    )
+
+    assert buyer.verify_session() is False
+    assert len(session.calls) == 1
+    assert session.calls[0][1] == API_USER_INFO
 
 
 def test_cookie_persistence_failure_never_masks_operation_result_or_exception():

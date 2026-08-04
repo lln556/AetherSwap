@@ -342,10 +342,9 @@ def verify_buff_browser_session(page: Any) -> tuple[bool, str, str]:
     """Verify authentication with one small read-only request in the browser.
 
     A ``session`` cookie alone is not proof of a usable session: stale cookies
-    and risk-control pages can retain it.  This endpoint is authenticated and
-    requests only the smallest BUFF-supported history page, so an ``OK``
-    response proves the profile can actually use the account without generating
-    a write operation.
+    and risk-control pages can retain it.  BUFF's own web client calls the user-
+    info endpoint to load the signed-in user and buy-order metadata, so a valid
+    user object proves the profile can use the account without a write operation.
     """
 
     challenge = detect_buff_challenge(page)
@@ -355,7 +354,7 @@ def verify_buff_browser_session(page: Any) -> tuple[bool, str, str]:
 
     script = """
         async () => {
-          const url = "/api/market/buy_order/history?game=csgo&page_num=1&page_size=10&state=wait_pay";
+          const url = "/account/api/user/info/v2?meta_list=buy_order_state";
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 15000);
           try {
@@ -441,7 +440,11 @@ def verify_buff_browser_session(page: Any) -> tuple[bool, str, str]:
     message = str(payload.get("error") or payload.get("msg") or "")
     combined = f"{code} {message}".lower()
     if code.upper() == "OK":
-        return True, "ok", "BUFF 会话在线验证通过"
+        data = payload.get("data")
+        user_info = data.get("user_info") if isinstance(data, dict) else None
+        if isinstance(user_info, dict) and user_info:
+            return True, "ok", "BUFF 会话在线验证通过"
+        return False, "error", "BUFF 在线验证返回用户信息格式异常"
     if any(marker in combined for marker in ("login", "unauthorized", "未登录", "登录失效")):
         return False, "expired", message or "BUFF 登录状态已失效"
     if any(

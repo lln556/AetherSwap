@@ -112,9 +112,12 @@ def test_buff_auto_relogin_success_clears_auth_and_verification(monkeypatch):
                 return "Test Browser/1.0"
             return {
                 "status": 200,
-                "url": "https://buff.163.com/api/market/buy_order/history",
+                "url": "https://buff.163.com/account/api/user/info/v2",
                 "contentType": "application/json",
-                "body": '{"code":"OK","data":{"items":[]}}',
+                "body": (
+                    '{"code":"OK","data":{'
+                    '"user_info":{"id":"masked"},"meta_list":{}}}'
+                ),
             }
 
     class FakeContext:
