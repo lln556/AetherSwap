@@ -56,6 +56,12 @@ class BuffClient:
     Non-idempotent writes intentionally have no generic retry decorator.
     """
 
+    # BUFF's current batch checkout requires preview state, a server-issued
+    # batch_id/trace and conditional password_token.  The former implementation
+    # did not implement that contract, so production must safely use single
+    # checkout until the full flow can be verified end to end.
+    supports_batch_buy = False
+
     def __init__(
         self,
         cookies: str,
@@ -77,6 +83,7 @@ class BuffClient:
         self._credential_generation = self._as_generation(credential_generation)
         self._cookies = cookies or ""
         self._user_agent = (user_agent or "").strip() or None
+        self._steam_id = ""
         self._client_lock = threading.RLock()
         self._auth_lock = get_buff_auth_lock()
         self._buyer = self._new_buyer(self._cookies, self._user_agent)
@@ -95,6 +102,7 @@ class BuffClient:
             user_agent=user_agent,
             account_id=BUFF_ACCOUNT_ID,
             request_timeout=self._timeout,
+            steam_id=self._steam_id,
         )
 
     def _ensure_current_buyer(self) -> BuffBuyer:
@@ -185,7 +193,13 @@ class BuffClient:
         return self._run(lambda buyer: buyer.get_sell_orders(goods_id, game))
 
     def verify_session(self, game: str = "csgo") -> bool:
-        return bool(self._run(lambda buyer: buyer.verify_session(game)))
+        def operation(buyer: BuffBuyer) -> bool:
+            verified = bool(buyer.verify_session(game))
+            if verified and buyer.steam_id:
+                self._steam_id = buyer.steam_id
+            return verified
+
+        return bool(self._run(operation))
 
     def get_steam_trades(self) -> Optional[list]:
         return self._run(lambda buyer: buyer.get_steam_trades())
@@ -212,6 +226,7 @@ class BuffClient:
         price: str,
         *,
         on_created: Optional[Callable[[str], None]] = None,
+        preview: Optional[dict] = None,
     ) -> Dict[str, Any]:
         return self._run(
             lambda buyer: buyer.lock_and_get_pay_url(
@@ -220,8 +235,49 @@ class BuffClient:
                 sell_order_id,
                 price,
                 on_created=on_created,
+                preview=preview,
             )
         )
+
+    def prepare_single_buy(
+        self,
+        game: str,
+        goods_id: int,
+        sell_order_id: str,
+        price: str,
+    ) -> Dict[str, Any]:
+        """Complete BUFF's read-only preview before a checkout intent is written."""
+
+        def operation(buyer: BuffBuyer) -> Dict[str, Any]:
+            preview = buyer.preview_buy(game, goods_id, sell_order_id, price)
+            if preview.get("code") != "OK":
+                return {
+                    "success": False,
+                    "created": False,
+                    "code": str(preview.get("code") or "PREVIEW_REJECTED"),
+                    "msg": preview.get("error")
+                    or preview.get("msg")
+                    or "BUFF 购买预检未通过",
+                }
+            data = preview.get("data")
+            if not isinstance(data, dict):
+                return {
+                    "success": False,
+                    "created": False,
+                    "code": "PREVIEW_INVALID",
+                    "msg": "BUFF 购买预检返回格式异常",
+                }
+            error = buyer._preview_payment_error(data)
+            if error:
+                return {
+                    "success": False,
+                    "created": False,
+                    "code": "PAY_METHOD_UNAVAILABLE",
+                    "msg": error,
+                }
+            return {"success": True, "created": False, "preview": preview}
+
+        return self._run(operation)
 
     def try_batch_buy(
         self,
@@ -233,69 +289,14 @@ class BuffClient:
         *,
         on_created: Optional[Callable[[str], None]] = None,
     ) -> Optional[Dict[str, Any]]:
-        del orders  # The live order snapshot is validated during finalization.
-        if num < 1 or self._pay_method_id != PAY_METHOD_WECHAT:
-            return {
-                "success": False,
-                "code": "NOT_SUPPORTED",
-                "created": False,
-                "safe_to_fallback": True,
-            }
-
-        def operation(buyer: BuffBuyer) -> Dict[str, Any]:
-            batch_id = buyer.batch_buy_create(goods_id, unit_price, num, game)
-            if not batch_id:
-                # A POST was attempted. Without an idempotency key or order
-                # reconciliation endpoint its server-side result is unknown.
-                return {
-                    "success": False,
-                    "code": "UNKNOWN_AFTER_SEND",
-                    "created": None,
-                }
-            if on_created is not None:
-                try:
-                    on_created(batch_id)
-                except Exception as exc:
-                    from buff import BuffWriteResultUnknown
-
-                    error = BuffWriteResultUnknown(
-                        "BUFF 批次已创建，但批次号未能写入本地对账门禁",
-                        method="POST",
-                    )
-                    error.batch_id = str(batch_id)
-                    raise error from exc
-            try:
-                pay_url = buyer.batch_buy_wx_qrcode(batch_id, game)
-            except Exception as exc:
-                # The batch id proves the write committed.  Any later read
-                # failure is a created checkout, never a reason to create a
-                # second batch after re-authentication.
-                return {
-                    "success": False,
-                    "code": "CREATED_WITHOUT_PAY_URL",
-                    "created": True,
-                    "batch_id": batch_id,
-                    "msg": str(exc) or type(exc).__name__,
-                }
-            if not pay_url:
-                return {
-                    "success": False,
-                    "code": "CREATED_WITHOUT_PAY_URL",
-                    "created": True,
-                    "batch_id": batch_id,
-                }
-            return {
-                "success": True,
-                "pay_url": pay_url,
-                "pay_type": "wechat",
-                "batch_id": batch_id,
-                "unit_price": unit_price,
-                "num": num,
-                "total_price": unit_price * num,
-                "created": True,
-            }
-
-        return self._run(operation)
+        del goods_id, game, orders, unit_price, num, on_created
+        return {
+            "success": False,
+            "code": "NOT_SUPPORTED",
+            "created": False,
+            "safe_to_fallback": True,
+            "msg": "BUFF 批量购买协议已变化，已安全降级为单件购买",
+        }
 
     def batch_buy_find_and_finalize(
         self,

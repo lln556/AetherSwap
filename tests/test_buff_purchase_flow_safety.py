@@ -4,7 +4,7 @@ import pytest
 
 from app import pipeline_steps as steps
 from app import pipeline as pipeline_module
-from buff import BuffWriteResultUnknown
+from buff import BuffAuthExpired, BuffWriteResultUnknown
 from buff.request_policy import BuffRateLimited
 
 
@@ -371,6 +371,156 @@ def test_rate_limit_is_not_swallowed_or_retried():
     assert client.lock_calls == 1
 
 
+def test_failed_checkout_session_preflight_sends_no_post_or_guard():
+    class BuffClient:
+        _pay_method = "alipay"
+
+        def __init__(self):
+            self.verify_calls = []
+            self.lock_calls = 0
+
+        def verify_session(self, game):
+            self.verify_calls.append(game)
+            return False
+
+        def lock_and_get_pay_url(self, *_args):
+            self.lock_calls += 1
+            raise AssertionError("failed session preflight must suppress checkout POST")
+
+    client = BuffClient()
+    kwargs, _pending, _purchases = _checkout_args()
+
+    with pytest.raises(BuffAuthExpired, match="未发送锁单请求"):
+        steps.lock_and_confirm_payment(
+            client,
+            _item([{"id": "sell-1", "price": "10.0"}]),
+            _config(),
+            **kwargs,
+        )
+
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+
+    assert client.verify_calls == ["csgo"]
+    assert client.lock_calls == 0
+    assert get_unresolved_checkout() is None
+
+
+def test_failed_read_only_buy_preview_sends_no_post_or_guard():
+    class BuffClient:
+        _pay_method = "alipay"
+
+        def __init__(self):
+            self.preview_calls = []
+            self.lock_calls = 0
+
+        def verify_session(self, _game):
+            return True
+
+        def prepare_single_buy(self, game, goods_id, sell_order_id, price):
+            self.preview_calls.append((game, goods_id, sell_order_id, price))
+            return {
+                "success": False,
+                "created": False,
+                "code": "PAY_METHOD_UNAVAILABLE",
+                "msg": "payment method disabled",
+            }
+
+        def lock_and_get_pay_url(self, *_args):
+            self.lock_calls += 1
+            raise AssertionError("failed preview must suppress checkout POST")
+
+    client = BuffClient()
+    kwargs, _pending, _purchases = _checkout_args()
+
+    result = steps.lock_and_confirm_payment(
+        client,
+        _item([{"id": "sell-1", "price": "10.0"}]),
+        _config(),
+        **kwargs,
+    )
+
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+
+    assert result is None
+    assert client.preview_calls == [("csgo", 123, "sell-1", "10.0")]
+    assert client.lock_calls == 0
+    assert get_unresolved_checkout() is None
+
+
+def test_successful_preview_is_reused_by_the_immediate_checkout_post():
+    preview = {"code": "OK", "data": {"pay_methods": []}}
+
+    class BuffClient:
+        _pay_method = "alipay"
+
+        def __init__(self):
+            self.received_preview = None
+
+        def verify_session(self, _game):
+            return True
+
+        def prepare_single_buy(self, *_args):
+            return {"success": True, "created": False, "preview": preview}
+
+        def lock_and_get_pay_url(self, *_args, preview=None):
+            self.received_preview = preview
+            return {"success": False, "code": "FAIL", "created": False}
+
+    client = BuffClient()
+    kwargs, _pending, _purchases = _checkout_args()
+
+    result = steps.lock_and_confirm_payment(
+        client,
+        _item([{"id": "sell-1", "price": "10.0"}]),
+        _config(),
+        **kwargs,
+    )
+
+    assert result is None
+    assert client.received_preview is preview
+
+
+def test_definitive_login_rejection_resolves_guard_and_sends_one_post():
+    class BuffClient:
+        _pay_method = "alipay"
+
+        def __init__(self):
+            self.verify_calls = 0
+            self.locked_order_ids = []
+
+        def verify_session(self, _game):
+            self.verify_calls += 1
+            return True
+
+        def lock_and_get_pay_url(self, _game, _goods_id, order_id, _price):
+            self.locked_order_ids.append(order_id)
+            raise BuffAuthExpired(
+                "BUFF 明确拒绝请求：登录状态已失效，订单未创建"
+            )
+
+    client = BuffClient()
+    kwargs, _pending, _purchases = _checkout_args()
+
+    with pytest.raises(BuffAuthExpired, match="订单未创建"):
+        steps.lock_and_confirm_payment(
+            client,
+            _item(
+                [
+                    {"id": "sell-1", "price": "10.0"},
+                    {"id": "sell-2", "price": "10.0"},
+                ]
+            ),
+            _config(),
+            **kwargs,
+        )
+
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+
+    assert client.verify_calls == 1
+    assert client.locked_order_ids == ["sell-1"]
+    assert get_unresolved_checkout() is None
+
+
 def test_transport_unknown_write_is_converted_to_terminal_purchase_state():
     class BuffClient:
         _pay_method = "alipay"
@@ -513,6 +663,46 @@ def test_explicitly_unsupported_batch_can_fallback_once():
             {"id": "sell-2", "price": "10.0"},
         ]),
         _config("alipay"),
+        **kwargs,
+    )
+
+    assert result is None
+    assert client.batch_calls == 0
+    assert client.single_calls == 1
+
+
+def test_client_without_batch_support_falls_back_to_one_single_post():
+    class BuffClient:
+        _pay_method = "wechat"
+        supports_batch_buy = False
+
+        def __init__(self):
+            self.batch_calls = 0
+            self.single_calls = 0
+
+        def verify_session(self, _game):
+            return True
+
+        def try_batch_buy(self, *_args):
+            self.batch_calls += 1
+            raise AssertionError("disabled batch protocol must never send a POST")
+
+        def lock_and_get_pay_url(self, *_args):
+            self.single_calls += 1
+            return {"success": False, "code": "FAIL", "created": False}
+
+    client = BuffClient()
+    kwargs, _pending, _purchases = _checkout_args()
+
+    result = steps.lock_and_confirm_payment(
+        client,
+        _item(
+            [
+                {"id": "sell-1", "price": "10.0"},
+                {"id": "sell-2", "price": "10.0"},
+            ]
+        ),
+        _config("wechat"),
         **kwargs,
     )
 

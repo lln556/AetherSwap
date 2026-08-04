@@ -2,7 +2,6 @@ import json
 import time
 import logging
 import copy
-from decimal import Decimal, ROUND_HALF_UP
 from typing import Callable, Optional
 from urllib.parse import urljoin
 
@@ -38,12 +37,58 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 def _is_auth_error(status_code: int, data: dict) -> bool:
     if status_code == 401:
         return True
-    code = str(data.get("code", "")).lower()
-    err_val = data.get("error") or data.get("msg") or ""
-    msg = str(err_val).lower()
-    if "login" in code or "login" in msg or "未登录" in msg or "登录" in msg:
-        return True
-    return False
+    code = str(data.get("code", "")).strip().casefold()
+    message = str(
+        data.get("error") or data.get("msg") or data.get("message") or ""
+    ).strip().casefold()
+    # Do not match every response containing "login/登录".  BUFF also uses
+    # login-related wording for verification states (for example a Steam login
+    # verification), and treating those as an expired BUFF session creates the
+    # wrong recovery flow.
+    return code in {
+        "login required",
+        "login_required",
+        "unauthorized",
+        "not logged in",
+    } or any(marker in message for marker in ("未登录", "登录失效"))
+
+
+def _is_definitive_login_rejection(status_code: int, data: dict) -> bool:
+    """Return true only for BUFF's verified application-level auth rejection.
+
+    The current BUFF web client handles HTTP 200 + ``Login Required`` as a
+    rejected API operation and immediately opens its login UI.  Transport
+    failures, redirects, HTML and non-2xx responses remain ambiguous after a
+    write and must not use this narrow classification.
+    """
+
+    return (
+        status_code == 200
+        and str(data.get("code") or "").strip().casefold() == "login required"
+    )
+
+
+def _timezone_offset_dst_ms() -> str:
+    """Match the millisecond UTC offset sent by BUFF's browser client."""
+
+    local = time.localtime()
+    seconds_west = (
+        time.altzone
+        if local.tm_isdst > 0 and time.daylight
+        else time.timezone
+    )
+    return str(int(-seconds_west * 1000))
+
+
+def _history_item_is_awaiting_payment(item: dict) -> bool:
+    """Apply the state rule used by BUFF's current buy-order frontend."""
+
+    state = str(item.get("state") or "").strip().upper()
+    try:
+        expires = float(item.get("pay_expire_timeout", 0))
+    except (TypeError, ValueError):
+        return False
+    return state == "PAYING" and expires > -1
 
 def _is_verification_required(data: dict) -> bool:
     text = str(data.get("error") or data.get("msg") or data.get("message") or "").lower()
@@ -134,15 +179,13 @@ API_HISTORY = "https://buff.163.com/api/market/buy_order/history"
 API_USER_INFO = "https://buff.163.com/account/api/user/info/v2"
 API_SELL_ORDER = "https://buff.163.com/api/market/goods/sell_order"
 API_GOODS = "https://buff.163.com/api/market/goods"
+API_BUY_PREVIEW = "https://buff.163.com/api/market/goods/buy/preview"
 API_BUY = "https://buff.163.com/api/market/goods/buy"
 API_PAGE_PAY = "https://buff.163.com/api/market/bill_order/page_pay"
 API_WX_PAY_QRCODE = "https://buff.163.com/api/market/bill_order/wx_pay_qrcode"
-API_BATCH_BUY_CREATE = "https://buff.163.com/api/market/goods/batch_buy/create"
 API_BATCH_WX_PAY_QRCODE = "https://buff.163.com/api/market/goods/batch_buy/wx_pay_qrcode"
 API_ASK_SELLER_SEND = "https://buff.163.com/api/market/bill_order/ask_seller_to_send_offer"
 API_STEAM_TRADE = "https://buff.163.com/api/market/steam_trade"
-ASK_SELLER_MAX_ATTEMPTS = 3
-ASK_SELLER_BETWEEN_REQUEST_SECONDS = 1.5
 def _parse_cookies(cookie_str: str) -> dict:
     out = {}
     for item in cookie_str.split(";"):
@@ -193,6 +236,7 @@ class BuffBuyer:
         request_policy: Optional[BuffRequestPolicy] = None,
         account_id: Optional[str] = None,
         request_timeout: float = 10.0,
+        steam_id: Optional[str] = None,
     ):
         self.cookies_dict = _parse_cookies(cookie_str)
         self.csrf_token = _csrf(self.cookies_dict)
@@ -231,6 +275,8 @@ class BuffBuyer:
         self.request_timeout = max(1.0, float(request_timeout))
         self.account_key = account_fingerprint(self.cookies_dict, account_id)
         self._user_agent = user_agent or DEFAULT_USER_AGENT
+        self.steam_id = str(steam_id or "").strip()
+        self._buff_cashier_trace_id = ""
         self.headers = {
             "Host": "buff.163.com",
             "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -308,6 +354,7 @@ class BuffBuyer:
     def _make_request(self, method: str, url: str, **kwargs) -> dict:
         method = method.upper()
         headers_override = kwargs.pop("headers", None)
+        with_cashier_trace_id = bool(kwargs.pop("with_cashier_trace_id", False))
         verify = kwargs.pop("verify", self.use_ssl)
         timeout = kwargs.pop("timeout", self.request_timeout)
         is_write = method not in _SAFE_METHODS
@@ -333,6 +380,10 @@ class BuffBuyer:
                     )
                 self.headers["X-Csrftoken"] = self.csrf_token
                 h["X-Csrftoken"] = self.csrf_token
+                h.setdefault("Origin", "https://buff.163.com")
+                h.setdefault("Timezone-Offset-DST", _timezone_offset_dst_ms())
+            if with_cashier_trace_id and self._buff_cashier_trace_id:
+                h["Buff-Cashier-Trace-ID"] = self._buff_cashier_trace_id
 
             try:
                 r = self.session.request(
@@ -359,6 +410,13 @@ class BuffBuyer:
             status_code = int(getattr(r, "status_code", 0) or 0)
             response_text = str(getattr(r, "text", "") or "")
             response_headers = getattr(r, "headers", {}) or {}
+            response_trace_id = _header_value(
+                response_headers, "Buff-Cashier-Trace-ID"
+            ).strip()
+            if response_trace_id and len(response_trace_id) <= 256:
+                # BUFF issues this value in a response and its web client reuses
+                # it from sessionStorage.  Never invent a random trace id.
+                self._buff_cashier_trace_id = response_trace_id
             json_ok = False
             data = {}
             try:
@@ -427,6 +485,10 @@ class BuffBuyer:
                     )
                 raise BuffVerificationRequired(message)
 
+            if _is_definitive_login_rejection(status_code, data):
+                raise BuffAuthExpired(
+                    "BUFF 明确拒绝请求：登录状态已失效，订单未创建"
+                )
             if _is_auth_error(status_code, data):
                 if is_write:
                     raise BuffWriteResultUnknown(
@@ -517,11 +579,19 @@ class BuffBuyer:
         )
         data = response.get("data")
         user_info = data.get("user_info") if isinstance(data, dict) else None
-        return (
+        verified = (
             response.get("code") == "OK"
             and isinstance(user_info, dict)
             and bool(user_info)
         )
+        if verified:
+            steam_id = _normalize_server_identifier(user_info.get("steamid"))
+            if steam_id:
+                # BUFF's own selected/bound Steam account is authoritative for
+                # purchase preview and checkout.  Do not substitute an ID from
+                # an unrelated local Steam session.
+                self.steam_id = steam_id
+        return verified
 
     def get_steam_trades(self) -> Optional[list]:
         """Return pending BUFF-to-Steam trade records through this session."""
@@ -548,12 +618,25 @@ class BuffBuyer:
             "game": game,
             "page_num": "1",
             "page_size": "10",
-            "state": "wait_pay",
             "_": str(int(time.time() * 1000)),
         }
         try:
             res = self._make_request("GET", API_HISTORY, params=params)
-            items = res.get("data", {}).get("items", [])
+            if res.get("code") != "OK":
+                logger.warning(
+                    "检查待付款订单失败 code=%s: %s",
+                    res.get("code", "UNKNOWN"),
+                    res.get("error") or res.get("msg") or "未知错误",
+                )
+                return False
+            all_items = res.get("data", {}).get("items", [])
+            items = [
+                item
+                for item in all_items
+                if isinstance(item, dict)
+                and _history_item_is_awaiting_payment(item)
+                and _normalize_server_identifier(item.get("id"))
+            ]
             if items:
                 logger.info("检测到 %d 个待付款订单，正在获取支付链接...", len(items))
                 for item in items:
@@ -619,6 +702,67 @@ class BuffBuyer:
             return None
         except Exception:
             return None
+
+    def preview_buy(
+        self,
+        game: str,
+        goods_id: int,
+        sell_order_id: str,
+        price: str,
+    ) -> dict:
+        """Run BUFF's current read-only purchase preview before creating an order."""
+
+        if not self.steam_id:
+            if not self.verify_session():
+                raise BuffAuthExpired(
+                    "BUFF 在线会话预检失败，未发送锁单请求"
+                )
+        if not self.steam_id:
+            raise BuffRequestBlocked(
+                "BUFF 账户未返回已绑定的 SteamID，已在本地阻止锁单"
+            )
+        params = {
+            "game": str(game),
+            "sell_order_id": str(sell_order_id),
+            "goods_id": str(goods_id),
+            "price": str(price),
+            "allow_tradable_cooldown": "0",
+            "cdkey_id": "",
+            "steamid": self.steam_id or None,
+        }
+        headers = {
+            "Referer": f"https://buff.163.com/goods/{goods_id}?from=market"
+        }
+        return self._make_request(
+            "GET",
+            API_BUY_PREVIEW,
+            params=params,
+            headers=headers,
+        )
+
+    def _preview_payment_error(self, preview_data: dict) -> str:
+        pay_methods = preview_data.get("pay_methods")
+        if not isinstance(pay_methods, list):
+            return "BUFF 购买预检未返回支付方式"
+        selected = next(
+            (
+                item
+                for item in pay_methods
+                if isinstance(item, dict)
+                and str(item.get("value")) == str(self.pay_method)
+            ),
+            None,
+        )
+        if selected is None:
+            return f"BUFF 购买预检不支持当前支付方式 {self.pay_method}"
+        if selected.get("btn_clickable") is not True:
+            return str(
+                selected.get("error")
+                or selected.get("btn_text")
+                or "BUFF 购买预检显示当前支付方式不可用"
+            )
+        return ""
+
     def get_and_buy(
         self,
         goods_id: int,
@@ -675,6 +819,26 @@ class BuffBuyer:
         order_id: str,
         price: str,
     ) -> str:
+        preview = self.preview_buy(game, goods_id, order_id, price)
+        preview_data = preview.get("data")
+        preview_error = (
+            self._preview_payment_error(preview_data)
+            if preview.get("code") == "OK" and isinstance(preview_data, dict)
+            else ""
+        )
+        if (
+            preview.get("code") != "OK"
+            or not isinstance(preview_data, dict)
+            or preview_error
+        ):
+            logger.warning(
+                "购买预检未通过，未发送锁单请求: %s",
+                preview_error
+                or preview.get("error")
+                or preview.get("msg")
+                or preview.get("code"),
+            )
+            return "FAIL"
         payload = {
             "game": game,
             "goods_id": str(goods_id),
@@ -685,12 +849,17 @@ class BuffBuyer:
             "token": "",
             "cdkey_id": "",
             "hide_non_epay": True,
+            "steamid": self.steam_id or None,
         }
-        if self.pay_method == PAY_METHOD_ALIPAY:
-            payload["steamid"] = None
         h = {"Referer": f"https://buff.163.com/goods/{goods_id}?from=market"}
         try:
-            res = self._make_request("POST", API_BUY, headers=h, data=json.dumps(payload))
+            res = self._make_request(
+                "POST",
+                API_BUY,
+                headers=h,
+                data=json.dumps(payload),
+                with_cashier_trace_id=True,
+            )
             if res.get("code") == "OK":
                 data = res.get("data")
                 if not isinstance(data, dict):
@@ -771,7 +940,42 @@ class BuffBuyer:
         price: str,
         *,
         on_created: Optional[Callable[[str], None]] = None,
+        preview: Optional[dict] = None,
     ) -> dict:
+        if preview is None:
+            preview = self.preview_buy(game, goods_id, sell_order_id, price)
+        if not isinstance(preview, dict):
+            return {
+                "success": False,
+                "code": "PREVIEW_INVALID",
+                "msg": "BUFF 购买预检返回格式异常",
+                "created": False,
+            }
+        if preview.get("code") != "OK":
+            return {
+                "success": False,
+                "code": str(preview.get("code") or "PREVIEW_REJECTED"),
+                "msg": preview.get("error")
+                or preview.get("msg")
+                or "BUFF 购买预检未通过",
+                "created": False,
+            }
+        preview_data = preview.get("data")
+        if not isinstance(preview_data, dict):
+            return {
+                "success": False,
+                "code": "PREVIEW_INVALID",
+                "msg": "BUFF 购买预检返回格式异常",
+                "created": False,
+            }
+        preview_error = self._preview_payment_error(preview_data)
+        if preview_error:
+            return {
+                "success": False,
+                "code": "PAY_METHOD_UNAVAILABLE",
+                "msg": preview_error,
+                "created": False,
+            }
         payload = {
             "game": game,
             "goods_id": str(goods_id),
@@ -782,12 +986,17 @@ class BuffBuyer:
             "token": "",
             "cdkey_id": "",
             "hide_non_epay": True,
+            "steamid": self.steam_id or None,
         }
-        if self.pay_method == PAY_METHOD_ALIPAY:
-            payload["steamid"] = None
         h = {"Referer": f"https://buff.163.com/goods/{goods_id}?from=market"}
         try:
-            res = self._make_request("POST", API_BUY, headers=h, data=json.dumps(payload))
+            res = self._make_request(
+                "POST",
+                API_BUY,
+                headers=h,
+                data=json.dumps(payload),
+                with_cashier_trace_id=True,
+            )
             if res.get("code") != "OK":
                 err_msg = res.get("error") or res.get("msg") or f"接口代码非 OK (Code: {res.get('code', 'N/A')})"
                 msg_str = str(err_msg)
@@ -915,61 +1124,9 @@ class BuffBuyer:
         num: int,
         game: str = "csgo",
     ) -> Optional[str]:
-        if self.pay_method != PAY_METHOD_WECHAT:
-            return None
-        import uuid
-        trace_id = uuid.uuid4().hex
-        currency_unit = Decimal("0.01")
-        exact_unit_price = Decimal(str(max_price)).quantize(
-            currency_unit,
-            rounding=ROUND_HALF_UP,
+        raise BuffRequestBlocked(
+            "BUFF 批量购买协议已变化，旧批量写请求已在本地禁用"
         )
-        exact_frozen_amount = (exact_unit_price * int(num)).quantize(
-            currency_unit,
-            rounding=ROUND_HALF_UP,
-        )
-        payload = {
-            "game": game,
-            "goods_id": int(goods_id),
-            "pay_method": PAY_METHOD_WECHAT,
-            # Build the amount from decimal currency values.  A binary-float
-            # product such as 0.29 * 3 becomes 0.8699999999999999, which can
-            # leave the paid batch microscopically short for its final item.
-            "frozen_amount": float(exact_frozen_amount),
-            "max_price": format(exact_unit_price, "f"),
-            "num": str(num),
-            "steamid": None,
-        }
-        h = {
-            "Referer": f"https://buff.163.com/goods/{goods_id}",
-            "Buff-Cashier-Trace-Id": trace_id,
-        }
-        try:
-            res = self._make_request("POST", API_BATCH_BUY_CREATE, headers=h, data=json.dumps(payload))
-            if res.get("code") != "OK":
-                return None
-            data = res.get("data")
-            if not isinstance(data, dict):
-                raise BuffWriteResultUnknown(
-                    "BUFF 批量锁单返回成功但 data 格式异常，结果未知",
-                    method="POST",
-                    url=API_BATCH_BUY_CREATE,
-                )
-            batch_id = (
-                _normalize_server_identifier(data.get("id"))
-                or _normalize_server_identifier(data.get("batch_buy_id"))
-            )
-            if not batch_id:
-                raise BuffWriteResultUnknown(
-                    "BUFF 批量锁单返回成功但缺少批次号，结果未知",
-                    method="POST",
-                    url=API_BATCH_BUY_CREATE,
-                )
-            return batch_id
-        except (BuffAuthExpired, BuffRequestBlocked, BuffWriteResultUnknown):
-            raise
-        except Exception:
-            return None
     def batch_buy_wx_qrcode(self, batch_id: str, game: str = "csgo") -> Optional[str]:
         params = {
             "batch_buy_id": str(batch_id),
@@ -994,50 +1151,9 @@ class BuffBuyer:
         price: str,
         batch_buy_id: str,
     ) -> Optional[str]:
-        if self.pay_method != PAY_METHOD_WECHAT:
-            return None
-        import uuid
-        trace_id = uuid.uuid4().hex
-        payload = {
-            "game": game,
-            "goods_id": int(goods_id),
-            "sell_order_id": str(sell_order_id),
-            "price": str(price),
-            "pay_method": PAY_METHOD_WECHAT,
-            "batch": 1,
-            "batch_buy_id": str(batch_buy_id),
-            "batch_id": "",
-            "allow_tradable_cooldown": 0,
-            "hide_non_epay": False,
-            "steamid": None,
-        }
-        h = {
-            "Referer": f"https://buff.163.com/goods/{goods_id}",
-            "Buff-Cashier-Trace-Id": trace_id
-        }
-        try:
-            res = self._make_request("POST", API_BUY, headers=h, data=json.dumps(payload))
-            if res.get("code") != "OK":
-                return None
-            data = res.get("data")
-            if not isinstance(data, dict):
-                raise BuffWriteResultUnknown(
-                    "BUFF 批量核销返回成功但 data 格式异常，结果未知",
-                    method="POST",
-                    url=API_BUY,
-                )
-            order_id = _normalize_server_identifier(data.get("id"))
-            if not order_id:
-                raise BuffWriteResultUnknown(
-                    "BUFF 批量核销返回成功但缺少订单号，结果未知",
-                    method="POST",
-                    url=API_BUY,
-                )
-            return order_id
-        except (BuffAuthExpired, BuffRequestBlocked, BuffWriteResultUnknown):
-            raise
-        except Exception:
-            return None
+        raise BuffRequestBlocked(
+            "BUFF 批量购买协议已变化，旧批量核销请求已在本地禁用"
+        )
     def ask_seller_to_send(self, bill_order_id_or_ids, game: str = "csgo") -> bool:
         if isinstance(bill_order_id_or_ids, (list, tuple)):
             raw_ids = bill_order_id_or_ids
@@ -1063,81 +1179,56 @@ class BuffBuyer:
             return False
 
         h = {"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"}
-        succeeded_ids = []
-        failed_ids = []
-        requests_sent = 0
+        payload = {
+            "bill_orders": ids,
+            "game": game,
+            "steamid": getattr(self, "steam_id", "") or None,
+        }
+        try:
+            # BUFF's web client submits the complete bill list once.  Splitting
+            # it into N writes both raises risk-control traffic and can make a
+            # partially failed response look like full success.
+            res = self._make_request(
+                "POST",
+                API_ASK_SELLER_SEND,
+                headers=h,
+                data=json.dumps(payload),
+            )
+        except (BuffAuthExpired, BuffRequestBlocked, BuffWriteResultUnknown):
+            raise
+        except Exception as exc:
+            raise BuffWriteResultUnknown(
+                "提醒卖家发货时发生异常，写请求结果未知，禁止自动重试",
+                method="POST",
+                url=API_ASK_SELLER_SEND,
+            ) from exc
 
-        for order_id in ids:
-            payload = {
-                "bill_orders": [order_id],
-                "game": game,
-                "steamid": None,
-            }
-            prompted = False
-            last_error = ""
-
-            for attempt in range(ASK_SELLER_MAX_ATTEMPTS):
-                if requests_sent > 0:
-                    delay = ASK_SELLER_BETWEEN_REQUEST_SECONDS
-                    if attempt > 0:
-                        delay *= attempt + 1
-                    jittered_sleep(delay)
-                requests_sent += 1
-
-                try:
-                    res = self._make_request(
-                        "POST",
-                        API_ASK_SELLER_SEND,
-                        headers=h,
-                        data=json.dumps(payload),
-                    )
-                except (
-                    BuffAuthExpired,
-                    BuffRequestBlocked,
-                    BuffWriteResultUnknown,
-                ):
-                    # A transport/risk/auth failure after a write was sent has
-                    # an unknown result.  Retrying it automatically could
-                    # amplify risk-control traffic, so preserve the hard stop.
-                    raise
-                except Exception as exc:
-                    raise BuffWriteResultUnknown(
-                        "提醒卖家发货时发生异常，写请求结果未知，禁止自动重试",
-                        method="POST",
-                        url=API_ASK_SELLER_SEND,
-                    ) from exc
-
-                if res.get("code") == "OK":
-                    prompted = True
-                    succeeded_ids.append(order_id)
-                    break
-
-                last_error = str(
-                    res.get("error")
-                    or res.get("msg")
-                    or res.get("message")
-                    or res.get("code")
-                    or "未知错误"
-                )
-                logger.warning(
-                    "提醒卖家发货失败 bill_order_id=%s attempt=%s/%s: %s",
-                    order_id,
-                    attempt + 1,
-                    ASK_SELLER_MAX_ATTEMPTS,
-                    last_error,
-                )
-
-            if not prompted:
-                failed_ids.append(order_id)
-
+        if res.get("code") != "OK":
+            logger.warning(
+                "提醒卖家发货失败: %s",
+                res.get("error")
+                or res.get("msg")
+                or res.get("message")
+                or res.get("code")
+                or "未知错误",
+            )
+            return False
+        statuses = res.get("data")
+        if not isinstance(statuses, dict):
+            logger.warning("提醒卖家发货返回缺少逐订单状态")
+            return False
+        failed_ids = [
+            order_id
+            for order_id in ids
+            if str(statuses.get(order_id) or "").strip().upper() != "OK"
+        ]
         if failed_ids:
             logger.warning(
                 "提醒卖家发货仅完成 %s/%s，失败订单: %s",
-                len(succeeded_ids),
+                len(ids) - len(failed_ids),
                 len(ids),
                 ", ".join(failed_ids),
             )
             return False
-
-        logger.info("提醒卖家发货全部完成 %s/%s", len(succeeded_ids), len(ids))
-        return len(succeeded_ids) == len(ids)
+        logger.info("提醒卖家发货全部完成 %s/%s", len(ids), len(ids))
+        return True

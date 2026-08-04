@@ -1,6 +1,3 @@
-import json
-from decimal import Decimal
-
 import pytest
 
 from app.pipeline_steps import (
@@ -8,34 +5,57 @@ from app.pipeline_steps import (
     _validate_unique_batch_matches,
 )
 from app.services.buff_client import BuffClient
-from buff import BuffWriteResultUnknown
+from buff import BuffRequestBlocked, BuffWriteResultUnknown
 from buff.buyer import BuffBuyer, PAY_METHOD_WECHAT
 
 
-def test_batch_frozen_amount_uses_exact_currency_arithmetic(monkeypatch):
+@pytest.mark.parametrize(
+    ("method_name", "args"),
+    [
+        ("batch_buy_create", (42, 0.29, 3, "csgo")),
+        (
+            "batch_buy_finalize",
+            ("csgo", 42, "sell-1", "0.29", "batch-1"),
+        ),
+    ],
+)
+def test_legacy_batch_writes_are_blocked_before_http(monkeypatch, method_name, args):
     buyer = object.__new__(BuffBuyer)
     buyer.pay_method = PAY_METHOD_WECHAT
-    captured = {}
+    calls = []
 
     def make_request(method, url, **kwargs):
-        captured["method"] = method
-        captured["url"] = url
-        captured["payload"] = json.loads(kwargs["data"])
-        return {"code": "OK", "data": {"id": "batch-1"}}
+        calls.append((method, url, kwargs))
+        raise AssertionError("legacy batch flow must not issue HTTP")
 
     monkeypatch.setattr(buyer, "_make_request", make_request)
 
-    batch_id = buyer.batch_buy_create(
+    with pytest.raises(BuffRequestBlocked):
+        getattr(buyer, method_name)(*args)
+
+    assert calls == []
+
+
+def test_client_batch_buy_is_safe_not_supported_fallback_without_running_buyer():
+    client = object.__new__(BuffClient)
+    client._run = lambda _operation: (_ for _ in ()).throw(
+        AssertionError("disabled batch flow must not reach BuffBuyer")
+    )
+    created_ids = []
+
+    result = client.try_batch_buy(
         goods_id=42,
-        max_price=0.29,
+        game="csgo",
+        orders=[{"id": "sell-1", "price": "0.29"}],
+        unit_price=0.29,
         num=3,
+        on_created=created_ids.append,
     )
 
-    assert batch_id == "batch-1"
-    assert captured["payload"]["frozen_amount"] == 0.87
-    assert Decimal(str(captured["payload"]["frozen_amount"])) == (
-        Decimal(captured["payload"]["max_price"]) * 3
-    )
+    assert result["code"] == "NOT_SUPPORTED"
+    assert result["created"] is False
+    assert result["safe_to_fallback"] is True
+    assert created_ids == []
 
 
 def test_exact_budget_multiple_does_not_plan_one_item_too_few():
