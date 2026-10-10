@@ -66,4 +66,25 @@ def test_history_success_contract_is_unchanged(monkeypatch, return_currency):
     monkeypatch.setattr(client.requests, "get", get)
     result = client.fetch_history("Test Item", return_currency=return_currency)
     assert result == ({"history": prices, "currency": "USD"} if return_currency else prices)
-    assert sent[0]["headers"]["Accept-Language"] == "en-US,en;q=0.9"
+    assert "Accept-Language" not in sent[0]["headers"]
+    assert sent[0]["headers"]["Accept"] == "application/json, text/javascript, */*; q=0.01"
+    assert sent[0]["headers"]["User-Agent"] == client.HISTORY_USER_AGENT
+
+
+def test_history_preserves_explicit_headers(monkeypatch):
+    sent = []
+
+    def get(_url, **kwargs):
+        sent.append(kwargs)
+        return response(body={"success": True, "prices": []})
+
+    monkeypatch.setattr(client.requests, "get", get)
+    headers = {
+        "Accept-Language": "zh-CN",
+        "Accept": "application/json",
+        "User-Agent": "custom-agent",
+    }
+    assert client.fetch_history("Test Item", headers=headers) == []
+    for name, value in headers.items():
+        assert sent[0]["headers"][name] == value
+    assert client.DEFAULT_HEADERS["Accept-Language"] == "en-US,en;q=0.9"
