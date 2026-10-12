@@ -23,6 +23,7 @@ from app.services.buff_checkout_guard import (
     update_checkout,
 )
 from app.services.buff_auth import get_buff_auth_lock
+from app.services.buff_offer_support import filter_automatable_sellers, remember_app_only_seller
 from app.notify import send_pushplus, build_payment_notify_content, wait_email_command
 from utils.delay import jittered_sleep
 from buff import (
@@ -1371,6 +1372,26 @@ def _do_batch_wait_finalize_and_append(
         expected_intent_id=checkout_intent_id,
     )
     return total
+def _poll_single_order_payment(
+    buff_client: Any, game: str, order_id: str, goods_id: int, price: float,
+    is_stop_requested: callable,
+) -> Optional[dict]:
+    lookup = getattr(buff_client, "get_order_payment", None)
+    if not callable(lookup):
+        return None
+    # Automatic payment can settle after the payment-link lookup has returned.
+    # Only repeat the read, never the non-idempotent buy request.
+    for attempt in range(4):
+        proof = lookup(game, order_id, goods_id, str(price))
+        if isinstance(proof, dict) and proof.get("paid") is True:
+            return proof
+        if is_stop_requested():
+            return None
+        if attempt < 3:
+            jittered_sleep(2)
+    return None
+
+
 def _do_wait_payment_and_append(
     buff_client: Any,
     item: Dict[str, Any],
@@ -1393,14 +1414,19 @@ def _do_wait_payment_and_append(
     sell_order_id: str = "",
     market_price: Optional[float] = None,
     on_entering_payment: Optional[Callable[[], None]] = None,
+    payment_verified: bool = False,
+    shipping_verified: bool = False,
+    seller_id: str = "",
 ) -> Optional[float]:
-    ok = _do_payment_notify_and_wait(
-        item, config, unit_price, num, pay_url, pay_type, order_id, acc,
-        set_pending_payment, wait_payment_confirm, confirm_payment,
-        is_stop_requested, log_fn, on_entering_payment,
-    )
-    if is_stop_requested() or not ok:
-        return None
+    if not payment_verified:
+        ok = _do_payment_notify_and_wait(
+            item, config, unit_price, num, pay_url, pay_type, order_id, acc,
+            set_pending_payment, wait_payment_confirm, confirm_payment,
+            is_stop_requested, log_fn, on_entering_payment,
+        )
+        if is_stop_requested() or not ok:
+            return None
+    # A verified charge must be recorded even if Stop arrived during lookup.
     if market_price is None:
         mhn = (item.get("steam_market_name") or item.get("name") or "").strip()
         market_price = _fetch_smart_market_price(mhn, config, app_id=730)
@@ -1416,8 +1442,17 @@ def _do_wait_payment_and_append(
     }
     if market_price is not None and market_price > 0:
         base_rec["market_price"] = round(float(market_price), 2)
-    for _ in range(num):
-        append_purchase(dict(base_rec))
+    existing = ([p for p in get_purchases() if p.get("buff_order_id") == str(order_id)]
+                if payment_verified else [])
+    if existing:
+        if (len(existing) != num or any(
+                p.get("goods_id") != goods_id
+                or _currency_amount(p.get("price")) != _currency_amount(unit_price)
+                for p in existing)):
+            raise PurchaseOrderCreatedPending("已记录订单与当前付款信息不一致", order_id=order_id)
+    else:
+        for _ in range(num):
+            append_purchase(dict(base_rec))
     update_checkout(
         expected_intent_id=checkout_intent_id,
         stage="purchase_recorded",
@@ -1425,7 +1460,8 @@ def _do_wait_payment_and_append(
         reason="订单已写入本地交易记录",
     )
     try:
-        if buff_client.ask_seller_to_send(order_id, game_buff) and log_fn:
+        shipping_ok = shipping_verified or buff_client.ask_seller_to_send(order_id, game_buff)
+        if shipping_ok and log_fn:
             log_fn("[Buff]   → 已提醒卖家发货，请留意 Steam 报价", "info")
         elif log_fn:
             log_fn("[Buff]   → 提醒卖家发货未成功（可稍后在订单页手动催发货）", "warn")
@@ -1455,6 +1491,27 @@ def _do_wait_payment_and_append(
         )
         _mark_committed(halted, unit_price * num)
         raise halted from exc
+    if payment_verified and not shipping_ok:
+        error_lookup = getattr(buff_client, "get_last_offer_error", None)
+        reason = error_lookup(order_id) if callable(error_lookup) else "卖家发起报价请求未成功"
+        reason = reason or "卖家发起报价请求未成功"
+        update_checkout(expected_intent_id=checkout_intent_id,
+                        stage="manual_offer_required", order_id=str(order_id),
+                        reason=reason)
+        halted = PurchaseOrderCreatedPending(
+            f"订单已付款并记账，但需要处理报价: {reason}", order_id=str(order_id))
+        _mark_committed(halted, unit_price * num)
+        try:
+            remember_app_only_seller(seller_id, order_id, reason)
+            token = str((config.get("notify") or {}).get("pushplus_token") or "").strip()
+            if token:
+                send_pushplus(token, "BUFF 已付款：需要立即发起报价",
+                              f"订单 {order_id}，金额 {unit_price:.2f} 元。{reason}。"
+                              "请立即检查 BUFF App；程序已停止后续购买。", template="txt")
+        except Exception as exc:
+            if log_fn:
+                log_fn(f"[Buff] 报价异常提醒或卖家能力记录未完成 ({type(exc).__name__})", "warn")
+        raise halted
     resolve_checkout(
         "single_purchase_recorded",
         expected_intent_id=checkout_intent_id,
@@ -1691,6 +1748,7 @@ def lock_and_confirm_payment(
                     f"[Buff]   → 已刷新卖单快照 → 最低价={refreshed_price:.2f} 同价数量={refreshed_count}",
                     "info",
                 )
+        orders = filter_automatable_sellers(orders)
         lowest_price, count_at_lowest = count_lowest_price_orders(orders)
         if lowest_price <= 0 or count_at_lowest <= 0:
             if log_fn:
@@ -1915,6 +1973,36 @@ def lock_and_confirm_payment(
                         _PurchaseAttemptStatus.UNKNOWN_AFTER_SEND,
                         reason=str(e) or "锁单网络/接口异常",
                     )
+        payment_verified = False
+        if (isinstance(result, dict) and result.get("order_id")
+                and (result.get("success") or result.get("created"))):
+            order_id = str(result["order_id"])
+            try:
+                proof = _poll_single_order_payment(
+                    buff_client, game_buff, order_id, goods_id, p,
+                    is_stop_requested,
+                )
+            except (BuffAuthExpired, BuffRequestBlocked) as exc:
+                update_checkout(
+                    expected_intent_id=checkout_intent_id,
+                    stage="order_created_pending", order_id=order_id,
+                    reason=f"订单已创建，但付款状态查询被阻止: {exc}",
+                )
+                raise
+            except Exception as exc:
+                proof = None
+                if log_fn:
+                    log_fn(f"[Buff]   → 付款状态查询失败 ({type(exc).__name__})，保留原订单", "warn")
+            if proof:
+                payment_verified = True
+                result = dict(result, success=True)
+                update_checkout(
+                    expected_intent_id=checkout_intent_id,
+                    stage="payment_verified", order_id=order_id,
+                    reason="BUFF 已返回匹配订单的付款时间和有效履约状态",
+                )
+                if log_fn:
+                    log_fn(f"[Buff]   → 已核实免密/自动付款成功 order_id={order_id}，无需付款链接或邮件确认", "info")
         if not result or not result.get("success"):
             attempt = _classify_failure(result)
             if attempt.status in {
@@ -1955,7 +2043,7 @@ def lock_and_confirm_payment(
                 _PurchaseAttemptStatus.UNKNOWN_AFTER_SEND,
                 reason="锁单返回成功但缺少订单号",
             )
-        if not pay_url:
+        if not pay_url and not payment_verified:
             identity = _checkout_credential_identity(buff_client)
             update_checkout(
                 expected_intent_id=checkout_intent_id,
@@ -1972,19 +2060,20 @@ def lock_and_confirm_payment(
                 reason="订单已创建但未取得支付链接",
                 order_id=order_id,
             )
-        if log_fn:
+        if log_fn and not payment_verified:
             log_fn(f"[Buff]   → 锁单成功 order_id={order_id} 等待用户确认付款…", "info")
         identity = _checkout_credential_identity(buff_client)
-        update_checkout(
-            expected_intent_id=checkout_intent_id,
-            stage="payment_pending",
-            order_id=order_id,
-            credential_generation=identity.get("credential_generation", 0),
-            credential_fingerprint=str(
-                identity.get("credential_fingerprint") or ""
-            ),
-            reason="订单已创建，等待付款确认",
-        )
+        if not payment_verified:
+            update_checkout(
+                expected_intent_id=checkout_intent_id,
+                stage="payment_pending",
+                order_id=order_id,
+                credential_generation=identity.get("credential_generation", 0),
+                credential_fingerprint=str(
+                    identity.get("credential_fingerprint") or ""
+                ),
+                reason="订单已创建，等待付款确认",
+            )
         paid = _do_wait_payment_and_append(
             buff_client,
             item,
@@ -2007,6 +2096,8 @@ def lock_and_confirm_payment(
             sell_order_id=str(o.get("id") or ""),
             market_price=ref_price,
             on_entering_payment=on_entering_payment,
+            payment_verified=payment_verified,
+            seller_id=str(o.get("user_id") or ""),
         )
         if paid is None:
             update_checkout(

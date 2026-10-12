@@ -241,7 +241,7 @@ _BUFF_RECONCILIATION_REQUIRED_STEPS = frozenset(
 
 
 def _buff_background_request_is_safe() -> bool:
-    """BUFF background reads must never overlap a buy pipeline or checkout."""
+    """Allow idle/waiting passes under the shared BUFF activity lock."""
 
     from app.pipeline import is_shutdown_pending
     from app.services.buff_checkout_guard import get_unresolved_checkout
@@ -250,12 +250,49 @@ def _buff_background_request_is_safe() -> bool:
         return False
     status = get_status() or {}
     return (
-        status.get("status") != "running"
+        (status.get("status") != "running"
+         or status.get("step") in {"WAITING_RETRY", "TIME_LIMIT_WAIT", "NETWORK_OFFLINE", "STEAM_COOLDOWN"})
         and status.get("step") != "CHECKOUT_PENDING"
         and status.get("step") not in _BUFF_RECONCILIATION_REQUIRED_STEPS
         and not status.get("buff_auth_expired")
         and not status.get("buff_verification_required")
     )
+
+
+def run_receive_check_once(buff_client, *, refresh_inventory: bool = False) -> dict:
+    from app.receive_flow import try_receive_once
+    from app.services.receipt_reconciliation import reconcile_receipts_once
+    from app.services.buff_auth import get_buff_auth_lock
+    from app.services.buff_checkout_guard import buff_activity_guard
+    inventory = None
+    with get_buff_auth_lock(), buff_activity_guard():
+        if not is_steam_background_allowed() or not _buff_background_request_is_safe():
+            return {"ok": False, "error": "购买任务或订单门禁占用中，请等待购买轮次结束"}
+        result = reconcile_receipts_once(buff_client)
+        inventory = result.pop("inventory", None)
+        n = try_receive_once(
+            get_purchases, update_purchase, lambda: buff_client, get_steam_credentials,
+            scan_inventory=scan_cs2_inventory, update_purchase_by_id=update_purchase_by_id,
+        )
+        result["received"] = result.get("received", 0) + n
+        # Recheck cooldowns even after all receipts have been reconciled.
+        # Without this pass, the first eligible listing needs a UI refresh.
+        owned = any(p.get("assetid") and not p.get("listing") and not p.get("sale_price")
+                    for p in get_purchases())
+        if n or (refresh_inventory and inventory is None and owned):
+            ok, items, error = scan_cs2_inventory()
+            if ok:
+                inventory = items
+            elif error:
+                result["inventory_error"] = error
+        if inventory is not None:
+            set_inventory(inventory)
+        result["pending"] = sum(bool(p.get("pending_receipt")) for p in get_purchases())
+        result["inventory_refreshed"] = inventory is not None
+    if inventory is not None:
+        from app.sell_pipeline import run_sell_phase_on_inventory_update
+        run_sell_phase_on_inventory_update(inventory)
+    return result
 
 
 def receive_worker() -> None:
@@ -271,6 +308,7 @@ def receive_worker() -> None:
     )
 
     buff_client = None
+    last_inventory_check = 0.0
     while True:
         try:
             cfg = load_app_config_validated()
@@ -278,40 +316,19 @@ def receive_worker() -> None:
             time.sleep(interval)
             if not is_steam_background_allowed() or not _buff_background_request_is_safe():
                 continue
-            # Hold the complete receive transaction (BUFF task lookup, Steam
-            # offer acceptance and DB update) outside pipeline start/import/
-            # data reset.  The inner BuffClient calls are re-entrant.
-            with get_buff_auth_lock():
-                with buff_activity_guard():
-                    if (
-                        not is_steam_background_allowed()
-                        or not _buff_background_request_is_safe()
-                    ):
-                        continue
-                    purchases = get_purchases()
-                    if not any(
-                        p.get("pending_receipt") and not p.get("assetid")
-                        for p in purchases
-                    ):
-                        continue
-                    credentials = get_buff_credentials() or {}
-                    if not credentials.get("cookies"):
-                        continue
-                    if buff_client is None:
-                        buff_client = create_buff_client_from_config(
-                            credentials,
-                            cfg,
-                        )
-                    n = try_receive_once(
-                        get_purchases,
-                        update_purchase,
-                        lambda: buff_client,
-                        get_steam_credentials,
-                        scan_inventory=scan_cs2_inventory,
-                        update_purchase_by_id=update_purchase_by_id,
-                    )
-            if n > 0:
-                log(f"receive_worker: 本轮收取到 {n} 件物品", "info", category="receive")
+            credentials = get_buff_credentials() or {}
+            if not credentials.get("cookies"):
+                continue
+            if buff_client is None:
+                buff_client = create_buff_client_from_config(credentials, cfg)
+            refresh_interval = max(60, int(cfg.get("pipeline", {}).get("listing_check_interval_seconds", 600) or 600))
+            result = run_receive_check_once(
+                buff_client, refresh_inventory=time.monotonic() - last_inventory_check >= refresh_interval,
+            )
+            if result.get("inventory_refreshed"):
+                last_inventory_check = time.monotonic()
+            if result.get("received", 0) > 0:
+                log(f"receive_worker: 本轮确认到账 {result['received']} 件", "info", category="receive")
         except BuffRateLimited as e:
             log(f"receive_worker: Buff 请求处于限流冷却: {e}", "warn", category="receive")
             time.sleep(min(60, max(1, int(e.retry_after))))

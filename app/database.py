@@ -347,6 +347,28 @@ def db_update_purchase_by_id(db_id: int, data: dict) -> bool:
         session.add(row)
         session.commit()
         return True
+def db_apply_receipt_reconciliation(expected: dict, *, assetid: str = "", closed: bool = False) -> bool:
+    """Apply only to the still-pending, unchanged order used by the audit."""
+    with get_session() as session:
+        row = session.get(Purchase, expected.get("_db_id"))
+        if (row is None or not row.pending_receipt or row.assetid or row.listing
+                or row.sale_price or row.sold_at
+                or row.buff_order_id != expected.get("buff_order_id")
+                or row.goods_id != expected.get("goods_id")
+                or row.price != expected.get("price") or row.name != expected.get("name")):
+            return False
+        if closed:
+            session.delete(row)
+        else:
+            if not assetid or session.exec(select(Purchase).where(Purchase.assetid == assetid)).first():
+                return False
+            row.assetid = str(assetid)
+            row.pending_receipt = False
+            session.add(row)
+        session.commit()
+        return True
+
+
 def db_delete_purchase_by_id(db_id: int) -> bool:
     """按主键 ID 删除，O(1) 操作。"""
     if not db_id:

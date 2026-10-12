@@ -1,4 +1,5 @@
 import re
+import math
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -70,6 +71,21 @@ def scan_cs2_inventory() -> Tuple[bool, List[Dict[str, Any]], str]:
         cd_text, cd_ts = _parse_cooldown(owner_desc)
         can_trade = tradable == 1 and (not cd_ts or now >= cd_ts)
         can_sell = marketable == 1 and can_trade
+        properties = {}
+        for prop in asset.get("asset_properties") or []:
+            if isinstance(prop, dict):
+                properties.setdefault(str(prop.get("propertyid")), []).append(prop)
+        fingerprint = {}
+        if len(properties.get("1", [])) == 1 and len(properties.get("2", [])) == 1:
+            seed = properties["1"][0].get("int_value")
+            wear = properties["2"][0].get("float_value")
+            try:
+                if (not isinstance(seed, bool) and not isinstance(wear, bool)
+                        and str(seed).isdigit() and 0 <= int(seed) <= 1000
+                        and math.isfinite(float(wear)) and 0 <= float(wear) <= 1):
+                    fingerprint = {"paintseed": int(seed), "paintwear": str(wear)}
+            except (ValueError, TypeError):
+                pass
         items.append(
             {
                 "name": name,
@@ -77,6 +93,8 @@ def scan_cs2_inventory() -> Tuple[bool, List[Dict[str, Any]], str]:
                 "assetid": str(asset.get("assetid", "")),
                 "appid": int(asset.get("appid", CS2_APP_ID)),
                 "contextid": str(asset.get("contextid", "")),
+                "classid": cid,
+                **fingerprint,
                 "marketable": marketable,
                 "tradable": tradable,
                 "cooldown_text": cd_text,

@@ -26,6 +26,18 @@ router = APIRouter()
 STEAM_FEE_FACTOR = 1.15
 
 
+@router.post("/api/purchases/reconcile_receipts")
+def api_reconcile_receipts():
+    from app.config_loader import get_buff_credentials
+    from app.services.buff_client import create_buff_client_from_config
+    from app.services.workers import run_receive_check_once
+    client = create_buff_client_from_config(get_buff_credentials(), load_app_config_validated())
+    try:
+        return run_receive_check_once(client, refresh_inventory=True)
+    finally:
+        client.close()
+
+
 class AddPurchaseBody(BaseModel):
     name: str = ""
     price: float = 0

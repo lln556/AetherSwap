@@ -8,6 +8,18 @@ class ConfigBody(BaseModel):
     config: dict
     acknowledge_buff_reconciliation: bool = False
     buff_reconciliation_intent_id: str = ""
+
+class ReconcilePaymentBody(BaseModel):
+    intent_id: str
+
+@router.post("/api/pipeline/reconcile_payment")
+def api_reconcile_payment(body: ReconcilePaymentBody):
+    from app.services.buff_reconciliation import reconcile_single_payment
+    try:
+        return reconcile_single_payment(body.intent_id)
+    except Exception as exc:
+        log(f"已付款订单核对未完成 ({type(exc).__name__})", "warn", category="buff")
+        return {"ok": False, "error": str(exc)[:300]}
 @router.post("/api/pipeline/start")
 def api_pipeline_start(body: ConfigBody):
     blocker = get_pipeline_start_blocker()

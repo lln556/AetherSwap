@@ -90,7 +90,21 @@ def _fetch_full_context(
         current_descs = data.get("descriptions") or []
         if not current_assets:
             break
-        all_assets.extend(current_assets)
+        # CS2 returns wear/paint seed separately from the asset list. Preserve
+        # the properties for their exact owner/context/asset, including items
+        # in the trade-protected context, for receipt reconciliation.
+        properties = {}
+        for entry in data.get("asset_properties") or []:
+            if not isinstance(entry, dict):
+                continue
+            key = (str(entry.get("appid")), str(entry.get("contextid")), str(entry.get("assetid")))
+            properties.setdefault(key, []).append(entry.get("asset_properties"))
+        for asset in current_assets:
+            key = (str(asset.get("appid")), str(asset.get("contextid")), str(asset.get("assetid")))
+            matches = properties.get(key, [])
+            if len(matches) == 1 and isinstance(matches[0], list):
+                asset = dict(asset, asset_properties=matches[0])
+            all_assets.append(asset)
         for d in current_descs:
             cid = d.get("classid")
             if cid:
