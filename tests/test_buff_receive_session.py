@@ -68,6 +68,8 @@ def test_buff_trade_poll_propagates_request_circuit():
     ("status", "expected"),
     [
         ({"status": "running", "step": "CHECKING_STABILITY"}, False),
+        ({"status": "running", "step": "WAITING_RETRY"}, True),
+        ({"status": "running", "step": "TIME_LIMIT_WAIT"}, True),
         ({"status": "idle", "step": "CHECKOUT_PENDING"}, False),
         ({"status": "error", "step": "BUFF_AUTH_EXPIRED", "buff_auth_expired": True}, False),
         ({"status": "error", "step": "BUFF_VERIFICATION_REQUIRED", "buff_verification_required": True}, False),
@@ -77,7 +79,7 @@ def test_buff_trade_poll_propagates_request_circuit():
         ({"status": "idle", "step": ""}, True),
     ],
 )
-def test_buff_background_poll_only_runs_while_fully_idle(monkeypatch, status, expected):
+def test_buff_background_poll_runs_in_safe_idle_or_waiting_windows(monkeypatch, status, expected):
     from app.services import workers
 
     monkeypatch.setattr(workers, "get_status", lambda: status)

@@ -112,7 +112,7 @@ class State:
             }
     def is_steam_background_allowed(self) -> bool:
         # pipeline在跑但处于等待类步骤时，后台任务可以插队跑
-        _idle_steps = {"", "TIME_LIMIT_WAIT", "NETWORK_OFFLINE", "STEAM_COOLDOWN", "CHECKOUT_PENDING"}
+        _idle_steps = {"", "WAITING_RETRY", "TIME_LIMIT_WAIT", "NETWORK_OFFLINE", "STEAM_COOLDOWN", "CHECKOUT_PENDING"}
         with self._lock:
             return self._status != "running" or self._step in _idle_steps
     def set_buff_auth_expired(self, value: bool) -> None:

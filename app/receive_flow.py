@@ -38,21 +38,13 @@ def fetch_buff_steam_trade(buff_client: Any) -> Tuple[bool, List[Dict[str, Any]]
             buff_activity_guard,
             get_unresolved_checkout,
         )
-        from app.pipeline import is_shutdown_pending
-        from app.state import get_status
+        from app.services.workers import _buff_background_request_is_safe
 
         # Re-check while holding the same activity slot used by pipeline
         # acknowledgement/start.  This closes the old check-then-GET race.
         with get_buff_auth_lock():
             with buff_activity_guard():
-                status = get_status() or {}
-                if (
-                    is_shutdown_pending()
-                    or get_unresolved_checkout() is not None
-                    or status.get("status") == "running"
-                    or status.get("buff_auth_expired")
-                    or status.get("buff_verification_required")
-                ):
+                if not _buff_background_request_is_safe():
                     return False, [], "Buff 流水线或对账门禁已启用"
                 raw = buff_client.get_steam_trades()
         if raw is None:

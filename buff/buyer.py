@@ -1,4 +1,5 @@
 import json
+import math
 import time
 import logging
 import copy
@@ -660,6 +661,110 @@ class BuffBuyer:
         except Exception as e:
             logger.exception("检查订单失败: %s", e)
         return False
+
+    def get_purchase_history_orders(self, game: str, order_ids: list) -> list:
+        wanted = {str(x) for x in order_ids if x}
+        found = []
+        if not wanted:
+            return found
+        for page in range(1, 11):
+            response = self._make_request(
+                "GET", API_HISTORY,
+                params={"game": game, "page_num": str(page), "page_size": "30"},
+                headers={"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"},
+            )
+            data = response.get("data")
+            if response.get("code") != "OK" or not isinstance(data, dict):
+                break
+            items = data.get("items")
+            if not isinstance(items, list):
+                break
+            infos = data.get("goods_infos") or {}
+            for item in items:
+                if isinstance(item, dict) and str(item.get("id")) in wanted:
+                    info = infos.get(str(item.get("goods_id")), {}) if isinstance(infos, dict) else {}
+                    found.append(dict(item, _market_hash_name=info.get("market_hash_name", "")
+                                      if isinstance(info, dict) else ""))
+            if wanted <= {str(x.get("id")) for x in found}:
+                break
+            try:
+                if page >= int(data.get("total_page", 1)):
+                    break
+            except (TypeError, ValueError):
+                break
+        return found
+
+    def get_order_payment(
+        self, game: str, order_id: str, goods_id: int, price: str
+    ) -> dict:
+        """Read payment evidence for one exact checkout, without creating it again.
+
+        BUFF can keep an already paid order in PAYING while it waits for an
+        offer. A positive buyer_pay_time, matching identity/cost and an active
+        fulfilment state are required; missing links/state labels are not proof.
+        """
+        unknown = {"paid": False, "order_id": str(order_id), "state": "UNKNOWN"}
+        for page in range(1, 4):
+            response = self._make_request(
+                "GET", API_HISTORY,
+                params={"game": game, "page_num": str(page), "page_size": "30"},
+                headers={"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"},
+            )
+            data = response.get("data")
+            if response.get("code") != "OK" or not isinstance(data, dict):
+                return unknown
+            items = data.get("items")
+            if not isinstance(items, list):
+                return unknown
+            matches = [x for x in items if isinstance(x, dict)
+                       and _normalize_server_identifier(x.get("id")) == str(order_id)]
+            if len(matches) > 1:
+                return unknown
+            if matches:
+                item = matches[0]
+                if any(isinstance(item.get(k), bool) for k in
+                       ("goods_id", "buyer_pay_time", "created_at", "pay_expire_timeout")):
+                    return unknown
+                try:
+                    actual_price = Decimal(str(item.get("price")))
+                    expected_price = Decimal(str(price))
+                    paid_at = float(item.get("buyer_pay_time") or 0)
+                    created_at = float(item.get("created_at") or 0)
+                    expires = float(item.get("pay_expire_timeout", 0))
+                    same_item = int(item.get("goods_id")) == int(goods_id)
+                except (ValueError, TypeError, ArithmeticError):
+                    return unknown
+                if (not same_item or not actual_price.is_finite()
+                        or not expected_price.is_finite() or expected_price <= 0
+                        or actual_price != expected_price):
+                    return unknown
+                state = str(item.get("state") or "").strip().upper()
+                active = state in {"PAYING", "TO_DELIVER", "DELIVERING", "RECEIVING", "SUCCESS",
+                                   "FINISHED", "ACCEPTED", "COMPLETED"}
+                paid = (active and math.isfinite(paid_at) and math.isfinite(created_at)
+                        and created_at > 0 and created_at <= paid_at <= time.time() + 60
+                        and not item.get("error_text")
+                        and (state != "PAYING" or (math.isfinite(expires) and expires < 0)))
+                info = (data.get("goods_infos") or {}).get(str(goods_id), {})
+                return {
+                    "paid": bool(paid), "order_id": str(order_id),
+                    "closed": state in {"FAIL", "CANCELLED", "CANCELED", "CLOSED", "REFUNDED"},
+                    "goods_id": int(goods_id), "price": str(actual_price),
+                    "paid_at": paid_at, "state": state,
+                    "state_text": str(item.get("state_text") or ""),
+                    "offer_started": (item.get("has_sent_offer") is True
+                                      or item.get("is_seller_asked_to_send_offer") is True),
+                    "market_hash_name": str(info.get("market_hash_name") or "")
+                        if isinstance(info, dict) else "",
+                }
+            try:
+                total_pages = int(data.get("total_page", 1))
+            except (ValueError, TypeError):
+                return unknown
+            if page >= total_pages:
+                break
+        return unknown
+
     def get_sell_orders(self, goods_id: int, game: str = "csgo") -> Optional[list]:
         params = {
             "game": str(game),
@@ -1374,6 +1479,7 @@ class BuffBuyer:
         context["completed"].add(bill_id)
         return bill_id
     def ask_seller_to_send(self, bill_order_id_or_ids, game: str = "csgo") -> bool:
+        self.last_offer_errors = {}
         if isinstance(bill_order_id_or_ids, (list, tuple)):
             raw_ids = bill_order_id_or_ids
         else:
@@ -1442,6 +1548,10 @@ class BuffBuyer:
             if str(statuses.get(order_id) or "").strip().upper() != "OK"
         ]
         if failed_ids:
+            self.last_offer_errors = {
+                order_id: str(statuses.get(order_id) or "卖家报价请求未完成")
+                for order_id in failed_ids
+            }
             logger.warning(
                 "提醒卖家发货仅完成 %s/%s，失败订单: %s",
                 len(ids) - len(failed_ids),

@@ -201,6 +201,9 @@ class BuffClient:
     def get_steam_trades(self) -> Optional[list]:
         return self._run(lambda buyer: buyer.get_steam_trades())
 
+    def get_order_payment(self, game: str, order_id: str, goods_id: int, price: str) -> dict:
+        return self._run(lambda buyer: buyer.get_order_payment(game, order_id, goods_id, price))
+
     def get_goods_steam_price_cny(
         self, search_name: str, game: str = "csgo"
     ) -> Optional[float]:
@@ -235,6 +238,13 @@ class BuffClient:
                 preview=preview,
             )
         )
+
+    def get_purchase_history_orders(self, game: str, order_ids: list) -> list:
+        return self._run(lambda buyer: buyer.get_purchase_history_orders(game, order_ids))
+
+    def get_last_offer_error(self, order_id: str) -> str:
+        return self._run(lambda buyer: str(
+            getattr(buyer, "last_offer_errors", {}).get(str(order_id)) or ""))
 
     def prepare_single_buy(
         self,

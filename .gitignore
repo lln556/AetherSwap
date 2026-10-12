@@ -19,6 +19,11 @@ config/buff_checkout_guard.json
 config/buff_checkout_guard.json.lock
 config/.buff_checkout_guard.json.*.tmp
 config/.credentials.json.*.tmp
+config/backup-*/
+config/buff_offer_rejections.json
+config/.buff-offer-*
+config/buff_receipt_archive.json
+config/.receipt-archive-*
 config/transactions.json.bak
 config/steam_deals_checkpoint.json
 config/steam_deals_checkpoint.json.tmp
