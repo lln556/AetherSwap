@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 from steam.client import build_listing_url
 from utils.delay import jittered_sleep
-from utils.proxy_manager import get_proxy_manager
+from utils.proxy_manager import get_proxy_manager, mask_proxy_url
 from utils.money import USD_TO_CNY_DEFAULT
 from app.database import db_get_item_nameid, db_set_item_nameid
 
@@ -597,7 +597,7 @@ def get_item_nameid(
             last_error = _http_error_reason("Steam 市场页面", r.status_code)
         except Exception as e:
             last_error = _format_request_error("Steam 市场页面请求异常", e)
-            logger.debug("获取item_nameid失败 (attempt=%d/3) proxies=%s, error=%s", attempt+1, proxies, type(e).__name__)
+            logger.debug("获取item_nameid失败 (attempt=%d/3) proxy=%s, error=%s", attempt+1, mask_proxy_url((proxies or {}).get("http", "")) if proxies else "本机", type(e).__name__)
         
         if attempt < 2:
             jittered_sleep(1.0)

@@ -18,7 +18,7 @@ def _build_cookies(cookies_raw: str) -> dict:
 def get_friend_list(cookies_raw: str, my_steamid: str) -> list:
     url = f"https://steamcommunity.com/profiles/{my_steamid}/friends/"
     cookies = _build_cookies(cookies_raw)
-    from utils.proxy_manager import get_proxy_manager
+    from utils.proxy_manager import get_proxy_manager, mask_proxy_url
     from app.state import log as _log
     pm = get_proxy_manager()
     last_exc = None
@@ -27,7 +27,7 @@ def get_friend_list(cookies_raw: str, my_steamid: str) -> list:
         try:
             proxies = pm.get_proxies_for_request(failed=(attempt > 0))
             _log(
-                f"[gift_engine] get_friend_list attempt={attempt} proxy={'使用: ' + proxies.get('http') if proxies else '本机'}",
+                f"[gift_engine] get_friend_list attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
             resp = requests.get(
@@ -170,7 +170,7 @@ def _extract_country_code(page_text: str, config_data: dict = None) -> str:
 def get_base_auth_status(cookies_raw: str, *, require_country: bool = False):
     url = f"https://store.steampowered.com/cart/?_t={int(time.time() * 1000)}"
     cookies = _build_cookies(cookies_raw)
-    from utils.proxy_manager import get_proxy_manager
+    from utils.proxy_manager import get_proxy_manager, mask_proxy_url
     pm = get_proxy_manager()
     try:
         proxies = pm.get_proxies_for_request()
@@ -190,7 +190,7 @@ def get_base_auth_status(cookies_raw: str, *, require_country: bool = False):
         raise RuntimeError(f"获取底层鉴权失败: {e}") from e
 def get_wallet_balance(cookies_raw: str) -> dict:
     cookies = _build_cookies(cookies_raw)
-    from utils.proxy_manager import get_proxy_manager
+    from utils.proxy_manager import get_proxy_manager, mask_proxy_url
     pm = get_proxy_manager()
     proxies = pm.get_proxies_for_request()
     unknown_currency_id = None
@@ -287,7 +287,7 @@ def get_all_available_editions(app_id: str, cookies_raw: str) -> list:
     headers = {**_HEADERS, "Accept-Language": "en-US,en;q=0.9"}
     cookies = _build_cookies(cookies_raw)
     cookies["Steam_Language"] = "english"
-    from utils.proxy_manager import get_proxy_manager
+    from utils.proxy_manager import get_proxy_manager, mask_proxy_url
     pm = get_proxy_manager()
     try:
         proxies = pm.get_proxies_for_request()
@@ -390,14 +390,14 @@ def _grpc_request(jwt_token: str, endpoint: str, payload_b64: str) -> bool:
         "Origin": "https://store.steampowered.com",
         "Referer": "https://store.steampowered.com/",
     }
-    from utils.proxy_manager import get_proxy_manager
+    from utils.proxy_manager import get_proxy_manager, mask_proxy_url
     from app.state import log as _log
     pm = get_proxy_manager()
     for attempt in range(2):
         try:
             proxies = pm.get_proxies_for_request(failed=(attempt > 0))
             _log(
-                f"[gift_engine] gRPC {endpoint} attempt={attempt} proxy={'使用: ' + proxies.get('http') if proxies else '本机'}",
+                f"[gift_engine] gRPC {endpoint} attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
             resp = requests.post(url, headers=headers, proxies=proxies, files={"input_protobuf_encoded": (None, payload_b64)}, verify=False, timeout=15)
@@ -415,14 +415,14 @@ def _grpc_request(jwt_token: str, endpoint: str, payload_b64: str) -> bool:
     return False
 def _get_cart_items(jwt_token: str) -> list:
     url = f"https://api.steampowered.com/IAccountCartService/GetCart/v1?access_token={jwt_token}"
-    from utils.proxy_manager import get_proxy_manager
+    from utils.proxy_manager import get_proxy_manager, mask_proxy_url
     from app.state import log as _log
     pm = get_proxy_manager()
     for attempt in range(2):
         try:
             proxies = pm.get_proxies_for_request(failed=(attempt > 0))
             _log(
-                f"[gift_engine] GetCart attempt={attempt} proxy={'使用: ' + proxies.get('http') if proxies else '本机'}",
+                f"[gift_engine] GetCart attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
             resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Origin": "https://store.steampowered.com"}, proxies=proxies, verify=False, timeout=15)
@@ -535,14 +535,14 @@ def _do_checkout(cookies_raw: str, country_code: str, giftee_account_id: int = 0
         "bSaveBillingAddress": "1", "bUseRemainingSteamAccount": "1", "bPreAuthOnly": "0",
         "sessionid": session_id,
     }
-    from utils.proxy_manager import get_proxy_manager
+    from utils.proxy_manager import get_proxy_manager, mask_proxy_url
     from app.state import log as _log
     pm = get_proxy_manager()
     for attempt in range(2):
         try:
             proxies = pm.get_proxies_for_request(failed=(attempt > 0))
             _log(
-                f"[gift_engine] checkout inittransaction attempt={attempt} proxy={'使用: ' + proxies.get('http') if proxies else '本机'}",
+                f"[gift_engine] checkout inittransaction attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
             init_res = requests.post(

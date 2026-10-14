@@ -26,6 +26,16 @@ def _build_proxy_url(p: dict) -> str:
     if user and pwd:
         return f"http://{user}:{pwd}@{host}:{port}/"
     return f"http://{host}:{port}/"
+
+
+def mask_proxy_url(url) -> str:
+    """Strip userinfo credentials from a proxy URL before logging."""
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    scheme, sep, rest = text.partition("://")
+    host = rest.rsplit("@", 1)[-1] if sep else text.rsplit("@", 1)[-1]
+    return f"{scheme}://{host}" if sep else host
 def _pm_log(msg: str) -> None:
     try:
         from app.state import log as app_log
@@ -205,7 +215,7 @@ class ProxyManager:
             proxy = self.get_next_proxy_dict()
             _pm_log(
                 f"[ProxyManager] get_proxies_for_request(failed={failed}): "
-                f"策略2=始终代理 → {proxy.get('http') if proxy else 'None(池空)'}"
+                f"策略2=始终代理 → {mask_proxy_url(proxy.get('http')) if proxy else 'None(池空)'}"
             )
             return proxy
         if strategy == 1:
@@ -213,7 +223,7 @@ class ProxyManager:
                 proxy = self.get_next_proxy_dict()
                 _pm_log(
                     f"[ProxyManager] get_proxies_for_request(failed=True): "
-                    f"策略1=失败切代理 → {proxy.get('http') if proxy else 'None(池空)'}"
+                    f"策略1=失败切代理 → {mask_proxy_url(proxy.get('http')) if proxy else 'None(池空)'}"
                 )
                 return proxy
             else:

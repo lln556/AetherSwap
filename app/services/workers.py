@@ -165,13 +165,13 @@ _EXCHANGE_RATE_FILE = Path(__file__).resolve().parent.parent.parent / "config" /
 def _fetch_exchange_rates(base: str = "CNY", targets: Optional[list] = None) -> Optional[dict]:
     try:
         import requests
-        from utils.proxy_manager import get_proxy_manager
+        from utils.proxy_manager import get_proxy_manager, mask_proxy_url
         pm = get_proxy_manager()
         proxies = pm.get_proxies_for_request()  
         url = f"https://open.er-api.com/v6/latest/{base}"
         from app.state import log
         if proxies:
-            log(f"exchange_rate: 正在使用代理 {proxies.get('http')} 访问: {url}", "debug", category="exchange_rate")
+            log(f"exchange_rate: 正在使用代理 {mask_proxy_url(proxies.get('http'))} 访问: {url}", "debug", category="exchange_rate")
         r = requests.get(url, timeout=10, proxies=proxies)
         data = r.json()
         if data.get("result") != "success":
@@ -456,11 +456,11 @@ def _detect_account_currency_from_history() -> Optional[str]:
         }
         params = {"query": "", "start": 0, "count": 50, "contextid": 2, "appid": 730}
         from app.steam_listings import MYHISTORY_RENDER_URL
-        from utils.proxy_manager import get_proxy_manager
+        from utils.proxy_manager import get_proxy_manager, mask_proxy_url
         pm = get_proxy_manager()
         proxies = pm.get_proxies_for_request()
         if proxies:
-            log(f"[account_sync] _detect_account_currency: 使用代理 {proxies.get('http')}", "debug", category="proxy")
+            log(f"[account_sync] _detect_account_currency: 使用代理 {mask_proxy_url(proxies.get('http'))}", "debug", category="proxy")
         r = requests.get(MYHISTORY_RENDER_URL, params=params, headers=headers, cookies=cookies_dict, proxies=proxies, timeout=25)
         if r.status_code != 200:
             return None
