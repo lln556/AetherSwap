@@ -1417,6 +1417,7 @@ def _do_wait_payment_and_append(
     payment_verified: bool = False,
     shipping_verified: bool = False,
     seller_id: str = "",
+    defer_offer: bool = False,
 ) -> Optional[float]:
     if not payment_verified:
         ok = _do_payment_notify_and_wait(
@@ -1460,7 +1461,7 @@ def _do_wait_payment_and_append(
         reason="订单已写入本地交易记录",
     )
     try:
-        shipping_ok = shipping_verified or buff_client.ask_seller_to_send(order_id, game_buff)
+        shipping_ok = shipping_verified or (not defer_offer and buff_client.ask_seller_to_send(order_id, game_buff))
         if shipping_ok and log_fn:
             log_fn("[Buff]   → 已提醒卖家发货，请留意 Steam 报价", "info")
         elif log_fn:
@@ -1498,20 +1499,21 @@ def _do_wait_payment_and_append(
         update_checkout(expected_intent_id=checkout_intent_id,
                         stage="manual_offer_required", order_id=str(order_id),
                         reason=reason)
-        halted = PurchaseOrderCreatedPending(
-            f"订单已付款并记账，但需要处理报价: {reason}", order_id=str(order_id))
-        _mark_committed(halted, unit_price * num)
         try:
             remember_app_only_seller(seller_id, order_id, reason)
             token = str((config.get("notify") or {}).get("pushplus_token") or "").strip()
             if token:
                 send_pushplus(token, "BUFF 已付款：需要立即发起报价",
                               f"订单 {order_id}，金额 {unit_price:.2f} 元。{reason}。"
-                              "请立即检查 BUFF App；程序已停止后续购买。", template="txt")
+                              "可在 BUFF App 手动发起报价；未处理的订单会继续跟踪，"
+                              "超时失败后自动归档。程序继续筛选其他卖单。", template="txt")
         except Exception as exc:
             if log_fn:
                 log_fn(f"[Buff] 报价异常提醒或卖家能力记录未完成 ({type(exc).__name__})", "warn")
-        raise halted
+        if log_fn:
+            log_fn(f"[Buff]   → 订单 {order_id} 已付款，报价待处理: {reason}；保留待收货跟踪，继续筛选其他卖单", "warn")
+        resolve_checkout("single_paid_offer_deferred", expected_intent_id=checkout_intent_id)
+        return unit_price * num
     resolve_checkout(
         "single_purchase_recorded",
         expected_intent_id=checkout_intent_id,

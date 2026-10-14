@@ -35,6 +35,12 @@ class Purchase(SQLModel, table=True):
     assetid: Optional[str] = None
     listing: Optional[bool] = None
     listing_status: Optional[str] = None
+    # Display metadata learned from Steam inventory scans (icon/type/wear),
+    # kept on the record so sold items keep their artwork in history views.
+    icon_url: Optional[str] = None
+    item_type: Optional[str] = None
+    exterior: Optional[str] = None
+    paintwear: Optional[str] = None
     # External BUFF identifiers make a completed checkout reconcilable after a
     # restart and allow the database to reject accidental duplicate recording.
     buff_order_id: Optional[str] = Field(default=None, index=True)
@@ -130,6 +136,10 @@ def init_db() -> None:
         ("buff_sell_order_id", "TEXT"),
         ("batch_id", "TEXT"),
         ("bill_order_id", "TEXT"),
+        ("icon_url", "TEXT"),
+        ("item_type", "TEXT"),
+        ("exterior", "TEXT"),
+        ("paintwear", "TEXT"),
     )
     with engine.connect() as conn:
         for column_name, column_type in purchase_columns:
@@ -180,6 +190,10 @@ def _purchase_from_dict(d: dict) -> Purchase:
         assetid=str(d["assetid"]) if d.get("assetid") is not None else None,
         listing=bool(d["listing"]) if d.get("listing") is not None else None,
         listing_status=str(d["listing_status"]) if d.get("listing_status") is not None else None,
+        icon_url=str(d["icon_url"]) if d.get("icon_url") else None,
+        item_type=str(d["item_type"]) if d.get("item_type") else None,
+        exterior=str(d["exterior"]) if d.get("exterior") else None,
+        paintwear=str(d["paintwear"]) if d.get("paintwear") else None,
         buff_order_id=str(d["buff_order_id"]) if d.get("buff_order_id") else None,
         buff_sell_order_id=str(d["buff_sell_order_id"]) if d.get("buff_sell_order_id") else None,
         batch_id=str(d["batch_id"]) if d.get("batch_id") else None,
@@ -223,6 +237,14 @@ def _purchase_to_dict(p: Purchase) -> dict:
         d["batch_id"] = p.batch_id
     if p.bill_order_id is not None:
         d["bill_order_id"] = p.bill_order_id
+    if p.icon_url:
+        d["icon_url"] = p.icon_url
+    if p.item_type:
+        d["item_type"] = p.item_type
+    if p.exterior:
+        d["exterior"] = p.exterior
+    if p.paintwear:
+        d["paintwear"] = p.paintwear
     return d
 def _sale_to_dict(s: Sale) -> dict:
     d = {
@@ -269,6 +291,7 @@ _PURCHASE_UPDATABLE = frozenset({
     "name", "price", "goods_id", "market_price", "sale_price",
     "sold_at", "pending_receipt", "assetid", "listing", "listing_status",
     "buff_order_id", "buff_sell_order_id", "batch_id", "bill_order_id",
+    "icon_url", "item_type", "exterior", "paintwear",
 })
 _SALE_UPDATABLE = frozenset({"name", "price", "goods_id", "assetid", "at"})
 def db_append_purchase(p: dict) -> None:

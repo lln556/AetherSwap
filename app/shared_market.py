@@ -58,4 +58,6 @@ def batch_fetch_prices(names: Set[str], app_id: int = 730) -> Dict[str, float]:
                     prices[name] = round(float(price), 2)
             except Exception:
                 pass
+    from app.services.market_price_cache import remember_market_prices
+    remember_market_prices(prices, steam_id, app_id)
     return prices

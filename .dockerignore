@@ -40,6 +40,10 @@ config/playwright_buff/
 config/exchange_rate.json
 config/steam_userdata.json
 config/holdings_report_last.json
+config/steam_market_price_cache.json
+config/.steam_market_price_cache.*.tmp
+config/item_meta_cache.json
+config/.item-meta-cache.*.tmp
 config/transactions.json
 config/transactions.json.bak
 log/

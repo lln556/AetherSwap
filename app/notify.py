@@ -202,21 +202,30 @@ def build_holdings_report_content(
     resell_ratio: float = 0.85,
 ) -> str:
     total_price, total_mp, total_cmp, pl, pl_pct, ratio = compute_holdings_stats(holdings, resell_ratio)
+    count = len(holdings)
+    purchase_count = sum(t.get("market_price") is not None for t in holdings)
+    current_count = sum(t.get("current_market_price") is not None for t in holdings)
+    comparable_count = sum(t.get("market_price") is not None
+                           and float(t["market_price"]) > 0
+                           and t.get("current_market_price") is not None for t in holdings)
     total_after_tax = total_cmp / 1.15 if total_cmp and total_cmp > 0 else None
     discount_ratio = (total_price / total_after_tax) if total_after_tax and total_after_tax > 0 and total_price > 0 else None
     cash_profit = (total_after_tax * ratio - total_price) if total_after_tax is not None and total_price >= 0 else None
     self_use_profit = (total_after_tax - total_price) if total_after_tax is not None else None
     lines = [
         f"总购入价 {total_price:.2f}",
-        f"总购入市场价 {total_mp:.2f}",
-        f"总现市场价 {total_cmp:.2f}" if total_cmp is not None else "总现市场价 —",
+        f"总购入市场价（{purchase_count}/{count}件） {total_mp:.2f}" if purchase_count else "总购入市场价 —（未记录）",
+        f"总现市场价（{current_count}/{count}件） {total_cmp:.2f}" if total_cmp is not None else "总现市场价 —",
         f"总税后价格 {total_after_tax:.2f}" if total_after_tax is not None else "总税后价格 —",
         f"实际折扣比率 {discount_ratio:.4f}" if discount_ratio is not None else "实际折扣比率 —",
         f"总变现收益 {'+' if cash_profit and cash_profit >= 0 else ''}{cash_profit:.2f}" if cash_profit is not None else "总变现收益 —",
         f"总自用收益 {'+' if self_use_profit and self_use_profit >= 0 else ''}{self_use_profit:.2f}" if self_use_profit is not None else "总自用收益 —",
     ]
     if pl is not None and pl_pct is not None:
-        lines.append(f"总市场变动 {'+' if pl >= 0 else ''}{pl:.2f} ({'+' if pl_pct >= 0 else ''}{pl_pct:.2f}%)")
+        lines.append(f"总市场变动（{comparable_count}件） {'+' if pl >= 0 else ''}{pl:.2f} ({'+' if pl_pct >= 0 else ''}{pl_pct:.2f}%)")
     else:
         lines.append("总市场变动 —")
+    if purchase_count < count or current_count < count:
+        lines.append(f"缺少 {count - purchase_count} 件购入市场价、{count - current_count} 件当前市场价；"
+                     f"市场变动仅比较两种价格都有记录的 {comparable_count} 件。")
     return "<br/>".join(lines)

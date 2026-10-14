@@ -40,10 +40,9 @@ def reconcile_single_payment(intent_id: str) -> dict:
                 if proof.get("paid") is not True:
                     return {"ok": False, "error": "BUFF 尚未返回可确认的已付款证据，保留门禁",
                             "order_id": order_id, "state": proof.get("state")}
-                if (checkout.get("stage") == "manual_offer_required"
-                        and proof.get("offer_started") is not True):
-                    return {"ok": False, "error": "订单已付款，但 BUFF 尚未确认报价已发起，请在 App 处理",
-                            "order_id": order_id}
+                defer_offer = (proof.get("offer_started") is not True
+                               and (checkout.get("stage") == "manual_offer_required"
+                                    or proof.get("state_text") == "等待你发起报价"))
                 name = proof.get("market_hash_name") or ""
                 if not name:
                     names = {p.get("name") for p in get_purchases()
@@ -63,11 +62,12 @@ def reconcile_single_payment(intent_id: str) -> dict:
                     game, sell_order_id=str(checkout.get("sell_order_id") or ""),
                     payment_verified=True,
                     shipping_verified=proof.get("offer_started") is True,
+                    defer_offer=defer_offer,
                 )
                 state.set_status("idle", "PAYMENT_RECONCILED")
                 log(f"[Buff 对账] 已核实并记录已付款订单 {order_id}，金额={amount:.2f}",
                     "info", category="buff")
                 return {"ok": True, "order_id": order_id, "amount": amount,
-                        "pending_receipt": True}
+                        "pending_receipt": True, "offer_deferred": defer_offer}
             finally:
                 client.close()

@@ -39,7 +39,10 @@ def _try_steam_auto_relogin():
 def api_inventory(refresh: bool = False):
     if refresh or not get_inventory():
         if not is_steam_background_allowed():
-            return {"items": get_inventory(), "source": "cache"}
+            return {
+                "items": get_inventory(), "source": "cache", "refresh_deferred": True,
+                "refresh_reason": "购买任务正在处理物品，库存会在本轮结束后的等待阶段同步，请稍后刷新。",
+            }
         ok, items, err = scan_cs2_inventory()
         if not ok and err and "登录已过期" in err:
             success, status, msg = _try_steam_auto_relogin()
@@ -88,18 +91,18 @@ def api_inventory(refresh: bool = False):
         return {"items": get_inventory(), "source": "live"}
     return {"items": get_inventory(), "source": "cache"}
 @router.get("/api/market-prices")
-def api_market_prices():
+def api_market_prices(max_age: int = 0):
     """统一批量市场价查询接口.
     一次性查出库存（lowest_price）和持有饰品（current_market_price）所需的全部
     唯一物品名称，每个名称只发一次 Steam API 请求，然后返回给前端同时刷新两个视图。
+    max_age 秒内已缓存的报价直接复用，只重新请求过期或缺失的名称；0 表示总是刷新。
     """
-    if not is_steam_background_allowed():
-        return {"prices": {}, "error": "Steam 后台请求不可用"}
     from app.state import get_purchases
+    from app.services.market_price_cache import get_cached_market_prices
     inv_items = get_inventory() or []
     inv_names = {
         (it.get("market_hash_name") or it.get("name") or "").strip()
-        for it in inv_items
+        for it in inv_items if it.get("marketable")
     }
     purchases = get_purchases() or []
     holdings_names = {
@@ -110,5 +113,21 @@ def api_market_prices():
     all_names = {n for n in (inv_names | holdings_names) if n}
     if not all_names:
         return {"prices": {}}
-    prices = batch_fetch_prices(all_names)
-    return {"prices": prices}
+    if not is_steam_background_allowed():
+        prices, updated_at = get_cached_market_prices(all_names)
+        return {"prices": prices, "source": "cache", "updated_at": updated_at,
+                "refresh_deferred": True,
+                "refresh_reason": "购买筛选进行中，本轮结束后自动刷新市场价。"}
+    if max_age > 0:
+        fresh, _ = get_cached_market_prices(all_names, max_age=max_age)
+    else:
+        fresh = {}
+    stale = {name for name in all_names if name not in fresh}
+    prices = batch_fetch_prices(stale) if stale else {}
+    cached, updated_at = get_cached_market_prices(all_names)
+    combined = {**cached, **prices}
+    result = {"prices": combined, "source": "live" if prices else "cache",
+              "updated_at": updated_at, "cached_count": len(set(cached) - set(prices))}
+    if len(prices) < len(stale):
+        result["error"] = "部分市场价暂未更新，已有报价继续保留，稍后重试。"
+    return result

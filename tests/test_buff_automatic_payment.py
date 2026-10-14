@@ -180,7 +180,7 @@ def test_recovery_does_not_duplicate_a_purchase_record(isolated, monkeypatch):
     assert purchases == []
 
 
-def test_rejected_seller_offer_records_charge_and_stops_before_second_buy(isolated):
+def test_rejected_seller_offer_keeps_paid_order_and_allows_next_checkout(isolated):
     class AppOnlyClient(AutoClient):
         def ask_seller_to_send(self, order_id, game):
             return False
@@ -191,12 +191,27 @@ def test_rejected_seller_offer_records_charge_and_stops_before_second_buy(isolat
     client = AppOnlyClient()
     kwargs, _, purchases = _checkout_args()
     item = _item([{"id": "sell", "price": "10.00", "user_id": "app-only-seller"}])
-    with pytest.raises(steps.PurchaseOrderCreatedPending) as caught:
-        steps.lock_and_confirm_payment(client, item, _config(), **kwargs)
-    assert caught.value.committed_amount == 10.0
+    assert steps.lock_and_confirm_payment(client, item, _config(), **kwargs) == 10.0
     assert len(purchases) == 1 and client.lock_calls == 1
-    assert guard.get_unresolved_checkout()["stage"] == "manual_offer_required"
+    assert purchases[0]["pending_receipt"] is True
+    assert guard.get_unresolved_checkout() is None
     assert offer_support.filter_automatable_sellers(item["_buff_sell_orders"]) == []
+    class NextClient(AutoClient):
+        def lock_and_get_pay_url(self, *args, on_created=None, **kwargs):
+            result = super().lock_and_get_pay_url(*args, **kwargs)
+            result["order_id"] = "next-bill"
+            if on_created:
+                on_created("next-bill")
+            return result
+
+    next_client = NextClient()
+    isolated_purchases = list(purchases)
+    assert steps.lock_and_confirm_payment(next_client, _item([
+        {"id": "other-sell", "price": "10.00", "user_id": "other-seller"}
+    ]), _config(), **kwargs) == 10.0
+    assert next_client.lock_calls == 1 and guard.get_unresolved_checkout() is None
+    assert purchases[0] == isolated_purchases[0]
+    assert purchases[1]["buff_order_id"] == "next-bill"
 
 
 def test_known_app_only_seller_is_skipped_before_another_charge(isolated):
@@ -278,7 +293,7 @@ def test_reconcile_existing_checkout_verifies_before_recording(
                           stage="manual_offer_required" if manual_required else "order_created_pending")
     assert recovery.reconcile_single_payment("stale-intent")["ok"] is False
     result = recovery.reconcile_single_payment(checkout["intent_id"])
-    can_record = paid and (not manual_required or offer_started)
+    can_record = paid
     assert result["ok"] is (can_record or closed)
     assert len(state.purchases) == int(can_record)
     assert client.lock_calls == 0
@@ -287,7 +302,7 @@ def test_reconcile_existing_checkout_verifies_before_recording(
         assert guard.get_unresolved_checkout() is None
         assert recovery.reconcile_single_payment(checkout["intent_id"])["ok"] is False
         assert len(state.purchases) == 1
-        if offer_started:
+        if offer_started or manual_required or result.get("offer_deferred"):
             assert not client.shipping_calls
     elif closed:
         assert guard.get_unresolved_checkout() is None

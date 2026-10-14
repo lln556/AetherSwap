@@ -273,3 +273,31 @@ function animateValue(elem, end, duration = 600) {
   };
   requestAnimationFrame(step);
 }
+
+function steamItemImageUrl(icon, size = 62) {
+  const path = String(icon || "").trim();
+  if (!path) return "";
+  const px = Math.max(16, Math.min(360, Number(size) || 62));
+  return "https://community.cloudflare.steamstatic.com/economy/image/" + encodeURI(path) + "/" + px + "fx" + px + "f";
+}
+
+function formatWear(value) {
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") return "";
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > 1) return "";
+  return n.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function buildItemMetaLine(typeText, exteriorText, wearValue) {
+  return [typeText, exteriorText, formatWear(wearValue)]
+    .map((part) => String(part || "").trim())
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function itemThumbCellHtml(iconUrl) {
+  const src = steamItemImageUrl(iconUrl, 62);
+  if (!src) return '<td class="item-thumb-cell"></td>';
+  return `<td class="item-thumb-cell"><img class="item-thumb" loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="" onerror="this.style.visibility='hidden'"></td>`;
+}
+
