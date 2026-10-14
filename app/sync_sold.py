@@ -1,28 +1,38 @@
 import time
 from typing import Any, Dict, List, Tuple
 def _fill_assetid_from_inventory(purchases: List[dict], inv_items: List[dict]) -> int:
+    """Bind inventory asset IDs to purchase rows that lost theirs.
+
+    Safety rules: a pending receipt must be closed by trade-offer evidence,
+    never by a name match, and a name only binds when exactly one unused
+    inventory candidate carries it (a same-named personal item must not be
+    claimed as a purchase).
+    """
     used_assetids = {str(p.get("assetid")) for p in purchases if p.get("assetid")}
+    by_name: Dict[str, List[str]] = {}
+    for it in inv_items:
+        aid = str(it.get("assetid") or "")
+        if not aid or aid in used_assetids:
+            continue
+        for key in ((it.get("market_hash_name") or "").strip(), (it.get("name") or "").strip()):
+            if key:
+                by_name.setdefault(key, []).append(aid)
     filled = 0
     for p in purchases:
-        if p.get("assetid"):
+        if p.get("assetid") or p.get("pending_receipt"):
             continue
         pname = (p.get("name") or "").strip()
         if not pname:
             continue
-        for it in inv_items:
-            aid = str(it.get("assetid") or "")
-            if not aid or aid in used_assetids:
-                continue
-            mhn = (it.get("market_hash_name") or "").strip()
-            iname = (it.get("name") or "").strip()
-            if mhn == pname or iname == pname:
-                p["assetid"] = aid
-                p["listing"] = False
-                p["listing_status"] = None
-                p["pending_receipt"] = False
-                used_assetids.add(aid)
-                filled += 1
-                break
+        candidates = [aid for aid in dict.fromkeys(by_name.get(pname, []))
+                      if aid not in used_assetids]
+        if len(candidates) != 1:
+            continue
+        p["assetid"] = candidates[0]
+        p["listing"] = False
+        p["listing_status"] = None
+        used_assetids.add(candidates[0])
+        filled += 1
     return filled
 def run_sync_sold_from_history(log_fn=None) -> Tuple[bool, Dict[str, Any]]:
     from app.config_loader import get_steam_credentials
@@ -50,13 +60,8 @@ def run_sync_sold_from_history(log_fn=None) -> Tuple[bool, Dict[str, Any]]:
         if log_fn:
             log_fn(f"拉取/匹配库存异常: {e}", "warn")
     from app.steam_listings import fetch_my_history_sold
-    c = cookies if isinstance(cookies, dict) else {}
-    if not isinstance(cookies, dict):
-        for part in (cookies or "").split(";"):
-            s = part.strip()
-            if "=" in s:
-                k, _, v = s.partition("=")
-                c[k.strip()] = v.strip()
+    from utils.cookies import cookies_str_to_dict
+    c = cookies_str_to_dict(cookies)
     if not c.get("steamLoginSecure"):
         return False, {"error": "Cookie 中无 steamLoginSecure，请重新登录 Steam"}
     if log_fn:

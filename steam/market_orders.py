@@ -11,7 +11,7 @@ from urllib.parse import urlencode
 from steam.client import build_listing_url
 from utils.delay import jittered_sleep
 from utils.proxy_manager import get_proxy_manager, mask_proxy_url
-from utils.money import USD_TO_CNY_DEFAULT
+from utils.money import USD_TO_CNY_DEFAULT, load_exchange_rates
 from app.database import db_get_item_nameid, db_set_item_nameid
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,6 @@ CURRENCY_CNY = 23
 STEAM_CURRENCY_USD = 1
 STEAM_CURRENCY_CNY = 23
 _ROOT = Path(__file__).resolve().parent.parent
-_EXCHANGE_RATE_FILE = _ROOT / "config" / "exchange_rate.json"
 _STEAM_CURRENCY_CODES = {
     1: "USD",
     2: "GBP",
@@ -81,8 +80,6 @@ _STEAM_CURRENCY_CODES = {
     46: "HUF",
     47: "RON",
 }
-_exchange_rate_cache: Tuple[float, Dict[str, float]] = (0.0, {})
-_EXCHANGE_RATE_TTL = 300
 _ITEM_NAMEID_PATTERNS = [
     re.compile(r"Market_LoadOrderSpread\s*\(\s*(\d+)\s*\)", re.I),
     re.compile(r"item_nameid['\"]?\s*[:=]\s*['\"]?(\d+)", re.I),
@@ -126,28 +123,6 @@ def _extract_item_nameid(html: str) -> Optional[str]:
             return m.group(1)
     return None
 
-def _load_exchange_rates() -> Dict[str, float]:
-    global _exchange_rate_cache
-    now = time.time()
-    ts, cached = _exchange_rate_cache
-    if cached and now - ts < _EXCHANGE_RATE_TTL:
-        return cached
-    rates: Dict[str, float] = {}
-    try:
-        if _EXCHANGE_RATE_FILE.exists():
-            with open(_EXCHANGE_RATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            raw_rates = data.get("rates") if isinstance(data, dict) else None
-            if isinstance(raw_rates, dict):
-                rates = {
-                    str(k).upper(): float(v)
-                    for k, v in raw_rates.items()
-                    if isinstance(v, (int, float)) and float(v) > 0
-                }
-    except Exception as e:
-        logger.debug("读取 exchange_rate.json 失败: %s", type(e).__name__)
-    _exchange_rate_cache = (now, rates)
-    return rates
 
 def _extract_ssr_render_context(html: str) -> Optional[dict]:
     m = _SSR_RENDER_CONTEXT_RE.search(html or "")
@@ -343,7 +318,7 @@ def _compact_orderbook_data_to_cny(
     except (ValueError, TypeError):
         currency = 0
     currency_code = _STEAM_CURRENCY_CODES.get(currency)
-    exchange_rates = _load_exchange_rates()
+    exchange_rates = load_exchange_rates()
     if not currency_code:
         return None, f"{source}币种暂不支持: eCurrency={currency}"
     if currency_code not in ("CNY", "USD") and currency_code not in exchange_rates:
@@ -415,6 +390,18 @@ def _extract_ssr_orderbook_cny(
         usd_to_cny_rate=usd_to_cny_rate,
     )
 
+def _remember_item_nameid(market_hash_name: str, app_id: int, html: str) -> None:
+    """Cache the legacy item_nameid found on a listing page we already fetched."""
+    nameid = _extract_item_nameid(html or "")
+    name = (market_hash_name or "").strip()
+    if not nameid or not name:
+        return
+    try:
+        db_set_item_nameid(name, nameid)
+    except Exception:
+        pass
+    with _item_nameid_cache_lock:
+        _item_nameid_cache[(name, app_id)] = (nameid, time.time() + _ITEM_NAMEID_TTL)
 def _fetch_ssr_sell_orders_cny(
     session,
     market_hash_name: str,
@@ -435,6 +422,7 @@ def _fetch_ssr_sell_orders_cny(
             }
             r = session.get(url, headers=headers, timeout=timeout, proxies=proxies, allow_redirects=True)
             if r.status_code == 200:
+                _remember_item_nameid(market_hash_name, app_id, r.text)
                 result, parse_error = _extract_ssr_orderbook_cny(
                     r.text,
                     market_hash_name=market_hash_name,
@@ -453,6 +441,7 @@ def _fetch_ssr_sell_orders_cny(
                         allow_redirects=True,
                     )
                     if r2.status_code == 200:
+                        _remember_item_nameid(market_hash_name, app_id, r2.text)
                         result, parse_error2 = _extract_ssr_orderbook_cny(
                             r2.text,
                             market_hash_name=market_hash_name,

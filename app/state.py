@@ -11,12 +11,14 @@ from app.database import (
     db_delete_purchase,
     db_delete_purchase_by_id,
     db_delete_sale,
+    db_delete_sale_by_id,
     db_get_purchases,
     db_get_sales,
     db_replace_transactions,
     db_update_purchase,
     db_update_purchase_by_id,
     db_update_sale,
+    db_update_sale_by_id,
 )
 _LOG_MAXLEN = 500
 class State:
@@ -28,6 +30,7 @@ class State:
     _log_seq: int
     _pending_payment: Optional[dict]
     _user_confirmed: Optional[bool]
+    _confirm_generation: int
     _stop_requested: bool
     _plan: List[Any]
     _inventory: List[Any]
@@ -47,6 +50,7 @@ class State:
         self._log_seq = 0
         self._pending_payment = None
         self._user_confirmed = None
+        self._confirm_generation = 0
         self._stop_requested = False
         self._plan = []
         self._inventory = []
@@ -68,14 +72,16 @@ class State:
         return db_get_sales()
     def clear_transactions(self) -> None:
         db_clear_transactions()
-    def reload_transactions(self) -> None:
-        pass  # Replaced by direct SQLite queries
     def replace_transactions(self, purchases: List[dict], sales: List[dict]) -> None:
         db_replace_transactions(purchases, sales)
     def delete_purchase(self, idx: int) -> bool:
         return db_delete_purchase(idx)
     def delete_sale(self, idx: int) -> bool:
         return db_delete_sale(idx)
+    def delete_sale_by_id(self, db_id: int) -> bool:
+        return db_delete_sale_by_id(db_id)
+    def update_sale_by_id(self, db_id: int, data: dict) -> bool:
+        return db_update_sale_by_id(db_id, data)
     def update_purchase(self, idx: int, data: dict) -> bool:
         return db_update_purchase(idx, data)
     def update_purchase_by_id(self, db_id: int, data: dict) -> bool:
@@ -150,9 +156,21 @@ class State:
     def get_pending_payment(self) -> Optional[dict]:
         with self._lock:
             return self._pending_payment
-    def wait_payment_confirm(self, timeout_seconds: Optional[float] = None) -> bool:
+    def begin_payment_wait(self) -> int:
+        """Open a new payment wait and return its generation token."""
         with self._confirm:
+            self._confirm_generation += 1
             self._user_confirmed = None
+            return self._confirm_generation
+    def wait_payment_confirm(self, timeout_seconds: Optional[float] = None, generation: Optional[int] = None) -> bool:
+        with self._confirm:
+            if generation is None:
+                self._confirm_generation += 1
+                generation = self._confirm_generation
+                self._user_confirmed = None
+            elif generation != self._confirm_generation:
+                # A newer payment wait owns the confirmation state.
+                return False
             deadline = (time.time() + timeout_seconds) if timeout_seconds is not None else None
             while True:
                 if self._user_confirmed is not None:
@@ -168,8 +186,11 @@ class State:
                         return False
                     wait_time = min(1.0, remaining)
                 self._confirm.wait(timeout=wait_time)
-    def confirm_payment(self, ok: bool) -> None:
+    def confirm_payment(self, ok: bool, generation: Optional[int] = None) -> None:
         with self._confirm:
+            if generation is not None and generation != self._confirm_generation:
+                # Late result from a previous order's waiter: ignore it.
+                return
             self._user_confirmed = ok
             self._confirm.notify_all()
     def request_stop(self) -> None:
@@ -243,10 +264,12 @@ def set_pending_payment(p: Optional[dict]) -> None:
     get_state().set_pending_payment(p)
 def get_pending_payment() -> Optional[dict]:
     return get_state().get_pending_payment()
-def wait_payment_confirm(timeout_seconds: Optional[float] = None) -> bool:
-    return get_state().wait_payment_confirm(timeout_seconds=timeout_seconds)
-def confirm_payment(ok: bool) -> None:
-    get_state().confirm_payment(ok)
+def begin_payment_wait() -> int:
+    return get_state().begin_payment_wait()
+def wait_payment_confirm(timeout_seconds: Optional[float] = None, generation: Optional[int] = None) -> bool:
+    return get_state().wait_payment_confirm(timeout_seconds=timeout_seconds, generation=generation)
+def confirm_payment(ok: bool, generation: Optional[int] = None) -> None:
+    get_state().confirm_payment(ok, generation=generation)
 def request_stop() -> None:
     get_state().request_stop()
 def clear_stop() -> None:
@@ -265,8 +288,6 @@ def append_sale(s: dict) -> None:
     get_state().append_sale(s)
 def get_sales() -> list:
     return get_state().get_sales()
-def reload_transactions() -> None:
-    get_state().reload_transactions()
 def clear_transactions() -> None:
     get_state().clear_transactions()
 def replace_transactions(purchases: list, sales: list) -> None:
@@ -285,6 +306,8 @@ def update_purchase_by_id(db_id: int, data: dict) -> bool:
     return get_state().update_purchase_by_id(db_id, data)
 def update_sale(idx: int, data: dict) -> bool:
     return get_state().update_sale(idx, data)
+def update_sale_by_id(db_id: int, data: dict) -> bool:
+    return get_state().update_sale_by_id(db_id, data)
 def set_inventory(items: list) -> None:
     get_state().set_inventory(items)
 def get_inventory() -> list:

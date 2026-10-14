@@ -12,16 +12,16 @@ from app.state import (
     get_sales,
     is_steam_background_allowed,
     log,
-    reload_transactions,
     update_purchase,
     update_purchase_by_id,
     update_sale,
+    update_sale_by_id,
 )
 from app.config_loader import (
     get_steam_credentials,
     load_app_config_validated,
 )
-from app.shared_market import get_steam_smart_price_cny, batch_fetch_prices
+from app.shared_market import batch_fetch_prices, fill_current_market_prices, get_steam_smart_price_cny
 from app.services.item_meta import enrich_transaction_rows
 router = APIRouter()
 STEAM_FEE_FACTOR = 1.15
@@ -85,24 +85,8 @@ def _fetch_steam_lowest_cny(market_hash_name: str, app_id: int = 730) -> Optiona
     prices = batch_fetch_prices({name}, app_id=app_id)
     return prices.get(name)
 def _enrich_purchases_with_current_prices(transactions: list) -> None:
-    """Fill current_market_price on unsold purchase records using shared batch_fetch_prices."""
-    purchases = [t for t in transactions if t.get("type") == "purchase"]
-    if not purchases:
-        return
-    names: set = set()
-    for t in purchases:
-        if t.get("sale_price") is not None:
-            continue
-        name = (t.get("name") or "").strip()
-        if name:
-            names.add(name)
-    if not names:
-        return
-    prices = batch_fetch_prices(names)
-    for t in purchases:
-        name = (t.get("name") or "").strip()
-        if name in prices and t.get("sale_price") is None:
-            t["current_market_price"] = prices[name]
+    """Fill current_market_price on unsold purchase records (shared helper)."""
+    fill_current_market_prices(transactions)
 @router.get("/api/purchases")
 def api_purchases():
     return {"purchases": get_purchases()}
@@ -237,7 +221,7 @@ def api_update_transaction(body: TransactionUpdateBody):
     if body.type == "purchase":
         ok = update_purchase_by_id(body.db_id, data) if body.db_id else update_purchase(body.idx, data)
     elif body.type == "sale":
-        ok = update_sale(body.idx, data)  
+        ok = update_sale_by_id(body.db_id, data) if body.db_id else update_sale(body.idx, data)  
     else:
         return {"ok": False, "error": "type 须为 purchase 或 sale"}
     return {"ok": ok, "error": None if ok else "更新失败（记录不存在或无效）"} if ok else {"ok": False, "error": "更新失败"}
@@ -360,11 +344,12 @@ def api_delist_purchase(idx: int, db_id: int = 0):
         out["message"] = "下架成功，但未检测到新 assetid，正自动尝试同步补全..."
         log_fn("未检测到新 assetid，开始自动同步售出/持有", "info")
         try:
+            from app.pipeline import exclusive_pipeline_maintenance
             from app.sync_sold import run_sync_sold_from_history
 
-            ok_s, res_s = run_sync_sold_from_history(log_fn=log_fn)
+            with exclusive_pipeline_maintenance("delist_auto_sync"):
+                ok_s, res_s = run_sync_sold_from_history(log_fn=log_fn)
             if ok_s:
-                reload_transactions()
                 pur = get_purchases()
                 current = next(
                     (
@@ -407,38 +392,44 @@ def api_sync_sold_from_history():
     from app.sync_sold import run_sync_sold_from_history
     def log_fn(msg: str, level: str = "info"):
         log(msg, level, category="sync_sold")
+    from app.pipeline import PipelineMaintenanceBlocked, exclusive_pipeline_maintenance
     try:
-        ok, result = run_sync_sold_from_history(log_fn=log_fn)
-        if not ok:
-            return {"ok": False, "error": result.get("error", "同步失败")}
-        reload_transactions()
-        return {
-            "ok": True,
-            "updated": result.get("updated", 0),
-            "filled": result.get("filled", 0),
-            "sold_count": result.get("sold_count", 0),
-        }
+        with exclusive_pipeline_maintenance("sync_sold"):
+            ok, result = run_sync_sold_from_history(log_fn=log_fn)
+    except PipelineMaintenanceBlocked as exc:
+        return {"ok": False, "error": str(exc)}
     except Exception as e:
         log(str(e), "error", category="sync_sold")
         return {"ok": False, "error": str(e)[:200]}
+    if not ok:
+        return {"ok": False, "error": result.get("error", "同步失败")}
+    return {
+        "ok": True,
+        "updated": result.get("updated", 0),
+        "filled": result.get("filled", 0),
+        "sold_count": result.get("sold_count", 0),
+    }
 @router.post("/api/repair_error_records")
 def api_repair_error_records():
     from app.repair_error_records import run as run_repair
     def log_fn(msg: str, level: str = "info"):
         log(msg, level, category="repair")
+    from app.pipeline import PipelineMaintenanceBlocked, exclusive_pipeline_maintenance
     try:
-        ok, result = run_repair(log_fn=log_fn)
-        if not ok:
-            return {"ok": False, "error": result.get("error", "紧急修复失败")}
-        reload_transactions()
-        return {
-            "ok": True,
-            "filled": result.get("filled", 0),
-            "missing": result.get("missing", 0),
-            "total": result.get("total", 0),
-            "preserved_sold": result.get("preserved_sold", 0),
-            "changed": result.get("changed", 0),
-        }
+        with exclusive_pipeline_maintenance("repair"):
+            ok, result = run_repair(log_fn=log_fn)
+    except PipelineMaintenanceBlocked as exc:
+        return {"ok": False, "error": str(exc)}
     except Exception as e:
         log(str(e), "error", category="repair")
         return {"ok": False, "error": str(e)[:200]}
+    if not ok:
+        return {"ok": False, "error": result.get("error", "紧急修复失败")}
+    return {
+        "ok": True,
+        "filled": result.get("filled", 0),
+        "missing": result.get("missing", 0),
+        "total": result.get("total", 0),
+        "preserved_sold": result.get("preserved_sold", 0),
+        "changed": result.get("changed", 0),
+    }

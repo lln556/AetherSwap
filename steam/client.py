@@ -157,24 +157,6 @@ def _extract_group_market_hash_name(html: str, source_url: str = "") -> Optional
     return descriptions[0] if descriptions else None
 
 
-def _extract_line1(html: str) -> Optional[list]:
-    prefix = "var line1="
-    i = html.find(prefix)
-    if i == -1:
-        return None
-    start = i + len(prefix)
-    if start >= len(html) or html[start] != "[":
-        return None
-    depth = 0
-    for j in range(start, len(html)):
-        c = html[j]
-        if c == "[":
-            depth += 1
-        elif c == "]":
-            depth -= 1
-            if depth == 0:
-                return json.loads(html[start : j + 1])
-    return None
 def detect_currency(html: str) -> Optional[str]:
     s = html or ""
     upper = s.upper()

@@ -204,7 +204,7 @@ def test_full_import_rejects_during_atomic_checkout_then_succeeds(monkeypatch):
         "acc": 0.0,
         "set_pending_payment": lambda _value: None,
         "wait_payment_confirm": lambda **_kwargs: False,
-        "confirm_payment": lambda _ok: None,
+        "confirm_payment": lambda _ok, **_kwargs: None,
         "is_stop_requested": lambda: False,
         "append_purchase": lambda _record: None,
     }

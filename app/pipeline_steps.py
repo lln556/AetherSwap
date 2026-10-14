@@ -26,6 +26,11 @@ from app.services.buff_auth import get_buff_auth_lock
 from app.services.buff_offer_support import filter_automatable_sellers, remember_app_only_seller
 from app.notify import send_pushplus, build_payment_notify_content, wait_email_command
 from utils.delay import jittered_sleep
+
+
+def _default_begin_payment_wait() -> int:
+    from app.state import begin_payment_wait as _begin
+    return _begin()
 from buff import (
     BuffAuthExpired,
     BuffRequestBlocked,
@@ -1066,6 +1071,7 @@ def _do_payment_notify_and_wait(
     is_stop_requested: callable,
     log_fn: Optional[Callable[[str, str], None]],
     on_entering_payment: Optional[Callable[[], None]] = None,
+    begin_payment_wait: Optional[Callable[[], int]] = None,
 ) -> bool:
     """Handle notification and wait for user payment confirmation.
     Returns True if user confirmed, False on cancel/timeout/stop.
@@ -1114,12 +1120,21 @@ def _do_payment_notify_and_wait(
         email_pass = (notify_cfg.get("email_pass") or "").strip()
         timeout_sec = int(notify_cfg.get("email_timeout_seconds", 300))
         if email_user and email_pass:
+            begin_wait = begin_payment_wait or _default_begin_payment_wait
+            generation = begin_wait()
+
             def _email_waiter() -> None:
                 res = wait_email_command(config, timeout_seconds=timeout_sec, is_stop_requested=is_stop_requested, log_fn=log_fn)
-                confirm_payment(res == "success")
+                # Bind the result to the wait this thread was created for: a
+                # late email from a previous order must never confirm or
+                # cancel the next order's payment wait.
+                confirm_payment(res == "success", generation=generation)
+
             t = threading.Thread(target=_email_waiter, daemon=True)
             t.start()
-            ok = wait_payment_confirm()
+            # The email waiter posts its final result at timeout_sec; wait a
+            # little longer so that result always lands on this wait.
+            ok = wait_payment_confirm(timeout_seconds=timeout_sec + 15, generation=generation)
         else:
             ok = wait_payment_confirm(timeout_seconds=timeout_sec)
         if log_fn:
@@ -1148,11 +1163,13 @@ def _do_batch_wait_finalize_and_append(
     market_price: Optional[float] = None,
     on_entering_payment: Optional[Callable[[], None]] = None,
     pay_type: str = "wechat",
+    begin_payment_wait: Optional[Callable[[], int]] = None,
 ) -> Optional[float]:
     ok = _do_payment_notify_and_wait(
         item, config, unit_price, num, pay_url, pay_type, batch_id, acc,
         set_pending_payment, wait_payment_confirm, confirm_payment,
         is_stop_requested, log_fn, on_entering_payment,
+        begin_payment_wait=begin_payment_wait,
     )
     if is_stop_requested() or not ok:
         update_checkout(
@@ -1418,12 +1435,14 @@ def _do_wait_payment_and_append(
     shipping_verified: bool = False,
     seller_id: str = "",
     defer_offer: bool = False,
+    begin_payment_wait: Optional[Callable[[], int]] = None,
 ) -> Optional[float]:
     if not payment_verified:
         ok = _do_payment_notify_and_wait(
             item, config, unit_price, num, pay_url, pay_type, order_id, acc,
             set_pending_payment, wait_payment_confirm, confirm_payment,
             is_stop_requested, log_fn, on_entering_payment,
+            begin_payment_wait=begin_payment_wait,
         )
         if is_stop_requested() or not ok:
             return None
@@ -1533,6 +1552,7 @@ def lock_and_confirm_payment(
     log_fn: Optional[Callable[[str, str], None]] = None,
     on_entering_payment: Optional[Callable[[], None]] = None,
     is_time_allowed: Optional[Callable[[], bool]] = None,
+    begin_payment_wait: Optional[Callable[[], int]] = None,
 ) -> Optional[float]:
     buff_cfg = config.get("buff", {})
     game_buff = buff_cfg.get("game", "csgo")
@@ -2098,6 +2118,7 @@ def lock_and_confirm_payment(
             sell_order_id=str(o.get("id") or ""),
             market_price=ref_price,
             on_entering_payment=on_entering_payment,
+            begin_payment_wait=begin_payment_wait,
             payment_verified=payment_verified,
             seller_id=str(o.get("user_id") or ""),
         )
@@ -2337,6 +2358,7 @@ def lock_and_confirm_payment(
                 market_price=ref_price,
                 on_entering_payment=on_entering_payment,
                 pay_type=str(batch_result.get("pay_type") or "wechat"),
+                begin_payment_wait=begin_payment_wait,
             )
         except BuffWriteResultUnknown as e:
             update_checkout(

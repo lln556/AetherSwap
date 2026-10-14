@@ -67,12 +67,15 @@ def fetch_steamdt_data(
                 result = json.loads(resp.read().decode(charset))
         except (HTTPError, URLError, TimeoutError, OSError) as e:
             result = {"success": False, "error": str(e)}
+        except (ValueError, UnicodeDecodeError) as e:
+            result = {"success": False, "error": f"响应不是有效 JSON: {e}"}
 
         if result.get("success") or attempt == attempts:
             break
 
         error_code = result.get("errorCode")
-        if error_code not in {100, 108}:
+        # Transport failures carry no errorCode; retry them like 100/108.
+        if error_code is not None and error_code not in {100, 108}:
             break
 
         sleep_sec = (retry_delay * attempt) + random.uniform(0, jitter)

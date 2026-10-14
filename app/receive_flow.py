@@ -14,14 +14,11 @@ STEAM_ACCEPT_REFERER = "https://steamcommunity.com/tradeoffer/{trade_offer_id}/"
 STEAM_ACCEPT_URL = "https://steamcommunity.com/tradeoffer/{trade_offer_id}/accept"
 INVENTORY_SETTLE_ATTEMPTS = 5
 INVENTORY_SETTLE_DELAY_SECONDS = 2
-def _cookies_str_to_dict(cookie_str: str) -> Dict[str, str]:
-    out = {}
-    for part in (cookie_str or "").split(";"):
-        s = part.strip()
-        if "=" in s:
-            k, _, v = s.partition("=")
-            out[k.strip()] = v.strip()
-    return out
+from utils.cookies import cookies_str_to_dict
+
+def _cookies_str_to_dict(cookies):
+    return cookies_str_to_dict(cookies)
+
 def fetch_buff_steam_trade(buff_client: Any) -> Tuple[bool, List[Dict[str, Any]], str]:
     """Fetch pending BUFF trades through the shared authenticated client.
 
@@ -238,6 +235,14 @@ def try_receive_once(
     if not ok or not pending_tasks:
         return 0
     pending_tasks = sorted(pending_tasks, key=lambda t: (t.get("created_at") or 0, t.get("tradeofferid") or ""))
+    if not scan_inventory:
+        return 0
+    # A seller-side asset ID is not proof of the asset ID that Steam will
+    # assign in our inventory.  The baseline snapshot is taken lazily, right
+    # before the first accept of this pass, so an offer whose local mapping is
+    # incomplete is never accepted or scanned; later offers reuse the same
+    # baseline and only match genuinely new recipient-side assets.
+    baseline_asset_ids: Optional[set] = None
     received = 0
     def _do_update(db_id: int, positional_idx: int, data: dict) -> bool:
         """Update a purchase record, preferring _db_id-based O(1) update."""
@@ -275,22 +280,16 @@ def try_receive_once(
             key=lambda x: (x[0].get("at") or 0, x[0].get("_db_id") or 0)
         )
 
-        # A seller-side asset ID is not proof of the asset ID that Steam will
-        # assign in our inventory.  Take a successful pre-accept snapshot so
-        # only genuinely new recipient-side assets can complete local rows.
-        if not scan_inventory:
-            continue
-        ok_before, before_items, _ = scan_inventory()
-        if not ok_before:
-            # Keep the offer pending and retry on the next worker pass.  Once
-            # accepted, we cannot safely reconstruct this baseline.
-            continue
-        baseline_asset_ids = {
-            str(inv_item.get("assetid") or "")
-            for inv_item in before_items
-            if inv_item.get("assetid")
-        }
-
+        if baseline_asset_ids is None:
+            ok_before, before_items, _ = scan_inventory()
+            if not ok_before:
+                # Keep this and every later offer pending; retry next pass.
+                return received
+            baseline_asset_ids = {
+                str(inv_item.get("assetid") or "")
+                for inv_item in before_items
+                if inv_item.get("assetid")
+            }
         accept_result = accept_steam_trade_offer(str(offer_id), steam_cookies)
         if accept_result is False:
             continue

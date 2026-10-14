@@ -18,7 +18,7 @@ def test_新版订单簿支持INR转CNY(monkeypatch):
         '\\"localizationSettings\\":{}}'
         '");'
     )
-    monkeypatch.setattr(market_orders, "_load_exchange_rates", lambda: {"INR": 0.0709})
+    monkeypatch.setattr(market_orders, "load_exchange_rates", lambda: {"INR": 0.0709})
 
     result, error = market_orders._extract_ssr_orderbook_cny(html)
 
@@ -38,7 +38,7 @@ def test_新版订单簿缺少非CNY汇率会报清晰原因(monkeypatch):
         '\\"localizationSettings\\":{}}'
         '");'
     )
-    monkeypatch.setattr(market_orders, "_load_exchange_rates", lambda: {})
+    monkeypatch.setattr(market_orders, "load_exchange_rates", lambda: {})
 
     result, error = market_orders._extract_ssr_orderbook_cny(html)
 

@@ -13,6 +13,9 @@ import json
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from typing import List, Optional
+
+_CHECKPOINT_SAVE_EVERY = 25
+_CHECKPOINT_SAVE_INTERVAL_SECONDS = 30.0
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ROOT = Path(__file__).resolve().parent.parent.parent
 CHECKPOINT_FILE = ROOT / "config" / "steam_deals_checkpoint.json"
@@ -594,17 +597,27 @@ def run_fetch(max_game_threads: int = 5, max_region_threads: int = 16, force_ref
         future_map = {}
         pause_after_batch = False
 
+        checkpoint_state = {"saved_at": 0.0, "saved_count": 0}
+
         def _save_processing_checkpoint(status: str = "running") -> None:
-            if checkpoint is not None:
-                checkpoint.update({
-                    "phase": "processing",
-                    "status": status,
-                    "appids": appids,
-                    "done": _ordered_done(),
-                    "failed": failed_map,
-                    "last_progress": count,
-                })
-                _save_checkpoint(checkpoint)
+            if checkpoint is None:
+                return
+            now = time.time()
+            if (status == "running"
+                    and count - checkpoint_state["saved_count"] < _CHECKPOINT_SAVE_EVERY
+                    and now - checkpoint_state["saved_at"] < _CHECKPOINT_SAVE_INTERVAL_SECONDS):
+                return
+            checkpoint.update({
+                "phase": "processing",
+                "status": status,
+                "appids": appids,
+                "done": _ordered_done(),
+                "failed": failed_map,
+                "last_progress": count,
+            })
+            _save_checkpoint(checkpoint)
+            checkpoint_state["saved_at"] = now
+            checkpoint_state["saved_count"] = count
 
         def _submit_more(executor: ThreadPoolExecutor) -> None:
             while len(future_map) < max_game_threads and not _pause_requested():

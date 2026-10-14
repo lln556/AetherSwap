@@ -24,13 +24,24 @@ from utils.time import (
 )
 
 EXCHANGE_RATE_FILE = ROOT / "config" / "exchange_rate.json"
-EXRATES = {}
-if EXCHANGE_RATE_FILE.exists():
+_EXRATES_CACHE = {"mtime": None, "rates": {}}
+def _load_exrates() -> dict:
+    """Read exchange rates, reusing the parsed copy until the file changes."""
+    try:
+        mtime = EXCHANGE_RATE_FILE.stat().st_mtime
+    except OSError:
+        return {}
+    if _EXRATES_CACHE["mtime"] == mtime:
+        return _EXRATES_CACHE["rates"]
     try:
         j = json.loads(EXCHANGE_RATE_FILE.read_text("utf-8"))
-        EXRATES = j.get("rates", {})
-    except Exception as e:
-        print(f"加载汇率失败: {e}")
+        rates = j.get("rates", {})
+        rates = rates if isinstance(rates, dict) else {}
+    except Exception:
+        rates = {}
+    _EXRATES_CACHE["mtime"] = mtime
+    _EXRATES_CACHE["rates"] = rates
+    return rates
 
 DISPLAY_REGIONS = [
     ("ru", "俄罗斯"),
@@ -234,29 +245,29 @@ def parse_price_to_rmb(price_str: str) -> float:
     val = float(m[0])
     
     if "USD" in s or "$" in price_str and "HK" not in price_str and "CAD" not in price_str and "CLP" not in price_str and "R$" not in price_str:
-        return val * EXRATES.get("USD", 7.2)
+        return val * _load_exrates().get("USD", 7.2)
     if "руб" in s.lower() or "rub" in s.lower():
-        return val * EXRATES.get("RUB", 0.08)
+        return val * _load_exrates().get("RUB", 0.08)
     if "HK" in s:
-        return val * EXRATES.get("HKD", 0.9)
+        return val * _load_exrates().get("HKD", 0.9)
     if "UAH" in s or "₴" in s:
-        return val * EXRATES.get("UAH", 0.18)
+        return val * _load_exrates().get("UAH", 0.18)
     if "KZT" in s or "₸" in s:
-        return val * EXRATES.get("KZT", 0.016)
+        return val * _load_exrates().get("KZT", 0.016)
     if "₹" in s or "INR" in s:
-        return val * EXRATES.get("INR", 0.086)
+        return val * _load_exrates().get("INR", 0.086)
     if "Rp" in s:
-        return val * EXRATES.get("IDR", 0.00045)
+        return val * _load_exrates().get("IDR", 0.00045)
     if "₫" in s or "VND" in s:
-        return val * EXRATES.get("VND", 0.00028)
+        return val * _load_exrates().get("VND", 0.00028)
     if "R$" in s or "BRL" in s:
-        return val * EXRATES.get("BRL", 1.4)
+        return val * _load_exrates().get("BRL", 1.4)
     if "CLP" in s:
-        return val * EXRATES.get("CLP", 0.007)
+        return val * _load_exrates().get("CLP", 0.007)
     if "TRY" in s or "TL" in s:
-        return val * EXRATES.get("TRY", 0.22)
+        return val * _load_exrates().get("TRY", 0.22)
     if "₱" in price_str or "PHP" in s.upper() or ("P" in price_str and "Rp" not in price_str):
-        return val * EXRATES.get("PHP", 0.12)
+        return val * _load_exrates().get("PHP", 0.12)
         
     return val 
 

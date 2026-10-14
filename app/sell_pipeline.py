@@ -2,7 +2,7 @@ import json
 import re
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import timedelta
 from pathlib import Path
 from typing import Optional
@@ -183,6 +183,17 @@ def _build_listing_plan(
     skip_same_name_cap: dict = defaultdict(int)
     to_list = []
     seen_assetids: set = set()
+    listing_name_counts = Counter(
+        (listing_assetid_to_name.get(lid) or "").strip() for lid in active_listing_ids
+    )
+    listing_name_map_counts = Counter(
+        (assetid_to_name_map.get(lid) or "").strip() for lid in active_listing_ids
+    )
+    held_listing_name_counts = Counter(
+        (p.get("market_hash_name") or p.get("name") or "").strip()
+        for p in purchases_snapshot
+        if p.get("listing")
+    )
 
     for it in sellable:
         if ctx.is_stop_requested():
@@ -205,22 +216,13 @@ def _build_listing_plan(
             ctx.log(f"[出售] {name} assetid={aid} 不在本地购买记录中（非倒余额库>存），为保护个人物品跳过出售", "info", category="steam")
             continue
 
-        # Same-name in-steam cap check
+        # Same-name in-steam cap check (precomputed counts, O(1) per item)
         if ok_listings and listing_assetid_to_name:
-            steam_same_name = sum(
-                1 for lid in active_listing_ids
-                if (listing_assetid_to_name.get(lid) or "").strip() == market_hash_name
-            )
+            steam_same_name = listing_name_counts.get(market_hash_name, 0)
         elif ok_listings:
-            steam_same_name = sum(
-                1 for lid in active_listing_ids
-                if (assetid_to_name_map.get(lid) or "").strip() == market_hash_name
-            )
+            steam_same_name = listing_name_map_counts.get(market_hash_name, 0)
         else:
-            steam_same_name = sum(
-                1 for p in purchases_snapshot
-                if p.get("listing") and ((p.get("market_hash_name") or p.get("name") or "").strip() == market_hash_name)
-            )
+            steam_same_name = held_listing_name_counts.get(market_hash_name, 0)
 
         already_in_this_round = to_list_by_name.get(market_hash_name, 0)
         if steam_same_name + already_in_this_round >= max_per_item:
@@ -285,7 +287,6 @@ def _build_listing_plan(
 
         # Sell strategy 3: ratio guard
         if sell_strategy == 3:
-            buy_record = _find_buy_record(purchases_snapshot, aid, market_hash_name)
             if buy_record:
                 buy_price = float(buy_record.get("price") or 0)
                 market_price_at_buy = float(buy_record.get("market_price") or 0)

@@ -189,6 +189,7 @@ def _process_deals_for_target(
             checkout_kwargs = {
                 "log_fn": buff_log,
                 "on_entering_payment": on_entering_payment,
+                "begin_payment_wait": ctx.state.begin_payment_wait,
             }
             if is_time_allowed is not None:
                 checkout_kwargs["is_time_allowed"] = time_window_is_open
