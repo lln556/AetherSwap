@@ -1298,7 +1298,7 @@ tr:hover td:first-child {
   height: 3px;
   background: var(--gradient-accent);
   transform-origin: left;
-  animation: progressShrink 3.5s linear forwards;
+  animation: progressShrink var(--toast-ttl, 3.5s) linear forwards;
 }
 
 .toast .t {
@@ -2756,7 +2756,7 @@ textarea.app-modal-input {
   color: var(--danger);
 }
 
-.toast {
+.toast[class*="toast-"] {
   padding: 12px 20px;
   border-radius: var(--radius-sm);
   font-size: 14px;
@@ -5065,4 +5065,16 @@ textarea.app-modal-input {
   align-items: center;
   justify-content: center;
   gap: 6px;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.small {
+  font-size: 12px;
+}
+
+.text-muted {
+  color: var(--text-muted);
 }

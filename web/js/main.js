@@ -126,7 +126,17 @@ function renderDashboardProgress(d) {
   set("task-current-item", item);
   set("task-next-item", clean(d.next_progress_item));
 }
+let statusRefreshInFlight = false;
 async function refreshStatus() {
+  if (statusRefreshInFlight || document.hidden) return;
+  statusRefreshInFlight = true;
+  try {
+    await _refreshStatusOnce();
+  } finally {
+    statusRefreshInFlight = false;
+  }
+}
+async function _refreshStatusOnce() {
   try {
     const d = await fetchJson(API + "/status");
     if (d.buff_verification_required && _hasAnyAccount) {
@@ -231,6 +241,7 @@ let inventoryRefreshInFlight = false;
 function showReloginModal(type, opts = {}) {
   reloginType = type || "steam";
   const overlay = el("relogin-overlay");
+  const firstShow = overlay ? overlay.classList.contains("hidden") : false;
   if (overlay) overlay.classList.remove("hidden");
   const title = el("relogin-title");
   const msg = el("relogin-message");
@@ -255,7 +266,7 @@ function showReloginModal(type, opts = {}) {
     }
   }
   const btnOk = el("relogin-btn-ok");
-  if (btnOk) btnOk.disabled = false;
+  if (btnOk && firstShow) btnOk.disabled = false;
   if (typeof runtimeCanLaunchBrowser === "function" && !runtimeCanLaunchBrowser()) {
     if (msg && typeof runtimeManualLoginMessage === "function") msg.textContent = runtimeManualLoginMessage(reloginType);
     if (btnOk) btnOk.disabled = true;
@@ -345,12 +356,12 @@ async function refreshInventory(forceRefresh = true) {
         : "—";
       const metaLine = buildItemMetaLine(it.item_type, it.exterior, it.paintwear);
       rowHtmls.push(`
-        <tr>${itemThumbCellHtml(it.icon_url)}<td>${escapeHtml(it.name || "")}${metaLine ? `<div class="item-sub">${escapeHtml(metaLine)}</div>` : ""}</td>
+        <tr>${itemThumbCellHtml(it.icon_url)}<td data-name="${escapeHtml(mhn)}">${escapeHtml(it.name || "")}${metaLine ? `<div class="item-sub">${escapeHtml(metaLine)}</div>` : ""}</td>
         <td class="inv-links">${linksHtml}</td>
         <td>${sellHtml}</td>
         <td>${tradeHtml}</td>
         <td>${timeHtml}</td>
-        <td class="mono">${escapeHtml(lowestStr)}</td>
+        <td class="mono inv-price">${escapeHtml(lowestStr)}</td>
         <td class="muted small">${escapeHtml(it.cooldown_text || "")}</td></tr>
       `);
     }
@@ -409,17 +420,17 @@ async function refreshMarketPrices() {
       if (tbody) {
         const rows = tbody.querySelectorAll("tr");
         rows.forEach((row) => {
-          const nameTd = row.querySelector("td:first-child");
-          const priceTd = row.querySelectorAll("td")[5];
+          const nameTd = row.querySelector("td[data-name]");
+          const priceTd = row.querySelector("td.inv-price");
           if (!nameTd || !priceTd) return;
-          const name = nameTd.textContent.trim();
+          const name = (nameTd.dataset.name || "").trim();
           const price = prices[name];
           if (price != null) {
             priceTd.textContent = price.toFixed(2);
           }
         });
         rows.forEach((row) => {
-          const priceTd = row.querySelectorAll("td")[5];
+          const priceTd = row.querySelector("td.inv-price");
           const v = parseFloat(priceTd?.textContent);
           if (!isNaN(v)) totalValue += v;
         });
@@ -439,7 +450,7 @@ async function refreshMarketPrices() {
         if (p != null) t.current_market_price = p;
       }
       lastEnrichTime = Date.now();
-      await refreshTransactions();
+      renderTransactionsFromCache();
     }
   } catch (e) {
     if (priceStatus) priceStatus.textContent = "市场价刷新暂未成功，保留已有报价，稍后自动重试。";
@@ -452,8 +463,8 @@ function getInventoryCache() {
   const tbody = document.querySelector("#inv-table tbody");
   if (!tbody) return [];
   return Array.from(tbody.querySelectorAll("tr")).map((row) => {
-    const tds = row.querySelectorAll("td");
-    return { name: tds[0]?.textContent.trim() || "" };
+    const nameTd = row.querySelector("td[data-name]");
+    return { name: (nameTd?.dataset.name || "").trim() };
   });
 }
 function aggregateByItemName(purchases, resellRatio = 0.85) {
@@ -769,11 +780,13 @@ function bindEvents() {
     el("edit-tx-overlay")?.classList.add("hidden");
     delete el("edit-tx-overlay")?.dataset.editType;
     delete el("edit-tx-overlay")?.dataset.editIdx;
+    delete el("edit-tx-overlay")?.dataset.editDbId;
   });
   el("edit-tx-save")?.addEventListener("click", async () => {
     const ov = el("edit-tx-overlay");
     const type = ov?.dataset?.editType;
     const idx = parseInt(ov?.dataset?.editIdx ?? "", 10);
+    const dbId = parseInt(ov?.dataset?.editDbId ?? "0", 10) || 0;
     if (!type || !Number.isFinite(idx)) return;
     const nameVal = (el("edit-tx-name")?.value ?? "").trim();
     const priceVal = el("edit-tx-price")?.value;
@@ -787,6 +800,7 @@ function bindEvents() {
       return;
     }
     const payload = { type, idx, name: nameVal || null, price: Math.round(price * 100) / 100 };
+    if (dbId) payload.db_id = dbId;
     if (goodsId !== null && !isNaN(goodsId)) payload.goods_id = goodsId;
     if (type === "purchase") {
       payload.market_price = (marketPriceVal === "" || !Number.isFinite(marketPrice) || marketPrice < 0) ? 0 : Math.round(marketPrice * 100) / 100;
@@ -805,6 +819,7 @@ function bindEvents() {
         ov.classList.add("hidden");
         delete ov.dataset.editType;
         delete ov.dataset.editIdx;
+        delete ov.dataset.editDbId;
         refreshTransactions();
         toast("已保存");
       } else {
@@ -817,6 +832,7 @@ function bindEvents() {
   el("sell-tx-cancel")?.addEventListener("click", () => {
     el("sell-tx-overlay")?.classList.add("hidden");
     delete el("sell-tx-overlay")?.dataset.sellIdx;
+    delete el("sell-tx-overlay")?.dataset.sellDbId;
     delete el("sell-tx-overlay")?.dataset.sellIdxList;
   });
   el("sell-tx-confirm")?.addEventListener("click", async () => {
@@ -828,16 +844,22 @@ function bindEvents() {
       return;
     }
     const listJson = ov?.dataset?.sellIdxList;
-    const idxList = listJson ? (() => { try { return JSON.parse(listJson); } catch { return []; } })() : null;
+    const rawList = listJson ? (() => { try { return JSON.parse(listJson); } catch { return []; } })() : null;
+    const pairs = Array.isArray(rawList)
+      ? rawList.map((x) => (typeof x === "object" && x ? { idx: Number(x.idx), dbId: Number(x.dbId) || 0 } : { idx: Number(x), dbId: 0 })).filter((x) => Number.isFinite(x.idx))
+      : [];
     const singleIdx = listJson ? null : parseInt(ov?.dataset?.sellIdx ?? "", 10);
-    const indices = Array.isArray(idxList) && idxList.length ? idxList : (Number.isFinite(singleIdx) ? [singleIdx] : []);
-    if (!indices.length) return;
+    const singleDbId = parseInt(ov?.dataset?.sellDbId ?? "0", 10) || 0;
+    const targets = pairs.length ? pairs : (Number.isFinite(singleIdx) ? [{ idx: singleIdx, dbId: singleDbId }] : []);
+    if (!targets.length) return;
     try {
       const priceRounded = Math.round(salePrice * 100) / 100;
-      for (const idx of indices) {
+      for (const tgt of targets) {
+        const body = { type: "purchase", idx: tgt.idx, sale_proceeds: priceRounded };
+        if (tgt.dbId) body.db_id = tgt.dbId;
         const r = await fetchJson(API + "/transaction", {
           method: "PUT",
-          body: JSON.stringify({ type: "purchase", idx, sale_proceeds: priceRounded }),
+          body: JSON.stringify(body),
         });
         if (!r.ok) {
           toast("操作失败", r.error || "");
@@ -846,10 +868,11 @@ function bindEvents() {
       }
       ov.classList.add("hidden");
       delete ov.dataset.sellIdx;
+      delete ov.dataset.sellDbId;
       delete ov.dataset.sellIdxList;
-      if (indices.length > 1) holdingsMultiSelectMode = false;
+      if (targets.length > 1) holdingsMultiSelectMode = false;
       refreshTransactions();
-      toast(indices.length > 1 ? `已批量记录售出 ${indices.length} 条` : "已记录售出");
+      toast(targets.length > 1 ? `已批量记录售出 ${targets.length} 条` : "已记录售出");
     } catch (e) {
       toast("操作失败", e.message || "");
     }
@@ -864,56 +887,60 @@ function bindEvents() {
   });
   el("btn-history-batch-del")?.addEventListener("click", async () => {
     const checked = document.querySelectorAll("#transactions-table-purchase-history .history-checkbox:checked");
-    const indices = Array.from(checked).map((cb) => parseInt(cb.dataset.idx, 10)).filter((n) => Number.isFinite(n));
-    if (!indices.length) {
+    const targets = Array.from(checked).map((cb) => ({ idx: parseInt(cb.dataset.idx, 10), dbId: parseInt(cb.dataset.dbId, 10) || 0 })).filter((t) => Number.isFinite(t.idx));
+    if (!targets.length) {
       toast("请先勾选要删除的项");
       return;
     }
-    if (!(await appConfirm(`确定删除所选 ${indices.length} 条记录？删除后将从持有饰品与操作记录中同时移除。`, { title: "批量删除记录", danger: true, confirmText: "删除" }))) return;
+    if (!(await appConfirm(`确定删除所选 ${targets.length} 条记录？删除后将从持有饰品与操作记录中同时移除。`, { title: "批量删除记录", danger: true, confirmText: "删除" }))) return;
     try {
-      const sorted = indices.slice().sort((a, b) => b - a);
-      for (const idx of sorted) {
-        const r = await fetchJson(API + "/transaction?" + new URLSearchParams({ type: "purchase", idx }), { method: "DELETE" });
+      const sorted = targets.slice().sort((a, b) => b.idx - a.idx);
+      for (const t of sorted) {
+        const params = { type: "purchase", idx: t.idx };
+        if (t.dbId) params.db_id = t.dbId;
+        const r = await fetchJson(API + "/transaction?" + new URLSearchParams(params), { method: "DELETE" });
         if (!r.ok) { toast("删除失败", r.error || ""); return; }
       }
       historyMultiSelectMode = false;
       refreshTransactions();
-      toast(`已删除 ${indices.length} 条`);
+      toast(`已删除 ${targets.length} 条`);
     } catch (e) {
       toast("删除失败", e.message || "");
     }
   });
   el("btn-holdings-batch-del")?.addEventListener("click", async () => {
     const checked = document.querySelectorAll("#transactions-table-purchases .holding-checkbox:checked");
-    const indices = Array.from(checked).map((cb) => parseInt(cb.dataset.idx, 10)).filter((n) => Number.isFinite(n));
-    if (!indices.length) {
+    const targets = Array.from(checked).map((cb) => ({ idx: parseInt(cb.dataset.idx, 10), dbId: parseInt(cb.dataset.dbId, 10) || 0 })).filter((t) => Number.isFinite(t.idx));
+    if (!targets.length) {
       toast("请先勾选要删除的项");
       return;
     }
-    if (!(await appConfirm(`确定删除所选 ${indices.length} 条记录？`, { title: "批量删除记录", danger: true, confirmText: "删除" }))) return;
+    if (!(await appConfirm(`确定删除所选 ${targets.length} 条记录？`, { title: "批量删除记录", danger: true, confirmText: "删除" }))) return;
     try {
-      const sorted = indices.slice().sort((a, b) => b - a);
-      for (const idx of sorted) {
-        const r = await fetchJson(API + "/transaction?" + new URLSearchParams({ type: "purchase", idx }), { method: "DELETE" });
+      const sorted = targets.slice().sort((a, b) => b.idx - a.idx);
+      for (const t of sorted) {
+        const params = { type: "purchase", idx: t.idx };
+        if (t.dbId) params.db_id = t.dbId;
+        const r = await fetchJson(API + "/transaction?" + new URLSearchParams(params), { method: "DELETE" });
         if (!r.ok) { toast("删除失败", r.error || ""); return; }
       }
       holdingsMultiSelectMode = false;
       refreshTransactions();
-      toast(`已删除 ${indices.length} 条`);
+      toast(`已删除 ${targets.length} 条`);
     } catch (e) {
       toast("删除失败", e.message || "");
     }
   });
   el("btn-holdings-batch-sell")?.addEventListener("click", () => {
     const checked = document.querySelectorAll("#transactions-table-purchases .holding-checkbox:checked");
-    const indices = Array.from(checked).map((cb) => parseInt(cb.dataset.idx, 10)).filter((n) => Number.isFinite(n));
-    if (!indices.length) {
+    const targets = Array.from(checked).map((cb) => ({ idx: parseInt(cb.dataset.idx, 10), dbId: parseInt(cb.dataset.dbId, 10) || 0 })).filter((t) => Number.isFinite(t.idx));
+    if (!targets.length) {
       toast("请先勾选要售出的项");
       return;
     }
     const nameEl = el("sell-tx-item-name");
-    if (nameEl) nameEl.textContent = `批量售出（共 ${indices.length} 条）`;
-    el("sell-tx-overlay").dataset.sellIdxList = JSON.stringify(indices);
+    if (nameEl) nameEl.textContent = `批量售出（共 ${targets.length} 条）`;
+    el("sell-tx-overlay").dataset.sellIdxList = JSON.stringify(targets);
     delete el("sell-tx-overlay").dataset.sellIdx;
     el("sell-tx-price").value = "";
     el("sell-tx-overlay").classList.remove("hidden");
