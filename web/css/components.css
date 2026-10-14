@@ -88,7 +88,7 @@ body {
 }
 
 .brand-desc {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   letter-spacing: 0.03em;
   text-transform: uppercase;
@@ -366,11 +366,10 @@ body {
 
 .stat-card:hover::after {
   opacity: 1;
-  animation: shimmer 2s linear infinite;
 }
 
 .stat-card:hover {
-  transform: translateY(-6px) scale(1.01);
+  transform: translateY(-2px);
   box-shadow: var(--shadow-md);
   border-color: var(--border-focus);
 }
@@ -424,6 +423,7 @@ body {
   font-size: 28px;
   font-weight: 700;
   font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   letter-spacing: -1px;
   transition: color 0.2s;
 }
@@ -490,7 +490,7 @@ body {
 }
 
 .info-item .label {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -504,41 +504,46 @@ body {
   color: var(--text-main);
 }
 
-.lyric-scroll-viewport {
-  position: relative;
-  width: 100%;
-  height: 24px;
-  overflow: hidden;
-  transition: height 0.5s cubic-bezier(0.22, 1, 0.36, 1);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 40%, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 40%, black 100%);
+.dashboard-control {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
 }
 
-.lyric-scroll-track {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
+.dashboard-control.running {
+  animation: none;
 }
 
-.lyric-line {
-  height: 24px;
-  line-height: 24px;
-  font-size: 15px;
-  font-weight: 600;
-  font-family: var(--font-mono);
-  color: var(--text-main);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex-shrink: 0;
+.task-summary { min-width: 0; }
+.task-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.task-eyebrow { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.task-heading h2 { margin: 0; font-size: 22px; line-height: 1.4; color: var(--text-main); }
+.task-state { flex-shrink: 0; padding: 6px 12px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; background: var(--bg-input); color: var(--text-secondary); }
+.task-state[data-state="running"] { color: var(--success); background: color-mix(in srgb, var(--success) 12%, var(--bg-surface)); }
+.task-state[data-state="waiting"] { color: var(--text-main); }
+.task-state[data-state="error"] { color: var(--danger); background: color-mix(in srgb, var(--danger) 12%, var(--bg-surface)); }
+.task-hint { margin: 8px 0 0; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+.task-progress { margin-top: 20px; }
+.task-progress-caption { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 14px; font-weight: 600; color: var(--text-main); font-variant-numeric: tabular-nums; }
+.task-progress-bar { height: 8px; border-radius: 4px; background: var(--bg-input); overflow: hidden; }
+.task-progress-fill { height: 100%; width: 0; background: var(--success); border-radius: inherit; transition: width 0.3s ease; }
+.task-item-row { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px; margin-top: 16px; font-size: 14px; line-height: 1.6; }
+.task-item-label { color: var(--text-secondary); }
+.task-item-name { color: var(--text-main); overflow-wrap: anywhere; }
+.task-next-row { margin-top: 8px; }
+.task-next-row .task-item-name { color: var(--text-secondary); }
+.dashboard-control .control-actions { justify-content: flex-end; padding-top: 16px; border-top: 1px solid var(--border-color); flex-wrap: wrap; }
+@media (max-width: 768px) {
+  .dashboard-control { padding: 18px 16px; }
+  .task-heading h2 { font-size: 19px; }
+  .task-item-row { grid-template-columns: 60px minmax(0, 1fr); gap: 8px; }
+  .dashboard-control .control-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .dashboard-control .control-actions .btn-hover-anchor { grid-column: 1 / -1; }
+  .dashboard-control .control-actions .btn-hover-anchor .btn { width: 100%; }
+  .dashboard-control .control-actions .btn { min-height: 40px; }
 }
-
-.lyric-sub {
-  opacity: 0.3;
-  transition: opacity 0.5s ease;
+@media (prefers-reduced-motion: reduce) {
+  .task-progress-fill { transition: none; }
 }
 
 .control-actions {
@@ -1086,11 +1091,32 @@ tr:hover td:first-child {
   color: var(--success);
 }
 
+.item-thumb-cell {
+  width: 56px;
+  min-width: 56px;
+  padding: 8px 10px;
+}
+
+.item-thumb {
+  width: 44px;
+  height: 44px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--bg-input);
+  display: block;
+}
+
+.item-sub {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .tx-type {
   display: inline-block;
   padding: 4px 10px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
 }
@@ -1116,6 +1142,16 @@ tr:hover td:first-child {
   border: 1px solid var(--border-color);
   font-size: 13px;
   box-shadow: var(--shadow-xs);
+}
+
+.purchases-summary .summary-note {
+  flex-basis: 100%;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  border-top: 1px solid var(--border-color);
+  padding-top: 10px;
+  overflow-wrap: anywhere;
 }
 
 .purchases-summary .summary-stat {
@@ -1679,7 +1715,7 @@ textarea.app-modal-input {
   align-items: center;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -1749,7 +1785,7 @@ textarea.app-modal-input {
 }
 
 .kv .k {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1995,7 +2031,7 @@ textarea.app-modal-input {
   display: inline-block;
   padding: 2px 6px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   border: 1px solid var(--border-color);
   border-radius: 4px;
   background: var(--bg-input);
@@ -2028,7 +2064,7 @@ textarea.app-modal-input {
     flex-direction: column;
     gap: 4px;
     padding: 6px;
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .nav-item span {
@@ -2163,7 +2199,7 @@ textarea.app-modal-input {
   background: var(--gradient-accent);
   color: #fff;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -2311,7 +2347,7 @@ textarea.app-modal-input {
 }
 
 .gift-friend-id {
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   font-family: var(--font-mono);
   margin-top: 2px;
@@ -2370,7 +2406,7 @@ textarea.app-modal-input {
 }
 
 .gift-sel-id {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   font-family: var(--font-mono);
   margin-top: 2px;
@@ -2429,7 +2465,7 @@ textarea.app-modal-input {
 }
 
 .gift-game-appid {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
@@ -2782,7 +2818,7 @@ textarea.app-modal-input {
   background: linear-gradient(135deg, #059669, #10B981);
   color: #fff;
   border-radius: 6px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
   box-shadow: 0 2px 6px rgba(16, 185, 129, 0.35);
@@ -2805,7 +2841,7 @@ textarea.app-modal-input {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -3119,7 +3155,7 @@ textarea.app-modal-input {
 .strategy-label {
   display: block;
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0;
@@ -3223,7 +3259,7 @@ textarea.app-modal-input {
   border-radius: 999px;
   background: var(--primary-light);
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3307,7 +3343,7 @@ textarea.app-modal-input {
   background: var(--bg-input);
   color: var(--text-muted);
   font-style: normal;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .strategy-list-item em.active {
@@ -3411,7 +3447,7 @@ textarea.app-modal-input {
   border-radius: 999px;
   background: rgba(16, 185, 129, 0.12);
   color: var(--success);
-  font-size: 11px;
+  font-size: 12px;
   font-style: normal;
   font-weight: 700;
 }
@@ -3694,12 +3730,12 @@ textarea.app-modal-input {
   border-radius: 999px;
   background: var(--bg-input);
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
   font-style: normal;
 }
 
 .strategy-module-choice b {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   line-height: 1.35;
 }
@@ -3758,7 +3794,7 @@ textarea.app-modal-input {
 
 .strategy-sim-row em {
   font-style: normal;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -3878,7 +3914,7 @@ textarea.app-modal-input {
     justify-content: center;
     gap: 6px;
     padding: 8px 9px;
-    font-size: 11px;
+    font-size: 12px;
   }
 
   .nav-item .icon {
@@ -4063,7 +4099,7 @@ textarea.app-modal-input {
 }
 
 .sd-count-badge {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
   background: var(--bg-surface);
@@ -4077,7 +4113,7 @@ textarea.app-modal-input {
 }
 
 .sd-progress-badge {
-  font-size: 11px;
+  font-size: 12px;
   font-family: var(--font-mono);
   color: var(--success);
   background: rgba(16, 185, 129, 0.08);
@@ -4182,7 +4218,7 @@ textarea.app-modal-input {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-muted);
   text-transform: uppercase;
@@ -4319,13 +4355,13 @@ textarea.app-modal-input {
 }
 
 .sg-review-tag {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--text-muted);
 }
 
 .sg-review-cnt {
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   opacity: 0.7;
 }
@@ -4349,7 +4385,7 @@ textarea.app-modal-input {
 }
 
 .sg-pill-label {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 500;
   color: var(--text-muted);
   line-height: 1.2;
@@ -4365,7 +4401,7 @@ textarea.app-modal-input {
 }
 
 .sg-pill-saving {
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: #10b981;
   margin-top: 1px;
@@ -4473,7 +4509,7 @@ textarea.app-modal-input {
 .sg-expand-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .sg-expand-table tr:hover {
@@ -4493,12 +4529,12 @@ textarea.app-modal-input {
   font-weight: 700;
   color: var(--text-main);
   padding: 3px 4px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .sg-exp-orig {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   color: var(--text-muted);
   opacity: 0.6;
   padding: 3px 4px;
@@ -4797,7 +4833,7 @@ textarea.app-modal-input {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-muted);
   font-family: var(--font-mono);
 }
@@ -4808,7 +4844,7 @@ textarea.app-modal-input {
   gap: 4px;
   padding: 2px 8px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   background: var(--bg-input);
   border: 1px solid var(--border-color);
@@ -4917,7 +4953,7 @@ textarea.app-modal-input {
 
 .wizard-tag {
   display: inline-block;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   padding: 1px 6px;
   border-radius: 4px;

@@ -3,6 +3,16 @@ let holdingsMultiSelectMode = false;
 let historyMultiSelectMode = false;
 let lastEnrichTime = 0;
 let lastEnrichData = null;
+function marketPriceCoverageLabel(label, known, total) {
+  return `${label}（${known === total ? `${total}件` : `${known}/${total}件`}）`;
+}
+function missingMarketPriceNote(purchaseCount, currentCount, total, comparableCount) {
+  const notes = [];
+  if (purchaseCount < total) notes.push(`缺少 ${total - purchaseCount} 件购入市场价`);
+  if (currentCount < total) notes.push(`缺少 ${total - currentCount} 件当前市场价`);
+  if (!notes.length) return "";
+  return `<span class="summary-note">${notes.join("；")}。市场变动仅比较两种价格都有记录的 ${comparableCount} 件。</span>`;
+}
 function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, multiSelectMode = false) {
   const ratio = Math.max(0.01, Math.min(1, Number(resellRatio) || 0.85));
   const rowHtmls = [];
@@ -10,6 +20,8 @@ function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, mult
     const at = t.at ? new Date(t.at * 1000) : null;
     const timeStr = at ? `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")} ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}:${String(at.getSeconds()).padStart(2, "0")}` : "—";
     const nameText = (t.name || "—").toString();
+    const metaLine = buildItemMetaLine(t.item_type, t.exterior, t.paintwear);
+    const nameCell = `<td>${escapeHtml(nameText)}${metaLine ? `<div class="item-sub">${escapeHtml(metaLine)}</div>` : ""}</td>`;
     const idx = t.idx;
     const type = t.type;
     const actHtml = isPurchase
@@ -20,7 +32,7 @@ function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, mult
     const checkCell = isPurchase && multiSelectMode ? `<td class="holding-select-cell"><input type="checkbox" class="holding-checkbox" data-idx="${idx}" /></td>` : "";
     const priceCell = `<td class="mono">${escapeHtml(Number(t.price).toFixed(2))}</td>`;
     if (isPurchase) {
-      const mp = t.market_price != null ? Number(t.market_price).toFixed(2) : "—";
+      const mp = t.market_price != null ? Number(t.market_price).toFixed(2) : "未记录";
       const cur = t.current_market_price != null ? Number(t.current_market_price) : null;
       const cmp = cur != null ? cur.toFixed(2) : "";
       const marketAtBuy = t.market_price != null ? Number(t.market_price) : null;
@@ -45,7 +57,7 @@ function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, mult
       const profitCell = cashProfit ? `<td class="mono ${profitClass}">${escapeHtml(parseFloat(cashProfit) >= 0 ? "+" + cashProfit : cashProfit)}</td>` : "<td></td>";
       const selfUseCell = selfUseProfit ? `<td class="mono ${selfUseClass}">${escapeHtml(parseFloat(selfUseProfit) >= 0 ? "+" + selfUseProfit : selfUseProfit)}</td>` : "<td></td>";
       const assetidCell = `<td class="mono">${escapeHtml(t.assetid ?? "—")}</td>`;
-      rowHtmls.push(`<tr>${checkCell}<td class="mono">${escapeHtml(timeStr)}</td><td>${escapeHtml(nameText)}</td>${assetidCell}${priceCell}<td class="mono">${escapeHtml(mp)}</td><td class="mono">${escapeHtml(cmp)}</td>${afterTaxCell}${discountRatioCell}${profitCell}${selfUseCell}${plCell}<td class="tx-actions">${actHtml}</td></tr>`);
+      rowHtmls.push(`<tr>${checkCell}${itemThumbCellHtml(t.icon_url)}<td class="mono">${escapeHtml(timeStr)}</td>${nameCell}${assetidCell}${priceCell}<td class="mono">${escapeHtml(mp)}</td><td class="mono">${escapeHtml(cmp)}</td>${afterTaxCell}${discountRatioCell}${profitCell}${selfUseCell}${plCell}<td class="tx-actions">${actHtml}</td></tr>`);
     } else {
       const assetidCell = `<td class="mono">${escapeHtml(t.assetid ?? "—")}</td>`;
       rowHtmls.push(`<tr>${checkCell}<td class="mono">${escapeHtml(timeStr)}</td><td>${escapeHtml(nameText)}</td>${assetidCell}${priceCell}<td class="tx-actions">${actHtml}</td></tr>`);
@@ -124,10 +136,12 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
     const at = t.at ? new Date(t.at * 1000) : null;
     const timeStr = at ? `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, "0")}-${String(at.getDate()).padStart(2, "0")} ${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}:${String(at.getSeconds()).padStart(2, "0")}` : "—";
     const nameText = (t.name || "—").toString();
+    const metaLine = buildItemMetaLine(t.item_type, t.exterior, t.paintwear);
+    const nameCell = `<td>${escapeHtml(nameText)}${metaLine ? `<div class="item-sub">${escapeHtml(metaLine)}</div>` : ""}</td>`;
     const idx = t.idx;
     const checkCell = multiSelectMode ? `<td class="holding-select-cell"><input type="checkbox" class="history-checkbox" data-idx="${idx}" /></td>` : "";
     const cost = Number(t.price) || 0;
-    const mp = t.market_price != null ? Number(t.market_price).toFixed(2) : "—";
+    const mp = t.market_price != null ? Number(t.market_price).toFixed(2) : "未记录";
     const sold = t.sale_price != null && Number(t.sale_price) > 0;
     const listingError = t.listing_status === "error";
     const statusStr = t.pending_receipt ? "待收货" : sold ? "已出售" : listingError ? "ERROR" : t.listing ? "出售中" : "持有中";
@@ -164,7 +178,7 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
     const delistBtn = !multiSelectMode && t.listing ? `<button type="button" class="btn btn-sm btn-warning-outline ph-btn-delist" data-type="purchase" data-idx="${idx}" data-db-id="${dbId}">下架</button> ` : "";
     const actHtml = !multiSelectMode ? (delistBtn + `<button type="button" class="btn btn-sm btn-danger-outline ph-btn-del" data-type="purchase" data-idx="${idx}">删除</button>`) : "";
     const assetidStr = t.assetid ?? "—";
-    rowHtmls.push(`<tr>${checkCell}<td class="mono">${escapeHtml(timeStr)}</td><td>${escapeHtml(nameText)}</td><td class="mono">${escapeHtml(assetidStr)}</td><td class="mono">${escapeHtml(Number(t.price).toFixed(2))}</td><td class="mono">${escapeHtml(mp)}</td><td class="status-cell ${statusCellClass}">${escapeHtml(statusStr)}</td><td class="mono">${escapeHtml(salePriceStr)}</td><td class="mono ${discountRatioClass}">${escapeHtml(discountRatioStr)}</td><td class="mono ${cashClass}">${escapeHtml(cashProfitStr)}</td><td class="mono ${selfUseClass}">${escapeHtml(selfUseStr)}</td>${deviationCell}<td class="tx-actions">${actHtml}</td></tr>`);
+    rowHtmls.push(`<tr>${checkCell}${itemThumbCellHtml(t.icon_url)}<td class="mono">${escapeHtml(timeStr)}</td>${nameCell}<td class="mono">${escapeHtml(assetidStr)}</td><td class="mono">${escapeHtml(Number(t.price).toFixed(2))}</td><td class="mono">${escapeHtml(mp)}</td><td class="status-cell ${statusCellClass}">${escapeHtml(statusStr)}</td><td class="mono">${escapeHtml(salePriceStr)}</td><td class="mono ${discountRatioClass}">${escapeHtml(discountRatioStr)}</td><td class="mono ${cashClass}">${escapeHtml(cashProfitStr)}</td><td class="mono ${selfUseClass}">${escapeHtml(selfUseStr)}</td>${deviationCell}<td class="tx-actions">${actHtml}</td></tr>`);
   }
   tbody.innerHTML = rowHtmls.join("");
   tbody.querySelectorAll(".ph-btn-delist").forEach(btn => {
@@ -223,6 +237,7 @@ function applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, res
   if (historySummaryEl && purchases.length) {
     const totalPrice = purchases.reduce((s, t) => s + (Number(t.price) || 0), 0);
     const totalMp = purchases.reduce((s, t) => s + (t.market_price != null ? Number(t.market_price) : 0), 0);
+    const purchaseMarketCount = purchases.filter(t => t.market_price != null).length;
     const totalSalePrice = purchases.reduce((s, t) => s + (t.sale_price != null && Number(t.sale_price) > 0 ? Number(t.sale_price) : 0), 0);
     const totalAfterTax = totalSalePrice > 0 ? totalSalePrice / 1.15 : null;
     const soldItems = purchases.filter((t) => t.sale_price != null && Number(t.sale_price) > 0);
@@ -251,7 +266,7 @@ function applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, res
     const selfUseProfitStr = selfUseProfitVal != null ? (selfUseProfitVal >= 0 ? "+" : "") + selfUseProfitVal.toFixed(2) : "—";
     historySummaryEl.innerHTML = [
       `<span class="summary-stat"><span class="summary-label">总购入价</span><span class="summary-value mono">${totalPrice.toFixed(2)}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总购入市场价</span><span class="summary-value mono">${totalMp.toFixed(2)}</span></span>`,
+      `<span class="summary-stat"><span class="summary-label">${marketPriceCoverageLabel("总购入市场价", purchaseMarketCount, purchases.length)}</span><span class="summary-value mono">${purchaseMarketCount ? totalMp.toFixed(2) : "—"}</span></span>`,
       `<span class="summary-stat"><span class="summary-label">总出售价</span><span class="summary-value mono">${salePriceStr}</span></span>`,
       `<span class="summary-stat"><span class="summary-label">总税后价格</span><span class="summary-value mono">${afterTaxStr}</span></span>`,
       `<span class="summary-stat"><span class="summary-label">实际折扣比率</span><span class="summary-value mono ${discountRatioClass}">${discountRatio}</span></span>`,
@@ -267,6 +282,8 @@ function applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, res
   if (summaryEl && holdings.length) {
     const totalPrice = holdings.reduce((s, t) => s + (Number(t.price) || 0), 0);
     const totalMp = holdings.reduce((s, t) => s + (t.market_price != null ? Number(t.market_price) : 0), 0);
+    const purchaseMarketCount = holdings.filter(t => t.market_price != null).length;
+    const currentMarketCount = holdings.filter(t => t.current_market_price != null).length;
     const hasAnyCmp = holdings.some((t) => t.current_market_price != null);
     const totalCmp = hasAnyCmp ? holdings.reduce((s, t) => s + (t.current_market_price != null ? Number(t.current_market_price) : 0), 0) : null;
     const marketChangeTotals = holdings.reduce((acc, t) => {
@@ -307,13 +324,14 @@ function applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, res
     summaryEl.innerHTML = [
       `<span class="summary-stat"><span class="summary-label">数量</span><span class="summary-value mono">${holdings.length}</span></span>`,
       `<span class="summary-stat"><span class="summary-label">总购入价</span><span class="summary-value mono">${totalPrice.toFixed(2)}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总购入市场价</span><span class="summary-value mono">${totalMp.toFixed(2)}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总现市场价</span><span class="summary-value mono">${cmpStr}</span></span>`,
+      `<span class="summary-stat"><span class="summary-label">${marketPriceCoverageLabel("总购入市场价", purchaseMarketCount, holdings.length)}</span><span class="summary-value mono">${purchaseMarketCount ? totalMp.toFixed(2) : "—"}</span></span>`,
+      `<span class="summary-stat"><span class="summary-label">${marketPriceCoverageLabel("总现市场价", currentMarketCount, holdings.length)}</span><span class="summary-value mono">${cmpStr}</span></span>`,
       `<span class="summary-stat"><span class="summary-label">总税后价格</span><span class="summary-value mono">${afterTaxStr}</span></span>`,
       `<span class="summary-stat"><span class="summary-label">实际折扣比率</span><span class="summary-value mono ${discountRatioClass}">${discountRatio}</span></span>`,
       `<span class="summary-stat"><span class="summary-label">总变现收益</span><span class="summary-value mono ${profitClass}">${cashProfitStr}</span></span>`,
       `<span class="summary-stat"><span class="summary-label">总自用收益</span><span class="summary-value mono ${selfUseProfitClass}">${selfUseProfitStr}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总市场变动</span><span class="summary-value mono ${plClass}">${plStr}</span></span>`,
+      `<span class="summary-stat"><span class="summary-label">总市场变动（${marketChangeTotals.count}件）</span><span class="summary-value mono ${plClass}">${plStr}</span></span>`,
+      missingMarketPriceNote(purchaseMarketCount, currentMarketCount, holdings.length, marketChangeTotals.count),
     ].join("");
   } else if (summaryEl) {
     summaryEl.textContent = "";
@@ -365,10 +383,9 @@ async function refreshTransactions() {
   try {
     const d = await fetchJson(API + "/transactions?enrich_current_price=0");
     const all = d.transactions || [];
-    const byKey = (t) => `${t.type}:${t.idx}`;
-    const enrichedMap = new Map((lastEnrichData || []).map((t) => [byKey(t), t]));
+    const enrichedMap = new Map((lastEnrichData || []).filter(t => t.type === "purchase").map((t) => [t.name, t]));
     for (const t of all) {
-      const e = enrichedMap.get(byKey(t));
+      const e = t.type === "purchase" ? enrichedMap.get(t.name) : null;
       if (e && e.current_market_price != null) t.current_market_price = e.current_market_price;
     }
     lastEnrichData = all;

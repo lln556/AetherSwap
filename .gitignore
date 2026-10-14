@@ -12,6 +12,10 @@ config/app.db-shm
 config/exchange_rate.json
 config/steam_userdata.json
 config/holdings_report_last.json
+config/steam_market_price_cache.json
+config/.steam_market_price_cache.*.tmp
+config/item_meta_cache.json
+config/.item-meta-cache.*.tmp
 config/buff_request_policy.json
 config/buff_request_policy.json.tmp
 config/.buff_request_policy.json.*.tmp

@@ -29,7 +29,10 @@ async function tabSwitch(name) {
   }
   if (name === "debug") refreshLog();
   if (name === "inventory") refreshInventory(false);
-  if (name === "purchases" || name === "sales" || name === "purchase-history") refreshTransactions();
+  if (name === "purchases" || name === "sales" || name === "purchase-history") {
+    await refreshTransactions();
+    if (name === "purchases") refreshMarketPrices();
+  }
   if (name === "analytics") refreshAnalytics();
   if (name === "accounts") refreshAccounts();
   if (name === "steam-guard") initSteamGuardPanel();
@@ -44,65 +47,84 @@ async function tabSwitch(name) {
 }
 
 let lastStatus = "idle";
-let _lastLyricText = "";
 // 是否已配置账号的缓存标志（避免 popup 在未配置时误弹出）
 let _hasAnyAccount = false;
 
-function pushLyricLine(text, subText) {
-  if (text === _lastLyricText) return;
-  _lastLyricText = text;
-  const track = el("step-scroll-track");
-  if (!track) return;
-  const LINE_H = 24;
-  const MAX_LINES = 10;
-  const oldSub = track.querySelector(".lyric-sub");
-  if (oldSub) oldSub.remove();
-  const oldLines = track.querySelectorAll(".lyric-line");
-  oldLines.forEach((l, i) => {
-    const dist = oldLines.length - i;
-    let op;
-    if (dist === 1) op = 0.35;
-    else if (dist === 2) op = 0.15;
-    else op = 0.05;
-    l.style.transition = "opacity 0.6s ease";
-    l.style.opacity = String(op);
-  });
-  const line = document.createElement("div");
-  line.className = "lyric-line";
-  line.textContent = text;
-  line.style.opacity = "0";
-  line.style.transition = "none";
-  track.appendChild(line);
-  if (subText) {
-    const sub = document.createElement("div");
-    sub.className = "lyric-line lyric-sub";
-    sub.textContent = subText;
-    sub.style.opacity = "0";
-    sub.style.transition = "none";
-    track.appendChild(sub);
+const dashboardStages = {
+  STARTING: ["正在启动", "正在准备交易任务。"],
+  PROXY_WARMUP: ["检查网络连接", "正在确认代理和平台连接是否可用。"],
+  FETCHING_DEALS: ["搜索购买机会", "正在获取行情，筛选符合条件的物品。"],
+  CHECKING_STABILITY: ["准备价格检查", "正在准备本轮候选物品。"],
+  STABILITY_CHECK: ["检查价格稳定性", "逐件检查价格和折扣，筛选结果不代表已购买。"],
+  CHECKOUT_PENDING: ["处理购买订单", "正在核对下单与付款状态，请留意付款通知。"],
+  WAITING_RETRY: ["等待下一轮", "程序仍在运行，等待后会自动继续搜索。"],
+  TIME_LIMIT_WAIT: ["等待运行时段", "到达设置的运行时段后会自动继续。"],
+  NETWORK_OFFLINE: ["等待网络恢复", "网络恢复后会自动重试。"],
+  STEAM_COOLDOWN: ["等待 Steam 冷却", "平台冷却结束后会自动继续。"],
+  BUFF_AUTH_EXPIRED: ["需要重新登录 BUFF", "请更新 BUFF 登录状态后继续。"],
+  BUFF_VERIFICATION_REQUIRED: ["需要完成 BUFF 验证", "请在 BUFF 完成安全验证后继续。"],
+  BUFF_RATE_LIMITED: ["BUFF 请求受限", "请查看调试日志中的冷却与恢复提示。"],
+  BUFF_COOLING_DOWN: ["BUFF 冷却中", "请查看调试日志，并核对未完成订单。"],
+  BUFF_REQUEST_BLOCKED: ["BUFF 请求已暂停", "请查看调试日志中的处理提示。"],
+  BUFF_WRITE_RESULT_UNKNOWN: ["需要核对订单", "下单结果尚未确认，请先检查 BUFF 订单。"],
+  BUFF_POST_COMMIT_WRITE_UNKNOWN: ["需要核对订单", "订单后续操作结果尚未确认，请先检查 BUFF 订单。"],
+  BUFF_ORDER_CREATED_PENDING: ["订单需要处理", "请核对付款或报价状态，再恢复购买任务。"],
+  BUFF_POST_COMMIT_HALT: ["购买流程已暂停", "订单已记录，请查看调试日志中的处理提示。"],
+  CONFIG_ERROR: ["配置需要调整", "请查看调试日志，修正配置后重新启动。"],
+  PIPELINE_UNEXPECTED_ERROR: ["任务出现异常", "请查看调试日志，核对订单后再继续。"],
+  ORDER_CLOSED: ["订单已结束", "订单核对已完成，可以重新启动任务。"],
+  PAYMENT_RECONCILED: ["付款核对完成", "购买记录已恢复，可以重新启动任务。"],
+};
+
+function renderDashboardProgress(d) {
+  const raw = d.status || "idle";
+  const step = d.step || "";
+  const stage = dashboardStages[step];
+  const title = raw === "stopped" ? "任务已停止" : stage?.[0] ||
+    (raw === "error" ? "任务需要处理" : raw === "running" ? "正在处理任务" : "等待启动");
+  const hint = raw === "stopped" ? "点击启动任务即可继续。" : stage?.[1] ||
+    (raw === "running" ? "正在更新任务状态。" : raw === "error" ? "请查看调试日志。" : "点击启动任务，开始搜索购买机会。");
+  const set = (id, text) => { const node = el(id); if (node) node.textContent = text; };
+  set("task-stage", title);
+  set("task-hint", hint);
+  const state = el("task-state");
+  const waiting = ["WAITING_RETRY", "TIME_LIMIT_WAIT", "NETWORK_OFFLINE", "STEAM_COOLDOWN"].includes(step);
+  if (state) {
+    state.textContent = raw === "error" ? "需要处理" : raw === "stopped" ? "已停止" :
+      raw === "running" ? (waiting ? "自动等待" : "运行中") : "未运行";
+    state.dataset.state = raw === "running" && waiting ? "waiting" : raw;
   }
-  track.style.transition = "none";
-  track.style.transform = `translateY(${LINE_H}px)`;
-  void track.offsetHeight;
-  track.style.transition = "";
-  track.style.transform = "translateY(0)";
-  requestAnimationFrame(() => {
-    line.style.transition = "opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.12s";
-    line.style.opacity = "1";
-    const newSub = track.querySelector(".lyric-sub");
-    if (newSub) {
-      newSub.style.transition = "opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1) 0.2s";
-      newSub.style.opacity = "0.3";
+  const total = Math.max(0, Math.floor(Number(d.progress_total) || 0));
+  const done = Math.min(total, Math.max(0, Math.floor(Number(d.progress_done) || 0)));
+  const hasProgress = raw === "running" && total > 0 &&
+    ["STABILITY_CHECK", "CHECKING_STABILITY"].includes(step);
+  const block = el("task-progress");
+  if (block) block.classList.toggle("hidden", !hasProgress);
+  if (hasProgress) {
+    const pct = Math.round(done / total * 100);
+    set("task-progress-count", `已检查 ${done} / ${total} 件`);
+    set("task-progress-percent", `${pct}%`);
+    const bar = el("task-progress-bar");
+    if (bar) {
+      bar.setAttribute("aria-valuemax", String(total));
+      bar.setAttribute("aria-valuenow", String(done));
+      bar.setAttribute("aria-valuetext", `本轮已检查 ${done} 件，共 ${total} 件`);
     }
-  });
-  while (track.querySelectorAll(".lyric-line:not(.lyric-sub)").length > MAX_LINES) {
-    track.removeChild(track.firstChild);
+    const fill = el("task-progress-fill");
+    if (fill) fill.style.width = `${pct}%`;
   }
-  const mainCount = track.querySelectorAll(".lyric-line:not(.lyric-sub)").length;
-  if (mainCount > 1) {
-    const vp = el("step-scroll-viewport");
-    if (vp) vp.style.height = subText ? "72px" : "48px";
-  }
+  const clean = text => String(text || "").replace(/^\(\d+\/\d+\)\s*/, "");
+  let item = clean(d.progress_item);
+  if (step === "WAITING_RETRY") item = item.replace(/^Retry in (\d+)s$/, "本轮结束后等待 $1 秒再搜索");
+  if (step === "TIME_LIMIT_WAIT") item = item.replace("; Allowed ", "；允许运行时段 ");
+  const current = el("task-current-row");
+  const next = el("task-next-row");
+  const showItems = raw === "running" || raw === "error";
+  if (current) current.classList.toggle("hidden", !showItems || !item);
+  if (next) next.classList.toggle("hidden", !showItems || !d.next_progress_item);
+  set("task-current-label", waiting ? "等待说明" : "当前处理");
+  set("task-current-item", item);
+  set("task-next-item", clean(d.next_progress_item));
 }
 async function refreshStatus() {
   try {
@@ -118,12 +140,7 @@ async function refreshStatus() {
     if (top) top.textContent = statusText;
     const inline = el("status-text-inline");
     if (inline) inline.textContent = statusText;
-    const stepDesc = d.step || "";
-    const item = d.progress_item || "";
-    const newText = stepDesc && item ? `${stepDesc}：${item}` : (stepDesc || item || "—");
-    const nextItem = d.next_progress_item || "";
-    const subText = stepDesc && nextItem ? `${stepDesc}：${nextItem}` : nextItem;
-    pushLyricLine(newText, subText);
+    renderDashboardProgress(d);
     const pill = el("status-pill");
     if (pill) {
       pill.classList.remove("status-idle", "status-running", "status-stopped", "status-error");
@@ -259,6 +276,8 @@ async function refreshInventory(forceRefresh = true) {
   }
   try {
     const d = await fetchJson(API + "/inventory" + (forceRefresh ? "?refresh=1" : ""));
+    const items = d.items || [];
+    const emptyUnconfirmed = items.length === 0 && d.source !== "live";
     if (dataStatus) {
       const authLabels = {
         auth_pending: "登录凭证等待超时",
@@ -266,18 +285,29 @@ async function refreshInventory(forceRefresh = true) {
         network_error: "会话状态暂无法确认",
         account_changed: "账号已切换",
       };
-      const sourceLabel = d.source === "live" ? "实时库存" : "缓存库存";
+      const sourceLabel = emptyUnconfirmed ? "库存尚未同步" : d.source === "live" ? "实时库存" : "缓存库存";
       const detail = authLabels[d.auth_status] || (d.auth_expired ? "登录已过期" : d.error ? "刷新失败" : "");
       dataStatus.textContent = detail ? `${sourceLabel} · ${detail}` : sourceLabel;
-      dataStatus.title = d.error || "";
+      dataStatus.title = d.error || d.refresh_reason || "";
+    }
+    if (emptyUnconfirmed) {
+      const count = el("inv-count");
+      if (count) count.textContent = d.refresh_deferred ? "待同步" : "未获取";
+      for (const id of ["inv-total-value", "inv-tax-value"]) {
+        const node = el(id);
+        if (node) node.textContent = "—";
+      }
+      const tbody = document.querySelector("#inv-table tbody");
+      const reason = d.refresh_reason || d.error || "尚未获取到库存，请稍后刷新。";
+      if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="muted">${escapeHtml(reason)}</td></tr>`;
     }
     if (d.auth_expired && _hasAnyAccount) {
       showReloginModal("steam", { reason: d.auth_expired_reason, error: d.error });
-      return;
+      return d;
     }
-    const items = d.items || [];
+    if (emptyUnconfirmed) return d;
     const tbody = document.querySelector("#inv-table tbody");
-    if (!tbody) return;
+    if (!tbody) return d;
     let totalValue = 0;
     const rowHtmls = [];
     for (const it of items) {
@@ -313,8 +343,9 @@ async function refreshInventory(forceRefresh = true) {
       const linksHtml = mhn
         ? `<a href="${steamUrl}" target="_blank" rel="noopener" class="link-steam">Steam</a> <a href="${buffUrl}" target="_blank" rel="noopener" class="link-buff">Buff</a>`
         : "—";
+      const metaLine = buildItemMetaLine(it.item_type, it.exterior, it.paintwear);
       rowHtmls.push(`
-        <tr><td>${escapeHtml(it.name || "")}</td>
+        <tr>${itemThumbCellHtml(it.icon_url)}<td>${escapeHtml(it.name || "")}${metaLine ? `<div class="item-sub">${escapeHtml(metaLine)}</div>` : ""}</td>
         <td class="inv-links">${linksHtml}</td>
         <td>${sellHtml}</td>
         <td>${tradeHtml}</td>
@@ -330,20 +361,46 @@ async function refreshInventory(forceRefresh = true) {
     if (v) v.textContent = totalValue.toFixed(2);
     const taxEl = el("inv-tax-value");
     if (taxEl) taxEl.textContent = (totalValue / 1.15).toFixed(2);
+    return d;
   } catch (e) {
     if (dataStatus) {
       dataStatus.textContent = "刷新失败 · 保留原有库存";
       dataStatus.title = e.message || "";
     }
     toast("刷新库存失败", e.message || "请检查 Steam Cookie");
+    return null;
   } finally {
     inventoryRefreshInFlight = false;
   }
 }
+let marketPriceRefreshInFlight = false;
+let marketPriceRetryTimer = null;
+function retryMarketPrices(delay) {
+  if (marketPriceRetryTimer !== null) clearTimeout(marketPriceRetryTimer);
+  marketPriceRetryTimer = setTimeout(() => {
+    marketPriceRetryTimer = null;
+    refreshMarketPrices();
+  }, delay);
+}
 async function refreshMarketPrices() {
+  if (marketPriceRefreshInFlight) return;
+  marketPriceRefreshInFlight = true;
+  if (marketPriceRetryTimer !== null) {
+    clearTimeout(marketPriceRetryTimer);
+    marketPriceRetryTimer = null;
+  }
+  const priceStatus = el("holdings-price-status");
   try {
-    const d = await fetchJson(API + "/market-prices");
+    const d = await fetchJson(API + "/market-prices?max_age=" + (getCurrentPriceRefreshMinutes() * 60));
     const prices = d.prices || {};
+    if (priceStatus) {
+      const quotedAt = d.updated_at ? new Date(d.updated_at * 1000).toLocaleString() : "";
+      const cacheLabel = Object.keys(prices).length ? `保留上次报价${quotedAt ? `（${quotedAt}）` : ""}` : "当前市场价待刷新";
+      priceStatus.textContent = d.refresh_deferred ? `${cacheLabel} · ${d.refresh_reason}` :
+        d.error ? `${cacheLabel} · ${d.error}` : d.source === "cache" ? cacheLabel :
+        `市场价已更新${quotedAt ? `（${quotedAt}）` : ""}`;
+    }
+    if (d.refresh_deferred || d.error) retryMarketPrices(d.refresh_deferred ? 15000 : 60000);
     if (Object.keys(prices).length === 0) return;
     const invItems = getInventoryCache();
     if (invItems && invItems.length > 0) {
@@ -382,9 +439,13 @@ async function refreshMarketPrices() {
         if (p != null) t.current_market_price = p;
       }
       lastEnrichTime = Date.now();
-      refreshTransactions();
+      await refreshTransactions();
     }
   } catch (e) {
+    if (priceStatus) priceStatus.textContent = "市场价刷新暂未成功，保留已有报价，稍后自动重试。";
+    retryMarketPrices(60000);
+  } finally {
+    marketPriceRefreshInFlight = false;
   }
 }
 function getInventoryCache() {
@@ -923,9 +984,12 @@ async function init() {
     // 如果弹出了引导，则不对无配置的 Steam 发起可能超时的库存请求，仅设置自动刷新
     setupInventoryAutoRefresh();
   } else {
-    // 异步加载库存，避免因 Steam 网络问题阻塞页面其余部分的初始化和展示
-    refreshInventory(true).then(() => {
+    // 缓存优先：先展示上次库存（秒开，避免刷新页面时长时间空表），再后台刷新实时库存
+    refreshInventory(false).then((d) => {
       setupInventoryAutoRefresh();
+      if (d && d.source === "cache" && (d.items || []).length > 0) {
+        refreshInventory(true);
+      }
     });
   }
 

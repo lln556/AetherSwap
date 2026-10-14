@@ -22,6 +22,7 @@ from app.config_loader import (
     load_app_config_validated,
 )
 from app.shared_market import get_steam_smart_price_cny, batch_fetch_prices
+from app.services.item_meta import enrich_transaction_rows
 router = APIRouter()
 STEAM_FEE_FACTOR = 1.15
 
@@ -166,12 +167,16 @@ def api_transactions(enrich_current_price: bool = False):
         ):
             if p.get(key) is not None:
                 row[key] = str(p.get(key))
+        for key in ("icon_url", "item_type", "exterior", "paintwear"):
+            if p.get(key):
+                row[key] = p[key]
         out.append(row)
     for i, s in enumerate(sales):
         row = {"type": "sale", "idx": i, "name": s.get("name", ""), "goods_id": s.get("goods_id", ""), "price": float(s.get("price", 0)), "at": s.get("at", 0), "assetid": s.get("assetid") or ""}
         if s.get("_db_id"):
             row["db_id"] = s.get("_db_id")
         out.append(row)
+    enrich_transaction_rows(out)
     out.sort(key=lambda x: x["at"], reverse=True)
     if enrich_current_price and is_steam_background_allowed():
         _enrich_purchases_with_current_prices(out)
