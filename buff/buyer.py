@@ -1034,7 +1034,7 @@ class BuffBuyer:
                     or data.get("url")
                 )
                 if pay_url:
-                    logger.info("获取成功！支付链接如下：\n%s", pay_url)
+                    logger.info("支付链接获取成功 (order=%s)，链接不写入日志", order_id)
                     logger.info("剩余支付时间: %ss", data.get('pay_expire_timeout', 'N/A'))
                     return pay_url
                 logger.warning("接口返回 OK 但未找到 URL: %s", res)

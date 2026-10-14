@@ -8,7 +8,9 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi.responses import JSONResponse
+from app.api_auth import basic_header_matches, credentials_from_env, requires_auth
 from app.database import init_db, migrate_from_json
 init_db()
 migrate_from_json()
@@ -46,6 +48,21 @@ async def _lifespan(application: FastAPI):
     _start_background_workers()
     yield
 app = FastAPI(title="aetherswap", lifespan=_lifespan)
+
+
+@app.middleware("http")
+async def _require_api_auth(request: Request, call_next):
+    """HTTP Basic gate for /api/*; /api/runtime stays open for health checks."""
+    creds = credentials_from_env()
+    if requires_auth(request.url.path, creds) and not basic_header_matches(
+        request.headers.get("authorization", ""), creds
+    ):
+        return JSONResponse(
+            {"ok": False, "error": "未授权：请在浏览器登录框中输入访问密码"},
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="AetherSwap"'},
+        )
+    return await call_next(request)
 @app.get("/api/runtime")
 def api_runtime():
     return {"ok": True, "runtime": get_runtime_profile().as_dict()}

@@ -109,15 +109,15 @@
             card.innerHTML = `
         <div class="gift-friend-avatar">
           ${hasAvatar
-                    ? `<img src="${friend.avatar}" alt="${friend.name}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+                    ? `<img src="${escapeHtml(friend.avatar)}" alt="${escapeHtml(friend.name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
                     : ''}
           <div class="gift-friend-avatar-fallback" style="${hasAvatar ? 'display:none' : ''}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
           </div>
         </div>
         <div class="gift-friend-info">
-          <div class="gift-friend-name" title="${friend.name}">${friend.name}</div>
-          <div class="gift-friend-id">${friend.steamid}</div>
+          <div class="gift-friend-name" title="${escapeHtml(friend.name)}">${escapeHtml(friend.name)}</div>
+          <div class="gift-friend-id">${escapeHtml(friend.steamid)}</div>
         </div>
         <div class="gift-friend-check">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" width="14" height="14"><polyline points="20 6 9 17 4 12"></polyline></svg>
@@ -205,12 +205,12 @@
                 if (hasDiscount) {
                     priceHtml = `
             <div class="gift-edition-price">
-              <span class="gift-price-badge">${ed.discount_pct}</span>
-              <span class="gift-price-original">${ed.original_price}</span>
-              <span class="gift-price-final">${ed.price}</span>
+              <span class="gift-price-badge">${escapeHtml(ed.discount_pct)}</span>
+              <span class="gift-price-original">${escapeHtml(ed.original_price)}</span>
+              <span class="gift-price-final">${escapeHtml(ed.price)}</span>
             </div>`;
                 } else {
-                    priceHtml = `<div class="gift-edition-price"><span class="gift-price-final">${ed.price}</span></div>`;
+                    priceHtml = `<div class="gift-edition-price"><span class="gift-price-final">${escapeHtml(ed.price)}</span></div>`;
                 }
             }
             item.innerHTML = `
@@ -218,8 +218,8 @@
           <div class="gift-edition-dot"></div>
         </div>
         <div class="gift-edition-details">
-          <div class="gift-edition-name">${ed.name}</div>
-          <div class="gift-edition-meta">${ed.type === 'bundleid' ? '捆绑包' : '标准包'} · ID: ${ed.id}</div>
+          <div class="gift-edition-name">${escapeHtml(ed.name)}</div>
+          <div class="gift-edition-meta">${ed.type === 'bundleid' ? '捆绑包' : '标准包'} · ID: ${escapeHtml(ed.id)}</div>
         </div>
         ${priceHtml}
         <svg class="gift-edition-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" width="16" height="16"><polyline points="20 6 9 17 4 12"></polyline></svg>

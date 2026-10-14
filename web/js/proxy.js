@@ -48,19 +48,19 @@ function renderProxyList(testResults) {
             if (r.status === "ok") {
                 statusHtml = `<span class="proxy-badge proxy-badge--ok">✓ 正常</span>`;
             } else {
-                statusHtml = `<span class="proxy-badge proxy-badge--fail" title="${r.error || ""}">✗ 失败</span>`;
+                statusHtml = `<span class="proxy-badge proxy-badge--fail" title="${escapeHtml(r.error || "")}">✗ 失败</span>`;
             }
         }
         const latency = r && r.status === "ok"
             ? `<span class="proxy-latency">${r.latency_ms} ms</span>`
             : `<span style="opacity:.35">—</span>`;
         const detectedIp = r && r.ip_detected
-            ? `<code class="proxy-detected-ip">${r.ip_detected}</code>`
+            ? `<code class="proxy-detected-ip">${escapeHtml(r.ip_detected)}</code>`
             : `<span style="opacity:.35">—</span>`;
         return `<tr data-idx="${i}">
       <td><span class="proxy-index">#${i + 1}</span></td>
-      <td><code>${p.host}:${p.port}</code></td>
-      <td><span style="opacity:.6">${p.username || "—"}</span></td>
+      <td><code>${escapeHtml(p.host)}:${escapeHtml(String(p.port))}</code></td>
+      <td><span style="opacity:.6">${escapeHtml(p.username || "—")}</span></td>
       <td>${statusHtml}</td>
       <td>${latency}</td>
       <td>${detectedIp}</td>
