@@ -28,8 +28,6 @@ from app.notify import send_pushplus, build_holdings_report_content, compute_hol
 from app.inventory_cs2 import scan_cs2_inventory
 from app.accounts import get_current_account, update_account
 _HOLDINGS_REPORT_LAST_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "holdings_report_last.json"
-_HOLDINGS_REPORT_WAIT_INTERVAL = 60
-_HOLDINGS_REPORT_WAIT_MAX = 30 * 60
 _worker_alert_last: dict = {}  
 _WORKER_ALERT_COOLDOWN = 3600  
 def _worker_alert(worker_name: str, error: Exception) -> None:
@@ -67,24 +65,8 @@ def _save_last_pl_pct(pl_pct: float) -> None:
     except Exception:
         pass
 def _enrich_purchases_with_current_prices(transactions: list) -> None:
-    from app.shared_market import batch_fetch_prices
-    purchases = [t for t in transactions if t.get("type") == "purchase"]
-    if not purchases:
-        return
-    names: set = set()
-    for t in purchases:
-        if t.get("sale_price") is not None:
-            continue
-        name = (t.get("name") or "").strip()
-        if name:
-            names.add(name)
-    if not names:
-        return
-    prices = batch_fetch_prices(names)
-    for t in purchases:
-        name = (t.get("name") or "").strip()
-        if name in prices and t.get("sale_price") is None:
-            t["current_market_price"] = prices[name]
+    from app.shared_market import fill_current_market_prices
+    fill_current_market_prices(transactions)
 def run_holdings_report_once(force: bool = False) -> bool:
     if not force and not is_steam_background_allowed():
         return False
@@ -199,8 +181,8 @@ def _save_exchange_rates(rates: dict, base: str = "CNY") -> None:
             "rates": rates,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        with open(_EXCHANGE_RATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
+        from utils.json_store import atomic_write_json
+        atomic_write_json(_EXCHANGE_RATE_FILE, payload, indent=2)
     except Exception:
         return
 def exchange_rate_worker() -> None:
@@ -417,69 +399,6 @@ def listing_check_worker() -> None:
             log(f"listing_check_worker 异常 {type(e).__name__}: {e}", "error", category="steam")
             _worker_alert("listing_check_worker", e)
             time.sleep(60)
-def _currency_code_from_price_text(text: str) -> str:
-    s = text or ""
-    if "¥" in s or "￥" in s or "CNY" in s or "RMB" in s:
-        return "CNY"
-    if "HK" in s and "$" in s:
-        return "HKD"
-    if "₹" in s:
-        return "INR"
-    if "₽" in s:
-        return "RUB"
-    if "€" in s:
-        return "EUR"
-    if "USD" in s or "US$" in s:
-        return "USD"
-    if "$" in s:
-        return "USD"
-    return "CNY"
-def _detect_account_currency_from_history() -> Optional[str]:
-    try:
-        import requests
-        from bs4 import BeautifulSoup
-        cred = get_steam_credentials()
-        cookies_str = cred.get("cookies") or ""
-        if not cookies_str:
-            return None
-        cookies_dict = {}
-        for part in cookies_str.split(";"):
-            s = part.strip()
-            if "=" in s:
-                k, _, v = s.partition("=")
-                cookies_dict[k.strip()] = v.strip()
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Language": "zh-CN,zh;q=0.9",
-            "X-Requested-With": "XMLHttpRequest",
-        }
-        params = {"query": "", "start": 0, "count": 50, "contextid": 2, "appid": 730}
-        from app.steam_listings import MYHISTORY_RENDER_URL
-        from utils.proxy_manager import get_proxy_manager, mask_proxy_url
-        pm = get_proxy_manager()
-        proxies = pm.get_proxies_for_request()
-        if proxies:
-            log(f"[account_sync] _detect_account_currency: 使用代理 {mask_proxy_url(proxies.get('http'))}", "debug", category="proxy")
-        r = requests.get(MYHISTORY_RENDER_URL, params=params, headers=headers, cookies=cookies_dict, proxies=proxies, timeout=25)
-        if r.status_code != 200:
-            return None
-        data = r.json() if r.text else {}
-        if not data.get("success"):
-            return None
-        html = data.get("results_html") or ""
-        if not html:
-            return None
-        soup = BeautifulSoup(html, "html.parser")
-        price_el = soup.find("span", class_="market_listing_price")
-        if not price_el:
-            return None
-        price_text = (price_el.get_text(" ", strip=True) or "").strip()
-        if not price_text:
-            return None
-        return _currency_code_from_price_text(price_text)
-    except Exception:
-        return None
 def _sync_account_profile_and_region(acc: dict) -> None:
     from app.services.steam_auth import fetch_steam_profile_via_api
     account_id = acc.get("id")

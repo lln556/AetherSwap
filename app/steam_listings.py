@@ -5,10 +5,10 @@ from typing import Callable, Dict, Optional, Set, Tuple
 import requests
 from bs4 import BeautifulSoup
 STEAM_REQUEST_TIMEOUT = 25
-STEAM_REQUEST_TIMEOUT = 25
 STEAM_REQUEST_RETRIES = 2
 STEAM_REQUEST_RETRY_DELAY = 3
 from utils.proxy_manager import get_proxy_manager, mask_proxy_url
+from utils.money import currency_code_from_price_text, parse_price_text
 try:
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -239,10 +239,6 @@ def fetch_my_history_sold(cookies, debug_fn: Optional[Callable[[str], None]] = N
                 _debug(debug_fn, f"[myhistory] 汇率读取完成, 可用币种: {list(rate_map.keys())[:5]}")
         except Exception:
             rate_map = {}
-        def _currency_code_from_price_text(text: str) -> str:
-            s = text or ""
-            if "¥" in s or "￥" in s or "CNY" in s or "RMB" in s:
-                return "CNY"
             if "HK" in s and "$" in s:
                 return "HKD"
             if "₹" in s:
@@ -292,21 +288,16 @@ def fetch_my_history_sold(cookies, debug_fn: Optional[Callable[[str], None]] = N
             if not price_el:
                 continue
             raw_text = price_el.get_text() or ""
-            cur_code = _currency_code_from_price_text(raw_text)
-            text = raw_text.replace(",", ".")
-            m = re.search(r"[\d.]+", text)
-            if m:
-                try:
-                    raw = float(m.group(0))
-                    cny_raw = raw
-                    if cur_code != "CNY":
-                        rate = rate_map.get(cur_code)
-                        if rate:
-                            cny_raw = raw * rate
-                            _debug(debug_fn, f"[myhistory] {cur_code} {raw} -> CNY {cny_raw:.4f}")
-                    sold[assetid] = round(cny_raw * 1.15, 2)
-                except (ValueError, TypeError):
-                    pass
+            cur_code = currency_code_from_price_text(raw_text)
+            raw = parse_price_text(raw_text)
+            if raw is not None:
+                cny_raw = raw
+                if cur_code != "CNY":
+                    rate = rate_map.get(cur_code)
+                    if rate:
+                        cny_raw = raw * rate
+                        _debug(debug_fn, f"[myhistory] {cur_code} {raw} -> CNY {cny_raw:.4f}")
+                sold[assetid] = round(cny_raw * 1.15, 2)
         _debug(debug_fn, f"[myhistory] 行->assetid: hover {hover_hits}, fallback {fallback_hits}; Sold 行 {sold_rows}, sold_map 条数 {len(sold)}, 示例: {list(sold.items())[:5]}")
         return True, sold, ""
     except Exception as e:

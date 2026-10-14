@@ -38,3 +38,27 @@ def test_wilson_score_结果在01之间():
         for n in (1, 100, 10000):
             score = _compute_wilson_score(rate, n)
             assert 0.0 <= score <= 1.0, f"rate={rate}, n={n} -> {score}"
+
+
+def test_transaction_dicts_roundtrip_db_id():
+    from app.database import (
+        _purchase_from_dict,
+        _purchase_to_dict,
+        _sale_from_dict,
+        _sale_to_dict,
+    )
+
+    p = _purchase_from_dict({"_db_id": 7, "name": "A", "price": 1.0, "at": 2.0})
+    assert p.id == 7
+    assert _purchase_to_dict(p)["_db_id"] == 7
+
+    s = _sale_from_dict({"_db_id": 9, "name": "B", "goods_id": 1, "price": 3.0, "at": 4.0})
+    assert s.id == 9
+    assert _sale_to_dict(s)["_db_id"] == 9
+
+
+def test_transaction_dicts_without_db_id_leave_id_none():
+    from app.database import _purchase_from_dict, _sale_from_dict
+
+    assert _purchase_from_dict({"name": "A", "price": 1.0, "at": 2.0}).id is None
+    assert _sale_from_dict({"name": "B", "goods_id": 1, "price": 3.0, "at": 4.0}).id is None

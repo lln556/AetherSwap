@@ -1,5 +1,6 @@
 import json
 import math
+import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -80,6 +81,57 @@ def get_item_price_from_total(n_total: int, rg_wallet: dict) -> int:
 
 def usd_to_cny(amount: float, rate: float = USD_TO_CNY_DEFAULT) -> float:
     return amount * rate
+def parse_price_text(raw: str) -> Optional[float]:
+    """Parse a market price string with either separator convention.
+
+    Handles "1,234.56" (comma thousands) and "1.234,56" (dot thousands,
+    comma decimals); returns None when no usable number is present.
+    """
+    text = str(raw or "")
+    cleaned = re.sub(r"[^\d.,]", "", text).strip(".,")
+    if not cleaned or not re.search(r"\d", cleaned):
+        return None
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        if re.fullmatch(r"\d{1,3}(,\d{3})+", cleaned):
+            cleaned = cleaned.replace(",", "")
+        else:
+            cleaned = cleaned.replace(",", ".")
+    try:
+        value = float(cleaned)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+def currency_code_from_price_text(text: str) -> str:
+    """Infer the currency code from a Steam market price string."""
+    s = text or ""
+    if "¥" in s or "￥" in s or "CNY" in s or "RMB" in s:
+        return "CNY"
+    if "HK" in s and "$" in s:
+        return "HKD"
+    if "US$" in s or "USD" in s:
+        return "USD"
+    if "R$" in s:
+        return "BRL"
+    if "S$" in s:
+        return "SGD"
+    if "A$" in s:
+        return "AUD"
+    if "C$" in s:
+        return "CAD"
+    if "₹" in s:
+        return "INR"
+    if "₽" in s:
+        return "RUB"
+    if "€" in s:
+        return "EUR"
+    if "$" in s:
+        return "USD"
+    return "CNY"
 def _load_exchange_rates() -> Dict[str, float]:
     global _exchange_rate_cache
     now = time.time()
@@ -102,6 +154,9 @@ def _load_exchange_rates() -> Dict[str, float]:
         rates = {}
     _exchange_rate_cache = (now, rates)
     return rates
+def load_exchange_rates() -> Dict[str, float]:
+    """Public wrapper around the cached exchange-rate loader."""
+    return _load_exchange_rates()
 def apply_currency(
     prices: List[float],
     currency: Optional[str],

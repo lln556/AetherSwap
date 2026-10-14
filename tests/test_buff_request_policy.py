@@ -391,39 +391,6 @@ def test_get_sell_orders_non_ok_does_not_retry():
     assert len(session.calls) == 1
 
 
-def test_legacy_get_and_buy_never_falls_through_to_second_sell_order():
-    session = FakeSession(
-        FakeResponse(
-            {
-                "code": "OK",
-                "data": {
-                    "items": [
-                        {"id": "sell-1", "price": "10.00", "user_id": "one"},
-                        {"id": "sell-2", "price": "10.00", "user_id": "two"},
-                    ]
-                },
-            }
-        ),
-        user_info_response(),
-        buy_preview_response(),
-        FakeResponse({"code": "FAIL", "msg": "rejected"}),
-    )
-    buyer = BuffBuyer(
-        "session=s; csrf_token=c",
-        session=session,
-        request_policy=no_wait_policy(),
-    )
-
-    buyer.get_and_buy(123, price_tolerance=1.0)
-
-    assert [(method, url) for method, url, _ in session.calls] == [
-        ("GET", API_SELL_ORDER),
-        ("GET", API_USER_INFO),
-        ("GET", API_BUY_PREVIEW),
-        ("POST", API_BUY),
-    ]
-    payload = json.loads(session.calls[3][2]["data"])
-    assert payload["sell_order_id"] == "sell-1"
 
 
 def test_configured_request_timeout_is_used_by_default():
@@ -698,7 +665,6 @@ def test_legacy_batch_writes_are_locally_blocked_without_http(method_name, args)
 @pytest.mark.parametrize(
     ("method_name", "args"),
     [
-        ("_execute_post_buy", ("csgo", 1, "sell-order", "10.00")),
         ("lock_and_get_pay_url", ("csgo", 1, "sell-order", "10.00")),
     ],
 )
@@ -729,54 +695,8 @@ def test_every_order_creating_write_rejects_malformed_success_data(
     ]
 
 
-@pytest.mark.parametrize("pay_method", [PAY_METHOD_ALIPAY, PAY_METHOD_WECHAT])
-def test_execute_preflights_user_info_and_clickable_payment_method_before_post(
-    pay_method,
-):
-    session = FakeSession(
-        *checkout_responses(
-            FakeResponse({"code": "FAIL", "msg": "rejected"}),
-            pay_method=pay_method,
-        )
-    )
-    buyer = BuffBuyer(
-        "session=s; csrf_token=c",
-        pay_method=pay_method,
-        session=session,
-        request_policy=no_wait_policy(),
-    )
-
-    assert buyer._execute_post_buy("csgo", 1, "sell-order", "10.00") == "FAIL"
-    assert [(method, url) for method, url, _ in session.calls] == [
-        ("GET", API_USER_INFO),
-        ("GET", API_BUY_PREVIEW),
-        ("POST", API_BUY),
-    ]
-    preview_params = session.calls[1][2]["params"]
-    assert preview_params["steamid"] == STEAM_ID
-    assert preview_params["sell_order_id"] == "sell-order"
-    payload = json.loads(session.calls[2][2]["data"])
-    assert payload["steamid"] == STEAM_ID
-    assert payload["pay_method"] == pay_method
 
 
-def test_known_steam_id_skips_user_info_but_never_skips_buy_preview():
-    session = FakeSession(
-        buy_preview_response(),
-        FakeResponse({"code": "FAIL", "msg": "rejected"}),
-    )
-    buyer = BuffBuyer(
-        "session=s; csrf_token=c",
-        steam_id=STEAM_ID,
-        session=session,
-        request_policy=no_wait_policy(),
-    )
-
-    assert buyer._execute_post_buy("csgo", 1, "sell-order", "10.00") == "FAIL"
-    assert [(method, url) for method, url, _ in session.calls] == [
-        ("GET", API_BUY_PREVIEW),
-        ("POST", API_BUY),
-    ]
 
 
 @pytest.mark.parametrize(
@@ -791,7 +711,6 @@ def test_known_steam_id_skips_user_info_but_never_skips_buy_preview():
 @pytest.mark.parametrize(
     ("method_name", "expected"),
     [
-        ("_execute_post_buy", "FAIL"),
         ("lock_and_get_pay_url", "PAY_METHOD_UNAVAILABLE"),
     ],
 )

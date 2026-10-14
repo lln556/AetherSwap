@@ -198,16 +198,19 @@ def api_get_steam_deals(
         page_ids = sorted_ids[offset: offset + limit]
         games = db_get_steam_deals_by_app_ids(page_ids)
     else:
+        # price_diff/discount_abs sort in memory across the whole filtered set
+        # below, so fetch it unpaginated; every other mode pages in SQL.
+        needs_full_sort = sort_by in ("price_diff", "discount_abs") and bool(search or deal_status_filter)
         games = db_get_steam_deals(
-            offset=offset,
-            limit=limit,
+            offset=0 if needs_full_sort else offset,
+            limit=100000 if needs_full_sort else limit,
             search=search,
             sort_by=sort_by,
             sort_dir=sort_dir,
             compare_region=compare_region,
             deal_status_filter=deal_status_filter,
         )
-        total = db_get_steam_deals_count(search=search)
+        total = db_get_steam_deals_count(search=search, deal_status_filter=deal_status_filter)
     for g in games:
         cny_prices = {}
         for rc, price_str in g["prices"].items():

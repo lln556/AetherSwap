@@ -178,7 +178,9 @@ def init_db() -> None:
                 )
             conn.commit()
 def _purchase_from_dict(d: dict) -> Purchase:
+    pid = d.get("_db_id")
     return Purchase(
+        id=int(pid) if pid else None,
         name=d.get("name", ""),
         goods_id=int(d.get("goods_id", 0) or 0),
         price=float(d.get("price", 0)),
@@ -200,7 +202,9 @@ def _purchase_from_dict(d: dict) -> Purchase:
         bill_order_id=str(d["bill_order_id"]) if d.get("bill_order_id") else None,
     )
 def _sale_from_dict(d: dict) -> Sale:
+    sid = d.get("_db_id")
     return Sale(
+        id=int(sid) if sid else None,
         name=d.get("name", ""),
         goods_id=int(d.get("goods_id", 0) or 0),
         price=float(d.get("price", 0)),
@@ -248,6 +252,7 @@ def _purchase_to_dict(p: Purchase) -> dict:
     return d
 def _sale_to_dict(s: Sale) -> dict:
     d = {
+        "_db_id": s.id,
         "name": s.name,
         "goods_id": s.goods_id,
         "price": s.price,
@@ -295,16 +300,18 @@ _PURCHASE_UPDATABLE = frozenset({
 })
 _SALE_UPDATABLE = frozenset({"name", "price", "goods_id", "assetid", "at"})
 def db_append_purchase(p: dict) -> None:
+    record = {k: v for k, v in p.items() if k != "_db_id"}
     with get_session() as session:
-        session.add(_purchase_from_dict(p))
+        session.add(_purchase_from_dict(record))
         session.commit()
 def db_get_purchases() -> list:
     with get_session() as session:
         rows = session.exec(select(Purchase).order_by(Purchase.id)).all()
         return [_purchase_to_dict(r) for r in rows]
 def db_append_sale(s: dict) -> None:
+    record = {k: v for k, v in s.items() if k != "_db_id"}
     with get_session() as session:
-        session.add(_sale_from_dict(s))
+        session.add(_sale_from_dict(record))
         session.commit()
 def db_get_sales() -> list:
     with get_session() as session:
@@ -356,6 +363,33 @@ def db_update_purchase(idx: int, data: dict) -> bool:
             session.commit()
             return True
     return False
+def db_update_purchases_meta(updates: list) -> int:
+    """Apply display-metadata updates ({db_id, fields}) in one transaction."""
+    if not updates:
+        return 0
+    applied = 0
+    with get_session() as session:
+        for item in updates:
+            try:
+                db_id = int(item.get("db_id") or 0)
+            except (TypeError, ValueError):
+                continue
+            fields = item.get("fields") or {}
+            if not db_id or not fields:
+                continue
+            row = session.get(Purchase, db_id)
+            if row is None:
+                continue
+            changed = False
+            for k, v in fields.items():
+                if k in _PURCHASE_UPDATABLE and getattr(row, k, None) != v:
+                    setattr(row, k, v)
+                    changed = True
+            if changed:
+                session.add(row)
+                applied += 1
+        session.commit()
+    return applied
 def db_update_purchase_by_id(db_id: int, data: dict) -> bool:
     """按主键 ID 更新，O(1) 操作，推荐内部 worker 使用。"""
     if not db_id:
@@ -415,6 +449,20 @@ def db_update_sale(idx: int, data: dict) -> bool:
             session.commit()
             return True
     return False
+def db_update_sale_by_id(db_id: int, data: dict) -> bool:
+    """按主键 ID 更新出售记录，O(1) 操作。"""
+    if not db_id:
+        return False
+    with get_session() as session:
+        row = session.get(Sale, int(db_id))
+        if row is None:
+            return False
+        for k, v in data.items():
+            if k in _SALE_UPDATABLE:
+                setattr(row, k, v)
+        session.add(row)
+        session.commit()
+        return True
 def db_delete_sale_by_id(db_id: int) -> bool:
     """Delete by primary ID, O(1) operation."""
     if not db_id:
@@ -532,7 +580,7 @@ def db_get_steam_deals(
             stmt = stmt.offset(offset).limit(limit)
         rows = session.exec(stmt).all()
         return [_game_row_to_dict(r) for r in rows]
-def db_get_steam_deals_count(search: str = "") -> int:
+def db_get_steam_deals_count(search: str = "", deal_status_filter: str = "") -> int:
     from sqlmodel import col, func, or_
     with get_session() as session:
         stmt = select(func.count()).select_from(SteamDealGame)
@@ -543,6 +591,8 @@ def db_get_steam_deals_count(search: str = "") -> int:
                     col(SteamDealGame.name_en).contains(search)
                 )
             )
+        if deal_status_filter and deal_status_filter != "全部状态":
+            stmt = stmt.where(SteamDealGame.deal_status == deal_status_filter)
         return session.exec(stmt).one()
 def db_get_steam_deals_last_update() -> Optional[float]:
     from sqlmodel import func

@@ -8,6 +8,7 @@ from collections import defaultdict
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+from utils.money import currency_code_from_price_text, parse_price_text
 import requests
 from bs4 import BeautifulSoup
 try:
@@ -44,10 +45,6 @@ def _load_rate_map() -> dict:
     except Exception:
         pass
     return {}
-def _currency_code_from_price_text(text: str) -> str:
-    s = text or ""
-    if "¥" in s or "￥" in s or "CNY" in s or "RMB" in s:
-        return "CNY"
     if "HK" in s and "$" in s:
         return "HKD"
     if "₹" in s:
@@ -110,22 +107,17 @@ def _parse_sold_history_page(data: dict, rate_map: dict) -> tuple:
         if not price_el:
             continue
         raw_text = price_el.get_text() or ""
-        cur_code = _currency_code_from_price_text(raw_text)
-        text = raw_text.replace(",", ".")
-        m = re.search(r"[\d.]+", text)
-        if m:
-            try:
-                raw = float(m.group(0))
-                cny_raw = raw
-                if cur_code != "CNY":
-                    rate = rate_map.get(cur_code)
-                    if rate:
-                        cny_raw = raw * rate
-                sale_price = round(cny_raw * 1.15, 2)
-                sold[assetid] = sale_price
-                sold_names[assetid] = name
-            except (ValueError, TypeError):
-                pass
+        cur_code = currency_code_from_price_text(raw_text)
+        raw = parse_price_text(raw_text)
+        if raw is not None:
+            cny_raw = raw
+            if cur_code != "CNY":
+                rate = rate_map.get(cur_code)
+                if rate:
+                    cny_raw = raw * rate
+            sale_price = round(cny_raw * 1.15, 2)
+            sold[assetid] = sale_price
+            sold_names[assetid] = name
     return sold, sold_names, row_count
 def _history_total_count(data: dict):
     for key in ("total_count", "totalCount", "total"):

@@ -52,7 +52,7 @@ def _checkout_args(wait_result=False):
         "acc": 0.0,
         "set_pending_payment": pending.append,
         "wait_payment_confirm": lambda **_kwargs: wait_result,
-        "confirm_payment": lambda _ok: None,
+        "confirm_payment": lambda _ok, **_kwargs: None,
         "is_stop_requested": lambda: False,
         "append_purchase": purchases.append,
     }, pending, purchases
@@ -87,10 +87,14 @@ class _FakeState:
     def set_pending_payment(self, value):
         self.pending = value
 
+    def begin_payment_wait(self):
+        self.payment_wait_generation = getattr(self, "payment_wait_generation", 0) + 1
+        return self.payment_wait_generation
+
     def wait_payment_confirm(self, **_kwargs):
         return self.payment_confirmed
 
-    def confirm_payment(self, value):
+    def confirm_payment(self, value, **_kwargs):
         self.payment_confirmed = bool(value)
 
     def append_purchase(self, value):
