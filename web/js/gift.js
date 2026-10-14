@@ -285,23 +285,23 @@
     function initProgressSteps() {
         elProgressSteps.innerHTML = '';
         STEP_LABELS.forEach((label, i) => {
-            const el = document.createElement('div');
-            el.className = 'gift-progress-step';
-            el.id = `gift-step-${i}`;
-            el.innerHTML = `
+            const step = document.createElement('div');
+            step.className = 'gift-progress-step';
+            step.id = `gift-step-${i}`;
+            step.innerHTML = `
         <div class="gift-step-icon gift-step-icon--wait">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"></circle></svg>
         </div>
         <div class="gift-step-label">${label}</div>
         <div class="gift-step-msg" id="gift-step-msg-${i}"></div>
       `;
-            elProgressSteps.appendChild(el);
+            elProgressSteps.appendChild(step);
         });
     }
     function updateStep(stepN, msg, status) {
-        const el = el(`gift-step-${stepN}`);
-        if (!el) return;
-        const icon = el.querySelector('.gift-step-icon');
+        const stepEl = el(`gift-step-${stepN}`);
+        if (!stepEl) return;
+        const icon = stepEl.querySelector('.gift-step-icon');
         const msgEl = el(`gift-step-msg-${stepN}`);
         icon.className = `gift-step-icon gift-step-icon--${status}`;
         if (status === 'running') {
