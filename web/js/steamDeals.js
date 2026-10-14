@@ -21,10 +21,6 @@
     let _initialized = false;
     let _fetchRunning = false;
     let _pauseRequested = false;
-    const $ = id => document.getElementById(id);
-    const esc = (value) => typeof escapeHtml === 'function'
-        ? escapeHtml(value)
-        : String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     function timeAgo(ts) {
         if (!ts) return '从未';
         const diff = Date.now() / 1000 - ts;
@@ -43,17 +39,13 @@
         if (val == null) return '—';
         return `¥${val.toFixed(2)}`;
     }
-    function debounce(fn, ms) {
-        let t;
-        return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
-    }
     async function loadGames(reset = false) {
         if (_loading) return;
         if (!reset && !_hasMore) return;
         _loading = true;
-        if (reset) { _offset = 0; _hasMore = true; $('steam-deals-grid').innerHTML = ''; }
-        const loadEl = $('steam-deals-loading');
-        const emptyEl = $('steam-deals-empty');
+        if (reset) { _offset = 0; _hasMore = true; el('steam-deals-grid').innerHTML = ''; }
+        const loadEl = el('steam-deals-loading');
+        const emptyEl = el('steam-deals-empty');
         if (loadEl) loadEl.classList.remove('hidden');
         if (emptyEl) emptyEl.classList.add('hidden');
         try {
@@ -72,7 +64,7 @@
                 _hasMore = false;
                 if (_offset === 0 && emptyEl) emptyEl.classList.remove('hidden');
             }
-            const tcEl = $('steam-deals-total-count');
+            const tcEl = el('steam-deals-total-count');
             if (tcEl) tcEl.textContent = `共 ${data.total} 款`;
         } catch (err) {
             console.error('加载失败:', err);
@@ -84,7 +76,7 @@
     }
     function _checkSentinel() {
         if (!_hasMore || _loading) return;
-        const sentinel = $('steam-deals-sentinel');
+        const sentinel = el('steam-deals-sentinel');
         if (!sentinel) return;
         const rect = sentinel.getBoundingClientRect();
         if (rect.top <= window.innerHeight + 200) {
@@ -92,7 +84,7 @@
         }
     }
     function renderGames(games) {
-        const grid = $('steam-deals-grid');
+        const grid = el('steam-deals-grid');
         const frag = document.createDocumentFragment();
         games.forEach(g => {
             const card = document.createElement('div');
@@ -116,7 +108,7 @@
                         isExpensive = true;
                     }
                 }
-                pricePills += _pill(REGION_NAMES[_compareRegion] || esc(_compareRegion), regCny, 'sg-pill-compare', saving, isExpensive);
+                pricePills += _pill(REGION_NAMES[_compareRegion] || escapeHtml(_compareRegion), regCny, 'sg-pill-compare', saving, isExpensive);
                 regionPillsCount++;
             }
             if (g.cheapest_regions) {
@@ -133,7 +125,7 @@
                             isExpensive = true;
                         }
                     }
-                    pricePills += _pill(REGION_NAMES[cr.region] || esc(cr.region), cr.cny, 'sg-pill-cheap', saving, isExpensive);
+                    pricePills += _pill(REGION_NAMES[cr.region] || escapeHtml(cr.region), cr.cny, 'sg-pill-cheap', saving, isExpensive);
                     regionPillsCount++;
                 }
             }
@@ -155,17 +147,17 @@
             }
             const discount = Number(g.discount_percent) || 0;
             let discBadge = discount
-                ? `<div class="sg-badge-discount">${esc(discount)}%</div>`
+                ? `<div class="sg-badge-discount">${escapeHtml(discount)}%</div>`
                 : '';
             if (g.deal_status === '新史低' || g.deal_status === '平史低') {
                 const color = g.deal_status === '新史低' ? '#ef4444' : '#f59e0b';
                 const icon = g.deal_status === '新史低' ? '🔥' : '🏷️';
-                discBadge += `<div class="sg-badge-status" style="position:absolute;top:10px;left:10px;background:linear-gradient(135deg, ${color}, ${color}dd);color:white;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.2);backdrop-filter:blur(4px);z-index:2;line-height:1;">${icon} ${esc(g.deal_status)}</div>`;
+                discBadge += `<div class="sg-badge-status" style="position:absolute;top:10px;left:10px;background:linear-gradient(135deg, ${color}, ${color}dd);color:white;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,0.4);border:1px solid rgba(255,255,255,0.2);backdrop-filter:blur(4px);z-index:2;line-height:1;">${icon} ${escapeHtml(g.deal_status)}</div>`;
             }
             const uid = 'sg-expand-' + g.app_id;
             const appId = encodeURIComponent(String(g.app_id ?? ''));
-            const safeName = esc(g.name || '');
-            const safeBanner = esc(g.banner_url || '');
+            const safeName = escapeHtml(g.name || '');
+            const safeBanner = escapeHtml(g.banner_url || '');
             let allRows = '';
             const regionCodes = Object.keys(REGION_NAMES);
             for (let i = 0; i < regionCodes.length; i += 2) {
@@ -174,10 +166,10 @@
                 allRows += `<tr>
           <td class="sg-exp-name">${REGION_NAMES[rc1]}</td>
           <td class="sg-exp-price">${fmtCNY(v1)}</td>
-          <td class="sg-exp-orig">${esc(g.prices?.[rc1] || '—')}</td>
+          <td class="sg-exp-orig">${escapeHtml(g.prices?.[rc1] || '—')}</td>
           <td class="sg-exp-name">${rc2 ? REGION_NAMES[rc2] : ''}</td>
           <td class="sg-exp-price">${rc2 ? fmtCNY(v2) : ''}</td>
-          <td class="sg-exp-orig">${rc2 ? esc(g.prices?.[rc2] || '—') : ''}</td>
+          <td class="sg-exp-orig">${rc2 ? escapeHtml(g.prices?.[rc2] || '—') : ''}</td>
         </tr>`;
             }
             card.innerHTML = `
@@ -225,7 +217,7 @@
     let _observer = null;
     function setupObserver() {
         if (_observer) _observer.disconnect();
-        const sentinel = $('steam-deals-sentinel');
+        const sentinel = el('steam-deals-sentinel');
         if (!sentinel) return;
         _observer = new IntersectionObserver(entries => {
             if (entries[0].isIntersecting && !_loading && _hasMore) loadGames(false);
@@ -240,8 +232,8 @@
         return `可续扫${phase}：${resume.progress || 0}/${resume.total}${failed}`;
     }
     async function fetchData(forceRefresh = false) {
-        const btn = $('steam-deals-fetch-btn');
-        const resetBtn = $('steam-deals-reset-btn');
+        const btn = el('steam-deals-fetch-btn');
+        const resetBtn = el('steam-deals-reset-btn');
         _fetchRunning = true;
         _pauseRequested = false;
         if (btn) { btn.disabled = true; btn.textContent = '获取中...'; }
@@ -265,7 +257,7 @@
         }
     }
     async function pauseFetch() {
-        const btn = $('steam-deals-fetch-btn');
+        const btn = el('steam-deals-fetch-btn');
         if (btn) { btn.disabled = true; btn.textContent = '正在暂停...'; }
         _pauseRequested = true;
         try {
@@ -289,11 +281,11 @@
         try {
             const resp = await fetch('/api/steam-deals/status');
             const s = await resp.json();
-            const prog = $('steam-deals-progress');
-            const info = $('steam-deals-update-info');
-            const btn = $('steam-deals-fetch-btn');
-            const resetBtn = $('steam-deals-reset-btn');
-            const tcEl = $('steam-deals-total-count');
+            const prog = el('steam-deals-progress');
+            const info = el('steam-deals-update-info');
+            const btn = el('steam-deals-fetch-btn');
+            const resetBtn = el('steam-deals-reset-btn');
+            const tcEl = el('steam-deals-total-count');
             if (s.running) {
                 _fetchRunning = true;
                 _pauseRequested = !!s.pause_requested;
@@ -344,48 +336,48 @@
     function init() {
         if (_initialized) return;
         _initialized = true;
-        const searchInput = $('steam-deals-search-input');
+        const searchInput = el('steam-deals-search-input');
         if (searchInput) searchInput.addEventListener('input', debounce(() => { _search = searchInput.value.trim(); loadGames(true); }, 400));
-        const regionSel = $('steam-deals-region');
+        const regionSel = el('steam-deals-region');
         if (regionSel) regionSel.addEventListener('change', () => {
             _compareRegion = regionSel.value;
             if (_compareRegion && _compareRegion !== 'all' && _compareRegion !== '') {
                 // Single region selected: switch to region_value default
-                const sortSel = $('steam-deals-sort');
+                const sortSel = el('steam-deals-sort');
                 if (sortSel) sortSel.value = 'region_value|desc';
                 _sortBy = 'region_value'; _sortDir = 'desc';
             } else if (!_compareRegion || _compareRegion === 'all' || _compareRegion === '') {
                 // Back to all regions: switch back to default_recommend
-                const sortSel = $('steam-deals-sort');
+                const sortSel = el('steam-deals-sort');
                 if (sortSel) sortSel.value = 'default_recommend|desc';
                 _sortBy = 'default_recommend'; _sortDir = 'desc';
             }
             loadGames(true);
         });
-        const sortSel = $('steam-deals-sort');
+        const sortSel = el('steam-deals-sort');
         if (sortSel) sortSel.addEventListener('change', () => {
             const [by, dir] = sortSel.value.split('|');
             _sortBy = by; _sortDir = dir || 'asc';
             loadGames(true);
         });
-        const statusSel = $('steam-deals-status-filter');
+        const statusSel = el('steam-deals-status-filter');
         if (statusSel) statusSel.addEventListener('change', () => {
             _dealStatusFilter = statusSel.value;
             loadGames(true);
         });
-        const fetchBtn = $('steam-deals-fetch-btn');
+        const fetchBtn = el('steam-deals-fetch-btn');
         if (fetchBtn) fetchBtn.addEventListener('click', () => {
             if (_fetchRunning) pauseFetch();
             else fetchData(false);
         });
-        const resetBtn = $('steam-deals-reset-btn');
+        const resetBtn = el('steam-deals-reset-btn');
         if (resetBtn) resetBtn.addEventListener('click', () => {
             const ok = window.confirm('重新扫描会清空当前断点进度和已有 Steam 折扣数据，然后全量重扫。确定继续吗？');
             if (ok) fetchData(true);
         });
         setupObserver();
 
-        const grid = $('steam-deals-grid');
+        const grid = el('steam-deals-grid');
         if (grid) {
             grid.addEventListener('contextmenu', (e) => {
                 const card = e.target.closest('.sg-card');

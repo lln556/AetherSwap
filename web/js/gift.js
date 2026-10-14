@@ -6,46 +6,45 @@
     let selectedEdition = null;
     let pollTimer = null;
     let walletInfo = null;
-    const $ = id => document.getElementById(id);
-    const elFetchFriends = $('btn-gift-fetch-friends');
-    const elFriendsLoading = $('gift-friends-loading');
-    const elFriendsGrid = $('gift-friends-grid');
-    const elFriendsEmpty = $('gift-friends-empty');
-    const elFriendsCount = $('gift-friends-count');
-    const elFriendSearch = $('gift-friend-search');
-    const elSelectedFriend = $('gift-selected-friend');
-    const elSelAvatar = $('gift-sel-avatar');
-    const elSelAvatarPH = $('gift-sel-avatar-placeholder');
-    const elSelName = $('gift-sel-name');
-    const elSelId = $('gift-sel-id');
-    const elClearFriend = $('btn-gift-clear-friend');
-    const elStoreUrl = $('gift-store-url');
-    const elFetchEditions = $('btn-gift-fetch-editions');
-    const elEditionsLoading = $('gift-editions-loading');
-    const elGamePreview = $('gift-game-preview');
-    const elGameImg = $('gift-game-img');
-    const elGameTitle = $('gift-game-title');
-    const elGameAppid = $('gift-game-appid');
-    const elEditionsList = $('gift-editions-list');
-    const elSendInfo = $('gift-send-info');
-    const elSendBtn = $('btn-gift-send');
-    const elProgressPanel = $('gift-progress-panel');
-    const elProgressSpinner = $('gift-progress-spinner');
-    const elProgressTitle = $('gift-progress-title-text');
-    const elProgressSteps = $('gift-progress-steps');
-    const elProgressResult = $('gift-progress-result');
-    const elProgressResIcon = $('gift-progress-result-icon');
-    const elProgressResMsg = $('gift-progress-result-msg');
-    const elProgressClose = $('btn-gift-progress-close');
+    const elFetchFriends = el('btn-gift-fetch-friends');
+    const elFriendsLoading = el('gift-friends-loading');
+    const elFriendsGrid = el('gift-friends-grid');
+    const elFriendsEmpty = el('gift-friends-empty');
+    const elFriendsCount = el('gift-friends-count');
+    const elFriendSearch = el('gift-friend-search');
+    const elSelectedFriend = el('gift-selected-friend');
+    const elSelAvatar = el('gift-sel-avatar');
+    const elSelAvatarPH = el('gift-sel-avatar-placeholder');
+    const elSelName = el('gift-sel-name');
+    const elSelId = el('gift-sel-id');
+    const elClearFriend = el('btn-gift-clear-friend');
+    const elStoreUrl = el('gift-store-url');
+    const elFetchEditions = el('btn-gift-fetch-editions');
+    const elEditionsLoading = el('gift-editions-loading');
+    const elGamePreview = el('gift-game-preview');
+    const elGameImg = el('gift-game-img');
+    const elGameTitle = el('gift-game-title');
+    const elGameAppid = el('gift-game-appid');
+    const elEditionsList = el('gift-editions-list');
+    const elSendInfo = el('gift-send-info');
+    const elSendBtn = el('btn-gift-send');
+    const elProgressPanel = el('gift-progress-panel');
+    const elProgressSpinner = el('gift-progress-spinner');
+    const elProgressTitle = el('gift-progress-title-text');
+    const elProgressSteps = el('gift-progress-steps');
+    const elProgressResult = el('gift-progress-result');
+    const elProgressResIcon = el('gift-progress-result-icon');
+    const elProgressResMsg = el('gift-progress-result-msg');
+    const elProgressClose = el('btn-gift-progress-close');
     function showToast(msg, type = 'info') {
         if (window.showToast) { window.showToast(msg, type); return; }
-        const host = $('toast-host');
+        const host = el('toast-host');
         if (!host) return;
-        const el = document.createElement('div');
-        el.className = `toast toast-${type}`;
-        el.textContent = msg;
-        host.appendChild(el);
-        setTimeout(() => el.remove(), 3500);
+        const node = document.createElement('div');
+        node.className = `toast toast-${type}`;
+        node.textContent = msg;
+        host.appendChild(node);
+        setTimeout(() => node.remove(), 3500);
     }
     function setHidden(el, hidden) {
         if (!el) return;
@@ -67,8 +66,8 @@
         }
     }
     async function fetchBalance() {
-        const elBalance = $('gift-wallet-balance');
-        const elBalanceWrap = $('gift-wallet-wrap');
+        const elBalance = el('gift-wallet-balance');
+        const elBalanceWrap = el('gift-wallet-wrap');
         if (!elBalance || !elBalanceWrap) return;
         elBalance.textContent = '获取中...';
         elBalanceWrap.className = 'gift-wallet-wrap gift-wallet-loading';
@@ -300,10 +299,10 @@
         });
     }
     function updateStep(stepN, msg, status) {
-        const el = $(`gift-step-${stepN}`);
+        const el = el(`gift-step-${stepN}`);
         if (!el) return;
         const icon = el.querySelector('.gift-step-icon');
-        const msgEl = $(`gift-step-msg-${stepN}`);
+        const msgEl = el(`gift-step-msg-${stepN}`);
         icon.className = `gift-step-icon gift-step-icon--${status}`;
         if (status === 'running') {
             icon.innerHTML = '<div class="gift-step-spinner"></div>';
@@ -411,7 +410,7 @@
         setHidden(elProgressPanel, true);
         elSendBtn.disabled = !(selectedFriend && selectedEdition);
     });
-    const elRefreshBalance = $('btn-gift-refresh-balance');
+    const elRefreshBalance = el('btn-gift-refresh-balance');
     elRefreshBalance && elRefreshBalance.addEventListener('click', () => fetchBalance());
     setHidden(elFriendsEmpty, false);
     updateSendButton();

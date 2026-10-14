@@ -175,9 +175,9 @@ async function loadConfig() {
   if (gUiScale) {
     gUiScale.value = sys.ui_scale || "0.7";
     document.documentElement.style.zoom = sys.ui_scale || "0.7";
-    gUiScale.addEventListener("change", (e) => {
+    gUiScale.onchange = (e) => {
       document.documentElement.style.zoom = e.target.value;
-    });
+    };
   }
   const sd = c.steam_deals || {};
   const gSdEnabled = el("cfg-steam-deals-enabled");

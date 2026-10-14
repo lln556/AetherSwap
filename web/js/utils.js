@@ -5,17 +5,17 @@ window.RUNTIME_PROFILE = null;
 function el(id) {
   return document.getElementById(id);
 }
-function toast(title, detail = "") {
+function toast(title, detail = "", ttl = 3500) {
   const host = el("toast-host");
   if (!host) return;
   const node = document.createElement("div");
   node.className = "toast";
+  node.style.setProperty("--toast-ttl", `${ttl}ms`);
   node.innerHTML = `<div class="t">${escapeHtml(title)}</div>${detail ? `<div class="d">${escapeHtml(compactErrorText(detail, 220))}</div>` : ""}`;
   host.appendChild(node);
-  const ttl = 3500;
   setTimeout(() => {
     node.classList.add("toast-exit");
-  }, ttl - 400);
+  }, Math.max(ttl - 400, 100));
   setTimeout(() => node.remove(), ttl);
 }
 function appModal(options = {}) {
@@ -299,5 +299,23 @@ function itemThumbCellHtml(iconUrl) {
   const src = steamItemImageUrl(iconUrl, 62);
   if (!src) return '<td class="item-thumb-cell"></td>';
   return `<td class="item-thumb-cell"><img class="item-thumb" loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="" onerror="this.style.visibility='hidden'"></td>`;
+}
+
+function formatDateTime(ts) {
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (!d || isNaN(d.getTime())) return "—";
+  const pad = (v) => String(v).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function debounce(fn, wait = 300) {
+  let timer = null;
+  return function (...args) {
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      fn.apply(this, args);
+    }, wait);
+  };
 }
 
