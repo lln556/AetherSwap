@@ -85,6 +85,47 @@ def _verify_steam_cookies_valid(cookie_str: str, steam_id: str = "") -> Optional
         return None
     finally:
         session.close()
+def steam_cookie_expiry(cookies: str) -> Optional[float]:
+    """Return the ``exp`` epoch of the stored steamLoginSecure token if readable.
+
+    The Steam web session cookie carries a short-lived JWT
+    (``<steamid>%7C%7C<jwt>``, sometimes stored with a literal ``||``).  Its
+    expiry lets the keepalive worker refresh the session shortly before it
+    lapses instead of after market requests start failing.
+    """
+    import base64
+    import json as _json
+    value = ""
+    for part in (cookies or "").split(";"):
+        s = part.strip()
+        if "=" in s:
+            k, _, v = s.partition("=")
+            if k.strip() == "steamLoginSecure":
+                value = v.strip()
+                break
+    if not value:
+        return None
+    token = value
+    for sep in ("||", "%7C%7C", "%7c%7c"):
+        if sep in token:
+            token = token.split(sep, 1)[1]
+            break
+    token = unquote(token)
+    segments = token.split(".")
+    if len(segments) < 2:
+        return None
+    payload = segments[1] + "=" * (-len(segments[1]) % 4)
+    try:
+        data = _json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:
+        return None
+    exp = data.get("exp") if isinstance(data, dict) else None
+    try:
+        return float(exp)
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_steam_profile_via_api(steam_id: str, cookies_str: str) -> tuple:
     if not steam_id:
         return "", ""
@@ -549,7 +590,7 @@ _steam_auth_lock = threading.Lock()
 _steam_auth_inflight = None
 
 
-def _coordinate_steam_login(account: dict) -> tuple:
+def _coordinate_steam_login(account: dict, force: bool = False) -> tuple:
     """Manual verification and automatic relogin share the same in-flight result."""
     global _steam_auth_inflight
     if not account:
@@ -573,7 +614,7 @@ def _coordinate_steam_login(account: dict) -> tuple:
             return False, "busy", "Steam 登录仍在进行，请稍后重试"
     result = (False, "error", "Steam 登录流程异常，请稍后重试")
     try:
-        result = _try_steam_auto_relogin_impl(account)
+        result = _try_steam_auto_relogin_impl(account, force=force)
         return result
     except Exception as exc:
         log(f"steam_auth: 登录流程异常 ({type(exc).__name__})", "warn", category="steam")
@@ -582,9 +623,9 @@ def _coordinate_steam_login(account: dict) -> tuple:
         with _steam_auth_lock:
             future.set_result(result)
             _steam_auth_inflight = None
-def try_steam_auto_relogin() -> tuple:
-    return _coordinate_steam_login(get_current_account())
-def _try_steam_auto_relogin_impl(cur: Optional[dict] = None) -> tuple:
+def try_steam_auto_relogin(force: bool = False) -> tuple:
+    return _coordinate_steam_login(get_current_account(), force=force)
+def _try_steam_auto_relogin_impl(cur: Optional[dict] = None, force: bool = False) -> tuple:
     cur = dict(cur or get_current_account() or {})
     if not cur:
         log("auto_relogin: 未设置当前账号", "warn", category="steam")
@@ -595,7 +636,9 @@ def _try_steam_auto_relogin_impl(cur: Optional[dict] = None) -> tuple:
     set_current(account_id)
     existing = get_steam_credentials()
     existing_cookies = existing.get("cookies") or existing.get("cookie") or ""
-    if existing_cookies and "steamLoginSecure" in existing_cookies:
+    if force and existing_cookies:
+        log("auto_relogin: 强制刷新会话，跳过现有 Cookie 复用检查", "info", category="steam")
+    if not force and existing_cookies and "steamLoginSecure" in existing_cookies:
         expected_steam_id = str(cur.get("steam_id") or "").strip()
         existing_steam_id = steam_id_from_cookie_str(existing_cookies)
         can_reuse_existing = bool(expected_steam_id and existing_steam_id)

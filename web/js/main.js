@@ -143,6 +143,8 @@ async function _refreshStatusOnce() {
       showReloginModal("buff", { reason: "verification_required", error: d.buff_verification_reason });
     } else if (d.buff_auth_expired && _hasAnyAccount) {
       showReloginModal("buff");
+    } else if (d.steam_auth_expired && _hasAnyAccount) {
+      showReloginModal("steam");
     }
     const raw = d.status || "idle";
     const statusText = raw === "running" ? "运行中" : raw === "error" ? "错误" : raw === "stopped" ? "已停止" : "空闲中";

@@ -97,6 +97,7 @@ DEFAULTS = {
         "exchange_rate_refresh_hours": 24,
         "buff_session_keepalive_enabled": False,
         "session_keepalive_hours": 4.0,
+        "steam_session_keepalive_minutes": 30,
         # The web UI records the browser clock zone here.  Keeping both an
         # IANA name and an offset lets containers/Windows hosts without a
         # matching zone database still evaluate schedule windows correctly.

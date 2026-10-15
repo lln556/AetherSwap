@@ -21,6 +21,7 @@ from app.services.workers import (
     receive_worker,
     sync_account_region_worker,
     session_keepalive_worker,
+    steam_session_worker,
 )
 from app.services.task_queue import get_task_queue
 from app.state import log, request_stop
@@ -41,6 +42,7 @@ def _start_background_workers() -> None:
         exchange_rate_worker,
         holdings_report_worker,
         session_keepalive_worker,
+        steam_session_worker,
     ):
         q.submit(fn, name=fn.__name__, max_retries=3, retry_base_delay=5.0)
 @asynccontextmanager
