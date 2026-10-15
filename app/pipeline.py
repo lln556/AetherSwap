@@ -86,6 +86,7 @@ def _is_in_time_window(
 
 
 def _fetch_and_filter_deals(ctx: PipelineContext, cfg: dict, retry_interval: int):
+    get_state().begin_scan()
     ctx.set_status("running", "FETCHING_DEALS", progress_total=0, progress_done=0, progress_item="")
     ctx.log("正在拉取 SteamDT 数据…", "info", category="steamdt")
     try:
@@ -112,6 +113,7 @@ def _fetch_and_filter_deals(ctx: PipelineContext, cfg: dict, retry_interval: int
             nm = (getattr(r, "name", None) or "")[:42]
             ctx.debug(f"  {i+1:2}. {nm} | sell={getattr(r, 'sell_ratio', '')} buy={getattr(r, 'buy_ratio', '')}")
     filtered = filter_iflow_rows(rows, cfg, log_fn=lambda msg, lvl="info": ctx.log(msg, lvl))
+    get_state().set_scan_candidates(len(filtered))
     ctx.log(f"筛选后剩余 {len(filtered)} 条", "info")
     if ctx.verbose and filtered:
         ctx.debug(f"[详细流程] 筛选后共 {len(filtered)} 条，顺序不变（前20条）:")

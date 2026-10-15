@@ -228,6 +228,7 @@ def api_update_transaction(body: TransactionUpdateBody):
 @router.get("/api/stats")
 def api_stats():
     purchases = get_purchases()
+    holdings = [p for p in purchases if float(p.get("sale_price") or 0) <= 0]
     total_purchased = sum(
         float(p.get("price", 0))
         for p in purchases
@@ -253,6 +254,20 @@ def api_stats():
             ratio_count += 1
     discount_ratio = (ratio_sum / ratio_count) if ratio_count > 0 else None
     return {
+        "holding_cost": round(sum(float(p.get("price") or 0) for p in holdings), 2),
+        "holding_count": len(holdings),
+        "sold_count": len(purchases) - len(holdings),
+        "last_purchase_at": max((p.get("at") or 0 for p in purchases), default=None),
+        "recent_purchases": [
+            {
+                "name": p.get("name", ""),
+                "price": p.get("price"),
+                "at": p.get("at"),
+                "sold": float(p.get("sale_price") or 0) > 0,
+                "pending_receipt": bool(p.get("pending_receipt")),
+            }
+            for p in sorted(purchases, key=lambda p: p.get("at") or 0, reverse=True)[:5]
+        ],
         "total_purchased": round(total_purchased, 2),
         "total_sold": round(total_sold, 2),
         "total_profit": round(total_profit, 2),

@@ -5,7 +5,7 @@ function formatTimeHHMM(d = new Date()) {
   return `${hh}:${mm}`;
 }
 async function tabSwitch(name) {
-  console.log("tabSwitch called with name:", name);
+  if (!el("panel-" + name)) return false;
   const activePanel = document.querySelector(".panel.active");
   if (activePanel?.id === "panel-strategies" && name !== "strategies" && typeof window.strategyConfirmLeave === "function") {
     const ok = await window.strategyConfirmLeave();
@@ -15,7 +15,6 @@ async function tabSwitch(name) {
   document.querySelectorAll(".nav-item").forEach((b) => b.classList.remove("active"));
   const panel = el("panel-" + name);
   const btn = document.querySelector(`.nav-menu [data-tab="${name}"]`);
-  console.log("tabSwitch found panel:", panel, "btn:", btn);
   if (panel) {
     panel.classList.add("active");
     panel.style.animation = 'none';
@@ -28,6 +27,7 @@ async function tabSwitch(name) {
     if (text && el("page-title-display")) el("page-title-display").innerText = text;
   }
   if (name === "debug") refreshLog();
+  Dashboard.syncNavigation(name);
   if (name === "inventory") refreshInventory(false);
   if (name === "purchases" || name === "sales" || name === "purchase-history") {
     await refreshTransactions();
@@ -46,7 +46,7 @@ async function tabSwitch(name) {
   return true;
 }
 
-let lastStatus = "idle";
+let lastStatus = null;
 // 是否已配置账号的缓存标志（避免 popup 在未配置时误弹出）
 let _hasAnyAccount = false;
 
@@ -78,6 +78,16 @@ const dashboardStages = {
 
 function renderDashboardProgress(d) {
   const raw = d.status || "idle";
+  if (raw === "stopped" && d.pipeline_active) {
+    el("task-stage").textContent = "正在停止任务";
+    el("task-hint").textContent = "正在结束当前操作，完成清理后可以重新启动。";
+    el("task-state").textContent = "停止中";
+    el("task-state").dataset.state = "waiting";
+    el("task-progress")?.classList.add("hidden");
+    el("task-current-row")?.classList.add("hidden");
+    el("task-next-row")?.classList.add("hidden");
+    return;
+  }
   const step = d.step || "";
   const stage = dashboardStages[step];
   const title = raw === "stopped" ? "任务已停止" : stage?.[0] ||
@@ -126,19 +136,18 @@ function renderDashboardProgress(d) {
   set("task-current-item", item);
   set("task-next-item", clean(d.next_progress_item));
 }
-let statusRefreshInFlight = false;
-async function refreshStatus() {
-  if (statusRefreshInFlight || document.hidden) return;
-  statusRefreshInFlight = true;
-  try {
-    await _refreshStatusOnce();
-  } finally {
-    statusRefreshInFlight = false;
+let statusRefreshPromise = null;
+function refreshStatus() {
+  if (document.hidden) return Promise.resolve();
+  if (!statusRefreshPromise) {
+    statusRefreshPromise = _refreshStatusOnce().finally(() => { statusRefreshPromise = null; });
   }
+  return statusRefreshPromise;
 }
 async function _refreshStatusOnce() {
   try {
-    const d = await fetchJson(API + "/status");
+    const d = await fetchJson(API + "/status", { signal: AbortSignal.timeout(10000) });
+    Dashboard.renderStatus(d);
     if (d.buff_verification_required && _hasAnyAccount) {
       showReloginModal("buff", { reason: "verification_required", error: d.buff_verification_reason });
     } else if (d.buff_auth_expired && _hasAnyAccount) {
@@ -166,15 +175,18 @@ async function _refreshStatusOnce() {
     const lu = el("last-updated");
     if (lu) lu.textContent = formatTimeHHMM();
     if (raw !== lastStatus) {
-      if (raw === "running") toast("已开始运行");
-      if (raw === "stopped") toast("已停止");
-      if (raw === "error") toast("发生错误", d.step || "请看调试日志");
+      if (lastStatus !== null) {
+        if (raw === "running") toast("已开始运行");
+        if (raw === "stopped") toast("已停止");
+        if (raw === "error") toast("发生错误", d.step || "请看调试日志");
+      }
       lastStatus = raw;
     }
   } catch {
+    Dashboard.connection(false);
   }
   try {
-    const d = await fetchJson(API + "/pending_payment");
+    const d = await fetchJson(API + "/pending_payment", { signal: AbortSignal.timeout(10000) });
     const p = d.pending;
     const box = el("pending-payment");
     if (!box) return;
@@ -213,29 +225,10 @@ async function _refreshStatusOnce() {
   } catch {
   }
   try {
-    const s = await fetchJson(API + "/stats");
-    const set = (id, text) => {
-      const e = el(id);
-      if (e) e.textContent = text;
-    };
-    animateValue(el("stat-total-purchased"), s.total_purchased ?? 0);
-    animateValue(el("stat-total-sold"), s.total_sold ?? 0);
-    const diffEl = el("stat-diff");
-    if (s.total_profit != null) {
-      animateValue(diffEl, s.total_profit);
-      diffEl.classList.remove("text-ok", "text-bad");
-      if (s.total_profit > 0) diffEl.classList.add("text-ok");
-      else if (s.total_profit < 0) diffEl.classList.add("text-bad");
-    } else set("stat-diff", "—");
-    const ratioEl = el("stat-ratio");
-    if (s.discount_ratio != null) {
-      animateValue(ratioEl, s.discount_ratio, 400);
-      const targetRatio = 0.85;
-      ratioEl.classList.remove("text-ok", "text-bad");
-      if (s.discount_ratio <= targetRatio) ratioEl.classList.add("text-ok");
-      else ratioEl.classList.add("text-bad");
-    } else set("stat-ratio", "—");
+    const s = await fetchJson(API + "/stats", { signal: AbortSignal.timeout(10000) });
+    Dashboard.renderStats(s);
   } catch {
+    Dashboard.setText("dashboard-stats-status", "统计暂时无法更新，保留上次数据，稍后自动重试。");
   }
 }
 let reloginType = "steam";
@@ -583,7 +576,7 @@ async function copyPayLink() {
   }
 }
 function bindEvents() {
-  document.querySelectorAll(".nav-item").forEach((btn) => {
+  document.querySelectorAll(".nav-menu [data-tab]").forEach((btn) => {
     btn.addEventListener("click", () => tabSwitch(btn.dataset.tab));
   });
   el("btn-quit")?.addEventListener("click", async () => {
@@ -986,6 +979,7 @@ async function init() {
   }
   if (typeof _updateScrollBtn === "function") _updateScrollBtn();
   bindEvents();
+  Dashboard.bind();
   setupScrollToTop();
   setupKeyboardShortcuts();
   setupButtonInteractions();

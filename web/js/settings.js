@@ -174,9 +174,9 @@ async function loadConfig() {
   const gUiScale = el("cfg-ui_scale");
   if (gUiScale) {
     gUiScale.value = sys.ui_scale || "0.7";
-    document.documentElement.style.zoom = sys.ui_scale || "0.7";
+    Dashboard.applyScale();
     gUiScale.onchange = (e) => {
-      document.documentElement.style.zoom = e.target.value;
+      Dashboard.applyScale();
     };
   }
   const sd = c.steam_deals || {};
@@ -338,6 +338,9 @@ async function saveConfigFromForm() {
   setupInventoryAutoRefresh();
 }
 async function startPipeline() {
+  if (Dashboard.actionPending || el("btn-start")?.disabled) return;
+  Dashboard.actionPending = true;
+  Dashboard.renderButtons();
   try {
     await saveConfigFromForm();
     const d = await fetchJson(API + "/config");
@@ -394,15 +397,26 @@ async function startPipeline() {
     refreshStatus();
   } catch (e) {
     toast("启动失败", e.message || "请检查配置与后端日志");
+  } finally {
+    Dashboard.actionPending = false;
+    await refreshStatus();
+    Dashboard.renderButtons();
   }
 }
 async function stopPipeline() {
+  if (Dashboard.actionPending || el("btn-stop")?.disabled) return;
+  Dashboard.actionPending = true;
+  Dashboard.renderButtons();
   try {
     await fetchJson(API + "/pipeline/stop", { method: "POST" });
     toast("停止请求已发送");
     refreshStatus();
   } catch (e) {
     toast("停止失败", e.message || "请稍后再试");
+  } finally {
+    Dashboard.actionPending = false;
+    await refreshStatus();
+    Dashboard.renderButtons();
   }
 }
 async function confirmPayment(ok) {

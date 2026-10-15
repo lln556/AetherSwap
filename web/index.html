@@ -3,13 +3,14 @@
 
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>AetherSwap</title>
   <link rel="stylesheet" href="/css/variables.css" />
   <link rel="stylesheet" href="/css/base.css" />
   <link rel="stylesheet" href="/css/layout.css?v=2" />
   <link rel="stylesheet" href="/css/components.css?v=market-coverage-1" />
   <link rel="stylesheet" href="/css/animations.css" />
+  <link rel="stylesheet" href="/css/dashboard.css?v=1" />
   <style>
     /* Nav badge */
     .nav-badge {
@@ -242,6 +243,13 @@
 </head>
 
 <body>
+  <div id="mobile-more-overlay" class="mobile-more-overlay hidden">
+    <section id="mobile-more-menu" class="mobile-more-sheet" role="dialog" aria-modal="true" aria-labelledby="mobile-more-title" tabindex="-1">
+      <div class="dashboard-card-head"><h2 id="mobile-more-title">更多功能</h2><button type="button" id="btn-nav-close" class="btn btn-sm btn-secondary" aria-label="关闭更多功能">关闭</button></div>
+      <div id="mobile-more-links" class="mobile-more-links"></div>
+      <button type="button" id="btn-mobile-theme" class="btn btn-secondary">切换外观</button>
+    </section>
+  </div>
   <div class="app-container">
     <aside class="sidebar">
       <div class="brand">
@@ -383,6 +391,10 @@
           </svg>
           <span>Steam 赠礼</span>
         </button>
+        <button type="button" class="nav-item mobile-more" id="btn-nav-more" aria-expanded="false" aria-controls="mobile-more-menu">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+          <span>更多</span>
+        </button>
       </nav>
 
       <div class="sidebar-footer">
@@ -421,29 +433,27 @@
       </header>
 
       <section id="panel-auto" class="panel active">
+        <div id="dashboard-connection" class="dashboard-notice hidden" role="status">连接已中断，正在重试。以下保留上次数据。</div>
         <div class="stats-grid">
           <div class="stat-card primary">
-            <div class="stat-label">总出售金额</div>
-            <div class="stat-value" id="stat-total-sold">0.00</div>
-            <div class="stat-trend positive">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>
-                <polyline points="17 6 23 6 23 12"></polyline>
-              </svg>
-              <span>营收</span>
-            </div>
+            <div class="stat-label">持仓成本</div>
+            <div class="stat-value" id="stat-holding-cost">—</div>
+            <div class="dashboard-stat-note" id="stat-holding-count">正在加载持仓</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">已购买投入</div>
-            <div class="stat-value" id="stat-total-purchased">0.00</div>
+            <div class="stat-label">已售成本</div>
+            <div class="stat-value" id="stat-total-purchased">—</div>
+            <div class="dashboard-stat-note" id="stat-sold-count">仅统计已售出物品</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">总收益</div>
-            <div class="stat-value" id="stat-diff">0.00</div>
+            <div class="stat-label">已实现收益</div>
+            <div class="stat-value" id="stat-diff">—</div>
+            <div class="dashboard-stat-note">税后出售收入 − 已售成本</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">实际折扣比率</div>
-            <div class="stat-value" id="stat-ratio">0.0000</div>
+            <div class="stat-label">已售折扣比率</div>
+            <div class="stat-value" id="stat-ratio">—</div>
+            <div class="dashboard-stat-note">已售物品成本 / 税后收入的均值</div>
           </div>
         </div>
 
@@ -477,10 +487,9 @@
             </div>
           </div>
           <div class="control-actions">
-            <button id="btn-quit" class="btn btn-danger-outline">退出程序</button>
-            <button id="btn-stop" class="btn btn-secondary">停止运行</button>
+            <button id="btn-stop" class="btn btn-secondary" disabled>停止运行</button>
             <span class="btn-hover-anchor">
-              <button id="btn-start" class="btn btn-primary">
+              <button id="btn-start" class="btn btn-primary" disabled>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
                   <polygon points="5 3 19 12 5 21 5 3"></polygon>
                 </svg>
@@ -513,6 +522,34 @@
             <button id="btn-fail" class="btn btn-sm btn-ghost">放弃</button>
             <button id="btn-paid" class="btn btn-sm btn-primary">已完成支付</button>
           </div>
+        </div>
+        <div class="dashboard-grid">
+          <section class="dashboard-card" aria-labelledby="scan-title">
+            <div class="dashboard-card-head"><h2 id="scan-title">本轮筛选</h2><span id="scan-started" class="dashboard-meta">等待扫描</span></div>
+            <div class="scan-metrics">
+              <div><strong id="scan-candidates">—</strong><span>候选物品</span></div>
+              <div><strong id="scan-checked">—</strong><span>已完成检查</span></div>
+              <div><strong id="scan-passed">—</strong><span>通过筛选</span></div>
+            </div>
+            <p id="scan-summary-hint" class="dashboard-meta">通过筛选后仍需核对下单条件，不代表已购买。</p>
+            <div id="scan-reasons" class="scan-reasons"></div>
+            <button type="button" class="dashboard-link" data-dashboard-tab="debug">查看运行日志 →</button>
+          </section>
+          <section class="dashboard-card" aria-labelledby="session-title">
+            <div class="dashboard-card-head"><h2 id="session-title">账户与连接</h2><button type="button" class="dashboard-link" data-dashboard-tab="accounts">管理账号 →</button></div>
+            <dl class="dashboard-health">
+              <div><dt>Steam 会话</dt><dd id="health-steam">正在获取</dd></div>
+              <div><dt>BUFF 登录</dt><dd id="health-buff">正在获取</dd></div>
+              <div><dt>结算地区</dt><dd id="health-region">正在获取</dd></div>
+              <div><dt>最近买入</dt><dd id="dashboard-last-purchase">正在加载</dd></div>
+            </dl>
+            <p id="health-session-note" class="dashboard-meta">正在获取会话保活配置。</p>
+          </section>
+          <section class="dashboard-card dashboard-recent" aria-labelledby="recent-title">
+            <div class="dashboard-card-head"><h2 id="recent-title">最近买入</h2><button type="button" class="dashboard-link" data-dashboard-tab="purchase-history">全部记录 →</button></div>
+            <div id="dashboard-recent-list" class="dashboard-recent-list"><p class="dashboard-meta">正在加载记录…</p></div>
+            <p id="dashboard-stats-status" class="dashboard-meta" role="status"></p>
+          </section>
         </div>
       </section>
 
@@ -771,13 +808,18 @@
                   <p id="strategy-editor-desc">策略步骤会在这里显示。</p>
                 </div>
                 <div class="strategy-editor-actions">
-                  <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-copy">复制</button>
-                  <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-export">导出</button>
                   <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-simulate">模拟</button>
-                  <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-reset-defaults">恢复默认</button>
-                  <button type="button" class="btn btn-sm btn-primary" id="strategy-btn-save">保存</button>
+                  <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-save">保存</button>
                   <button type="button" class="btn btn-sm btn-primary" id="strategy-btn-activate">启用</button>
-                  <button type="button" class="btn btn-sm btn-danger-outline" id="strategy-btn-delete">删除</button>
+                  <details class="strategy-more-actions">
+                    <summary class="btn btn-sm btn-secondary">更多</summary>
+                    <div class="strategy-more-menu">
+                      <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-copy">复制策略</button>
+                      <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-export">导出策略</button>
+                      <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-reset-defaults">恢复默认</button>
+                      <button type="button" class="btn btn-sm btn-danger-outline" id="strategy-btn-delete">删除策略</button>
+                    </div>
+                  </details>
                 </div>
               </div>
               <div id="strategy-steps" class="strategy-steps"></div>
@@ -808,6 +850,10 @@
 
       <section id="panel-settings" class="panel">
         <div class="settings-layout">
+          <div class="settings-group system-actions">
+            <div><h2>程序控制</h2><p class="dashboard-meta">停止任务只暂停购买；退出程序会同时停止所有后台任务。</p></div>
+            <button id="btn-quit" class="btn btn-danger-outline">退出程序</button>
+          </div>
           <div class="settings-group">
             <h2>SteamDT 数据源</h2>
             <div class="form-grid">
@@ -1802,7 +1848,7 @@
     </div>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <script src="/vendor/qrcode.min.js?v=1"></script>
   <script src="/js/utils.js?v=4"></script>
   <script src="/js/theme.js"></script>
   <script src="/js/accounts.js"></script>
@@ -1812,6 +1858,7 @@
   <script src="/js/settings.js?v=2"></script>
   <script src="/js/proxy.js"></script>
   <script src="/js/strategies.js"></script>
+  <script src="/js/dashboard.js?v=1"></script>
   <script src="/js/main.js?v=6"></script>
   <script src="/js/gift.js"></script>
   <script src="/js/steamDeals.js"></script>

@@ -12,3 +12,4 @@ typing_extensions>=4.15.0
 sqlmodel>=0.0.14
 steampy>=0.8.0
 Pillow>=10.0.0
+tzdata>=2025.2

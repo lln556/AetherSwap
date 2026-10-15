@@ -134,6 +134,11 @@ def test_early_discount_precheck(
     monkeypatch.setattr(
         steps, "set_status", lambda *_args, **_kwargs: None
     )
+    from app.state import State
+    state = State()
+    state.begin_scan()
+    state.set_scan_candidates(1)
+    monkeypatch.setattr(steps, "get_state", lambda: state)
 
     selected, failed = steps.pick_stable_item(
         filtered=[item],
@@ -156,3 +161,8 @@ def test_early_discount_precheck(
 
     # 不允许访问真实 Buff。
     assert calls["buff"] == 0
+    summary = state.get_status()["scan_summary"]
+    assert summary["checked"] == 1
+    assert summary["passed"] == 0
+    expected_reason = "history_data" if expected_history_calls else "discount"
+    assert summary["reasons"] == {expected_reason: 1}

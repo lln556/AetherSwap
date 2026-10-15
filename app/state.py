@@ -63,6 +63,24 @@ class State:
         self._progress_done = 0
         self._progress_item = ""
         self._next_progress_item = ""
+        self._scan_started_at = None
+        self._scan_candidates = 0
+        self._scan_results = {}
+
+    def begin_scan(self) -> None:
+        with self._lock:
+            self._scan_started_at = time.time()
+            self._scan_candidates = 0
+            self._scan_results = {}
+
+    def set_scan_candidates(self, count: int) -> None:
+        with self._lock:
+            self._scan_candidates = count
+
+    def record_scan_result(self, key: str, outcome: str) -> None:
+        with self._lock:
+            if self._scan_started_at is not None:
+                self._scan_results[key] = outcome
 
     def append_purchase(self, p: dict) -> None:
         db_append_purchase(p)
@@ -118,6 +136,16 @@ class State:
                 "progress_pct": round(pct, 1),
                 "progress_item": self._progress_item,
                 "next_progress_item": self._next_progress_item,
+                "scan_summary": {
+                    "started_at": self._scan_started_at,
+                    "candidates": self._scan_candidates,
+                    "checked": len(self._scan_results),
+                    "passed": sum(v == "passed" for v in self._scan_results.values()),
+                    "reasons": {
+                        reason: sum(v == reason for v in self._scan_results.values())
+                        for reason in set(self._scan_results.values()) - {"passed"}
+                    },
+                },
             }
     def is_steam_background_allowed(self) -> bool:
         # pipeline在跑但处于等待类步骤时，后台任务可以插队跑

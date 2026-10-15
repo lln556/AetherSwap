@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from app.services.iflow_client import fetch_iflow_rows as _fetch_iflow_rows
-from app.state import get_purchases, set_status
+from app.state import get_purchases, get_state, set_status
 from app.strategy_engine import evaluate_strategy_runtime_modules, is_strategy_module_enabled
 from app.services.steam_client import SteamClient
 from app.services.analysis_client import StabilityAnalyzer
@@ -802,6 +802,8 @@ def pick_stable_item(
             jittered_sleep(request_interval)
         name = item.get("name", "")
         market_hash_name = item.get("steam_market_name") or name
+        def record_result(outcome):
+            get_state().record_scan_result(str(gid or market_hash_name), outcome)
         # 带饰品名称前缀的日志包装，方便追踪每条日志对应哪个饰品
         _short = (name[:30] + "…") if len(name) > 30 else name
         item_log = (lambda msg, level, _n=_short: log_fn(f"[{_n}] {msg}", level)) if log_fn else None
@@ -837,6 +839,7 @@ def pick_stable_item(
                 market_hash_name, config, app_id=730, return_error=True
             )
             if not steam_sell_data:
+                record_result("market_data")
                 if item_log:
                     item_log(f"[稳定性] 预检未通过: 无法获取 Steam 卖单信息：{steam_error or '未知原因'}", "warn")
                 if gid:
@@ -854,6 +857,7 @@ def pick_stable_item(
             if not _check_sell_pressure_precheck(
                 item, steam_sell_data, sell_pressure_threshold, pipeline_cfg, item_log
             ):
+                record_result("sell_pressure")
                 if gid:
                     stability_failed.add(gid)
                 if failure_delay > 0:
@@ -874,6 +878,7 @@ def pick_stable_item(
                 raw_ratio = (plan_price / smart_price) * STEAM_FEE_FACTOR
 
                 if raw_ratio >= float(max_discount):
+                    record_result("discount")
                     if item_log:
                         item_log(
                             f"[稳定性] 原始折扣预检未通过: "
@@ -901,6 +906,7 @@ def pick_stable_item(
             if not _check_max_discount_precheck(
                 item, gid, smart_price, est_ratio, ref_price_est, plan_price, max_discount, item_log
             ):
+                record_result("discount")
                 if gid:
                     stability_failed.add(gid)
 
@@ -923,6 +929,7 @@ def pick_stable_item(
                 ref_price_est=ref_price_est,
                 log_fn=item_log,
             ):
+                record_result("custom_module")
                 if gid:
                     stability_failed.add(gid)
                 continue
@@ -936,11 +943,13 @@ def pick_stable_item(
                 max_discount,
                 item_log,
             ):
+                record_result("buff_precheck")
                 if gid:
                     stability_failed.add(gid)
                 continue
             if item_log:
                 item_log("[稳定性] 历史稳定性模块未启用，跳过历史分析，选定本件", "info")
+            record_result("passed")
             return item, stability_failed
 
         # 6. 拉历史K线 + 稳定性分析
@@ -954,6 +963,7 @@ def pick_stable_item(
             history = raw if isinstance(raw, list) else None
             currency = None
         if not history:
+            record_result("history_data")
             if gid:
                 stability_failed.add(gid)
             if item_log:
@@ -996,6 +1006,7 @@ def pick_stable_item(
             use_vwap=bool(stability_cfg.get("use_vwap", True)),
         )
         if smart_price is not None and not report.get("valid"):
+            record_result("history_data")
             if gid:
                 stability_failed.add(gid)
             if item_log:
@@ -1005,6 +1016,7 @@ def pick_stable_item(
             continue
 
         if not report.get("is_stable"):
+            record_result("stability")
             _log_stability_rejection(report, stability_cfg, smart_price, item_log)
             if gid:
                 stability_failed.add(gid)
@@ -1025,6 +1037,7 @@ def pick_stable_item(
             report=report,
             log_fn=item_log,
         ):
+            record_result("custom_module")
             if gid:
                 stability_failed.add(gid)
             if failure_delay > 0:
@@ -1040,6 +1053,7 @@ def pick_stable_item(
             max_discount,
             item_log,
         ):
+            record_result("buff_precheck")
             if gid:
                 stability_failed.add(gid)
             continue
@@ -1054,6 +1068,7 @@ def pick_stable_item(
             bb_upper = report.get("bb_upper")
             bb_str = f" BB+={bb_upper:.2f}" if bb_upper is not None else ""
             item_log(f"[稳定性] ✓ 通过 status={st} cv={report.get('cv',0):.3f} R2={r2:.3f} 均价={report.get('avg',0):.2f} slope={sl:.4f}{ma_str}{bb_str}{smart_str}{pp_str}，选定本件", "info")
+        record_result("passed")
         return item, stability_failed
     return None, stability_failed
 def _do_payment_notify_and_wait(

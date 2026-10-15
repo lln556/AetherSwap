@@ -11,7 +11,7 @@ from app.state import (
     get_status,
     set_pending_payment,
 )
-from config import get_buff
+from config import get_buff, get_steam
 from pydantic import BaseModel
 from utils.time import (
     now_in_configured_timezone,
@@ -23,9 +23,22 @@ class ConfirmBody(BaseModel):
     ok: bool
 @router.get("/api/status")
 def api_status():
+    from app.accounts import get_current_account
+    from app.pipeline import is_pipeline_running
+    from app.services.steam_auth import steam_cookie_expiry
+
     st = get_status()
     buff_creds = get_buff()
     st["buff_no_cookie"] = not bool((buff_creds.get("cookies") or "").strip())
+    st["pipeline_active"] = is_pipeline_running()
+    st["steam_session_expires_at"] = steam_cookie_expiry((get_steam() or {}).get("cookies") or "")
+    system_config = load_app_config_validated().get("system") or {}
+    st["steam_keepalive_enabled"] = float(system_config.get("steam_session_keepalive_minutes", 30) or 0) > 0
+    account = get_current_account() or {}
+    st["account_region"] = {
+        key: account.get(key)
+        for key in ("currency_code", "region_code", "region_check_ok")
+    }
     return st
 
 @router.get("/api/log")
