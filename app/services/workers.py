@@ -16,6 +16,7 @@ from app.state import (
     set_buff_auth_expired,
     set_buff_verification_required,
     set_inventory,
+    set_steam_auth_expired,
     update_purchase,
     update_purchase_by_id,
 )
@@ -534,4 +535,64 @@ def session_keepalive_worker() -> None:
             log("keepalive: 本轮 Buff 后台会话保活已完成", "info", category="keepalive")
         except Exception as e:
             log(f"keepalive: worker 异常 {e}, 15 分钟后重试", "error", category="keepalive")
+            time.sleep(900)
+
+
+def steam_session_worker() -> None:
+    """Keep the Steam web session fresh so market requests never lapse silently.
+
+    The stored ``steamLoginSecure`` token is short-lived (~24h) and ordinary
+    market requests do not renew it, so once it expires every history request is
+    rejected and buying stops without any visible error.  This worker reads the
+    token expiry and re-runs the password login shortly before it lapses (and
+    heals an already-expired session).  Failures are surfaced through
+    ``steam_auth_expired`` so the UI can ask for manual intervention.
+    """
+    from app.services.steam_auth import steam_cookie_expiry, try_steam_auto_relogin
+
+    refresh_window_seconds = 3600.0
+    failure_backoff_seconds = 7200.0
+    while True:
+        try:
+            cfg = load_app_config_validated()
+            minutes = float((cfg.get("system") or {}).get("steam_session_keepalive_minutes", 30) or 0)
+            if minutes <= 0:
+                time.sleep(300)
+                continue
+            interval = max(60.0, minutes * 60.0)
+            acc = get_current_account()
+            cookies = (get_steam_credentials() or {}).get("cookies") or ""
+            if not acc or not cookies.strip():
+                set_steam_auth_expired(False)
+                time.sleep(interval)
+                continue
+            exp = steam_cookie_expiry(cookies)
+            now = time.time()
+            if exp is not None and exp - now > refresh_window_seconds:
+                set_steam_auth_expired(False)
+                time.sleep(interval)
+                continue
+            force = exp is not None
+            if force and exp > now:
+                log(
+                    f"steam_keepalive: 登录令牌约 {max(1.0, (exp - now) / 60):.0f} 分钟后到期，提前续期",
+                    "info",
+                    category="steam",
+                )
+            ok, status, msg = try_steam_auto_relogin(force=force)
+            if ok:
+                set_steam_auth_expired(False)
+                if status != "session_valid":
+                    log(f"steam_keepalive: Steam 会话已刷新（{msg}）", "info", category="steam")
+                time.sleep(interval)
+                continue
+            if status == "network_error":
+                log(f"steam_keepalive: 暂无法确认会话状态，下轮重试（{msg}）", "debug", category="steam")
+                time.sleep(interval)
+                continue
+            set_steam_auth_expired(True)
+            log(f"steam_keepalive: 自动重新登录失败（{status}）：{msg}，已标记 Steam 登录失效", "warn", category="steam")
+            time.sleep(failure_backoff_seconds)
+        except Exception as e:
+            log(f"steam_keepalive: worker 异常 {e}，15 分钟后重试", "error", category="steam")
             time.sleep(900)

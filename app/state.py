@@ -35,6 +35,7 @@ class State:
     _plan: List[Any]
     _inventory: List[Any]
     _buff_auth_expired: bool
+    _steam_auth_expired: bool
     _buff_verification_required: bool
     _buff_verification_reason: str
     _progress_total: int
@@ -55,6 +56,7 @@ class State:
         self._plan = []
         self._inventory = []
         self._buff_auth_expired = False
+        self._steam_auth_expired = False
         self._buff_verification_required = False
         self._buff_verification_reason = ""
         self._progress_total = 0
@@ -108,6 +110,7 @@ class State:
                 "status": self._status,
                 "step": self._step,
                 "buff_auth_expired": self._buff_auth_expired,
+                "steam_auth_expired": self._steam_auth_expired,
                 "buff_verification_required": self._buff_verification_required,
                 "buff_verification_reason": self._buff_verification_reason,
                 "progress_total": self._progress_total,
@@ -127,6 +130,9 @@ class State:
             if value:
                 self._buff_verification_required = False
                 self._buff_verification_reason = ""
+    def set_steam_auth_expired(self, value: bool) -> None:
+        with self._lock:
+            self._steam_auth_expired = value
     def set_buff_verification_required(self, value: bool, reason: str = "") -> None:
         with self._lock:
             self._buff_verification_required = value
@@ -254,6 +260,8 @@ def is_steam_background_allowed() -> bool:
     return get_state().is_steam_background_allowed()
 def set_buff_auth_expired(value: bool) -> None:
     get_state().set_buff_auth_expired(value)
+def set_steam_auth_expired(value: bool) -> None:
+    get_state().set_steam_auth_expired(value)
 def set_buff_verification_required(value: bool, reason: str = "") -> None:
     get_state().set_buff_verification_required(value, reason=reason)
 def log(msg: str, level: str = "info", category: str = "", flow_id: str = "") -> None:
