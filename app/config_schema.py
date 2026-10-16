@@ -18,6 +18,7 @@ DEFAULTS = {
         "pay_method": "alipay",
         "game": "csgo",
         "price_tolerance": 0.5,
+        "auto_send_buyer_offer": False,
     },
     "stability": {
         "days": 30,

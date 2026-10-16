@@ -46,6 +46,9 @@ config/item_meta_cache.json
 config/.item-meta-cache.*.tmp
 config/transactions.json
 config/transactions.json.bak
+config/buff_buyer_offers.json
+config/buff_buyer_offers.lock
+config/.buff_buyer_offers.json.*.tmp
 log/
 .agreed_disclaimer
 

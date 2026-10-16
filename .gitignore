@@ -25,6 +25,9 @@ config/.buff_checkout_guard.json.*.tmp
 config/.credentials.json.*.tmp
 config/backup-*/
 config/buff_offer_rejections.json
+config/buff_buyer_offers.json
+config/buff_buyer_offers.lock
+config/.buff_buyer_offers.json.*.tmp
 config/.buff-offer-*
 config/buff_receipt_archive.json
 config/.receipt-archive-*

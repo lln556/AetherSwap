@@ -23,7 +23,10 @@ from app.services.buff_checkout_guard import (
     update_checkout,
 )
 from app.services.buff_auth import get_buff_auth_lock
-from app.services.buff_offer_support import filter_automatable_sellers, remember_app_only_seller
+from app.services.buff_offer_support import (
+    buyer_offer_available, filter_automatable_sellers, remember_app_only_seller,
+    try_send_buyer_offer,
+)
 from app.notify import send_pushplus, build_payment_notify_content, wait_email_command
 from utils.delay import jittered_sleep
 
@@ -1365,13 +1368,23 @@ def _do_batch_wait_finalize_and_append(
     ]
     if bill_order_ids:
         try:
-            if buff_client.ask_seller_to_send(bill_order_ids, game_buff) and log_fn:
-                log_fn(
-                    f"[Buff]   → 已提醒 {len(set(bill_order_ids))} 笔订单的卖家发货，请留意 Steam 报价",
-                    "info",
-                )
-            elif log_fn:
-                log_fn("[Buff]   → 提醒卖家发货未成功（可稍后在订单页手动催发货）", "warn")
+            if buff_client.ask_seller_to_send(bill_order_ids, game_buff):
+                if log_fn:
+                    log_fn(
+                        f"[Buff]   → 已提醒 {len(set(bill_order_ids))} 笔订单的卖家发货，请留意 Steam 报价",
+                        "info",
+                    )
+            else:
+                error_lookup = getattr(buff_client, "get_last_offer_error", None)
+                for match in matched:
+                    bill_id = str(match.get("bill_order_id") or "")
+                    reason = error_lookup(bill_id) if callable(error_lookup) else ""
+                    try_send_buyer_offer(buff_client, {
+                        "buff_order_id": bill_id, "goods_id": goods_id,
+                        "price": match.get("price"), "name": saved_name,
+                    }, config, reason, log_fn)
+                if log_fn:
+                    log_fn("[Buff]   → 卖家发货请求未全部成功，已检查买家自动报价条件", "warn")
         except (BuffAuthExpired, BuffRequestBlocked) as exc:
             resolve_checkout(
                 "batch_purchase_recorded_shipping_prompt_blocked",
@@ -1494,12 +1507,20 @@ def _do_wait_payment_and_append(
         order_id=str(order_id),
         reason="订单已写入本地交易记录",
     )
+    buyer_offer_submitted = False
     try:
         shipping_ok = shipping_verified or (not defer_offer and buff_client.ask_seller_to_send(order_id, game_buff))
-        if shipping_ok and log_fn:
+        if not shipping_ok:
+            error_lookup = getattr(buff_client, "get_last_offer_error", None)
+            reason = (error_lookup(order_id) if callable(error_lookup) else "") or ""
+            if defer_offer and not reason:
+                reason = "等待你发起报价"
+            buyer_offer_submitted = try_send_buyer_offer(buff_client, base_rec, config, reason, log_fn)
+            shipping_ok = buyer_offer_submitted
+        if shipping_ok and log_fn and not buyer_offer_submitted:
             log_fn("[Buff]   → 已提醒卖家发货，请留意 Steam 报价", "info")
-        elif log_fn:
-            log_fn("[Buff]   → 提醒卖家发货未成功（可稍后在订单页手动催发货）", "warn")
+        elif not shipping_ok and log_fn:
+            log_fn("[Buff]   → 发货或报价请求未完成，请到 BUFF 订单页核对", "warn")
     except (BuffAuthExpired, BuffRequestBlocked) as exc:
         resolve_checkout(
             "single_purchase_recorded_shipping_prompt_blocked",
@@ -1534,7 +1555,8 @@ def _do_wait_payment_and_append(
                         stage="manual_offer_required", order_id=str(order_id),
                         reason=reason)
         try:
-            remember_app_only_seller(seller_id, order_id, reason)
+            remember_app_only_seller(seller_id, order_id, reason,
+                                     buyer_offer_failed=buyer_offer_available(config))
             token = str((config.get("notify") or {}).get("pushplus_token") or "").strip()
             if token:
                 send_pushplus(token, "BUFF 已付款：需要立即发起报价",
@@ -1785,7 +1807,7 @@ def lock_and_confirm_payment(
                     f"[Buff]   → 已刷新卖单快照 → 最低价={refreshed_price:.2f} 同价数量={refreshed_count}",
                     "info",
                 )
-        orders = filter_automatable_sellers(orders)
+        orders = filter_automatable_sellers(orders, allow_buyer_offer=buyer_offer_available(config))
         lowest_price, count_at_lowest = count_lowest_price_orders(orders)
         if lowest_price <= 0 or count_at_lowest <= 0:
             if log_fn:

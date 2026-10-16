@@ -137,6 +137,18 @@ def reconcile_receipts_once(buff_client, scan_inventory=scan_cs2_inventory):
             (cfg.get("buff") or {}).get("game", "csgo"),
             [p.get("buff_order_id") for p in pending if p.get("buff_order_id")],
         )
+        # An older paid order may have been interrupted before the immediate
+        # fallback. Its own durable send claim still prevents any replay.
+        from app.services.buff_offer_support import try_send_buyer_offer
+        by_order = defaultdict(list)
+        for order in orders:
+            by_order[str(order.get("id") or "")].append(order)
+        for purchase in pending:
+            matches = by_order.get(str(purchase.get("buff_order_id") or ""), [])
+            if (len(matches) == 1 and matches[0].get("state_text") == "等待你发起报价"
+                    and matches[0].get("has_sent_offer") is not True):
+                try_send_buyer_offer(buff_client, purchase, cfg, "等待你发起报价",
+                                     lambda msg, level: log(msg, level, category="receive"))
         inventory, inventory_error = None, ""
         if any(x.get("state") == "SUCCESS" for x in orders):
             ok, items, inventory_error = scan_inventory()

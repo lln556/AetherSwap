@@ -246,6 +246,14 @@ class BuffClient:
         return self._run(lambda buyer: str(
             getattr(buyer, "last_offer_errors", {}).get(str(order_id)) or ""))
 
+    def send_buyer_offer(
+        self, game: str, order_id: str, goods_id: int, price: str,
+        steam_cookies: str, steam_id: str, market_hash_name: str,
+    ) -> dict:
+        return self._run(lambda buyer: buyer.send_buyer_offer(
+            game, order_id, goods_id, price, steam_cookies, steam_id, market_hash_name,
+        ))
+
     def prepare_single_buy(
         self,
         game: str,

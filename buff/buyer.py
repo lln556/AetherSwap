@@ -193,6 +193,7 @@ API_BATCH_CREATE = "https://buff.163.com/api/market/goods/batch_buy/create"
 API_BATCH_PAGE_PAY = "https://buff.163.com/api/market/goods/batch_buy/page_pay"
 API_BATCH_CHECK_STATE = "https://buff.163.com/api/market/goods/batch_buy/check_state"
 API_ASK_SELLER_SEND = "https://buff.163.com/api/market/bill_order/ask_seller_to_send_offer"
+API_BUYER_SEND_OFFER = "https://buff.163.com/api/market/manual_plus/buyer_send_offer"
 API_STEAM_TRADE = "https://buff.163.com/api/market/steam_trade"
 def _parse_cookies(cookie_str: str) -> dict:
     out = {}
@@ -1344,6 +1345,93 @@ class BuffBuyer:
                                          method="POST", url=API_BUY)
         context["completed"].add(bill_id)
         return bill_id
+    def send_buyer_offer(
+        self, game: str, order_id: str, goods_id: int, price: str,
+        steam_cookies: str, steam_id: str, market_hash_name: str,
+    ) -> dict:
+        """Submit one verified paid purchase through BUFF's official service.
+
+        No caller-supplied trade URL or asset list is sent: BUFF derives both
+        from its order. A durable claim prevents replays even after a timeout
+        or a process restart. ``submitted`` is an acknowledgement, not receipt.
+        """
+        from .buyer_offer import (
+            buyer_session, claim_buyer_offer, encrypt_buyer_info, finish_buyer_offer,
+        )
+
+        rejected = {"submitted": False, "reason": "订单尚不满足自动报价条件"}
+        order_id = _normalize_server_identifier(order_id)
+        if not order_id or game != "csgo" or not market_hash_name:
+            return rejected
+        try:
+            cookie = buyer_session(steam_cookies, steam_id)
+        except ValueError:
+            return {"submitted": False, "reason": "Steam 会话缺失或账号不匹配"}
+        orders = self.get_purchase_history_orders(game, [order_id])
+        matches = [o for o in orders if str(o.get("id")) == order_id]
+        if len(matches) != 1:
+            return rejected
+        order = matches[0]
+        try:
+            actual, expected = Decimal(str(order.get("price"))), Decimal(str(price))
+            paid_at = float(order.get("buyer_pay_time") or 0)
+            created_at = float(order.get("created_at") or 0)
+            remaining = float(order.get("buyer_send_offer_timeout", 0))
+            state = order.get("state")
+            if (any(isinstance(order.get(k), bool) for k in (
+                    "goods_id", "buyer_pay_time", "created_at", "buyer_send_offer_timeout"))
+                    or int(order.get("goods_id")) != goods_id
+                    or not actual.is_finite() or not expected.is_finite()
+                    or actual != expected or expected <= 0
+                    or not math.isfinite(paid_at) or not math.isfinite(created_at)
+                    or not 0 < created_at <= paid_at <= time.time() + 60
+                    or order.get("game") != game
+                    or str(order.get("buyer_steamid")) != steam_id
+                    or order.get("_market_hash_name") != market_hash_name
+                    or order.get("error_text")
+                    or state not in {"PAYING", "TO_DELIVER", "DELIVERING", "SUCCESS"}):
+                return rejected
+            if (order.get("has_sent_offer") is True or order.get("tradeofferid")
+                    or order.get("is_seller_asked_to_send_offer") is True
+                    or state in {"DELIVERING", "SUCCESS"}):
+                return {"submitted": True, "already_started": True}
+            pay_remaining = float(order.get("pay_expire_timeout", 0))
+            if (not math.isfinite(remaining) or remaining <= 0
+                    or (state == "PAYING" and (not math.isfinite(pay_remaining) or pay_remaining >= 0))):
+                return rejected
+        except (ValueError, TypeError, ArithmeticError):
+            return rejected
+        # Encrypt before claiming: a missing dependency never consumes an order
+        # attempt, nor causes plaintext credentials to leave the machine.
+        encrypted = encrypt_buyer_info(cookie)
+        if not claim_buyer_offer(order_id, steam_id):
+            return {"submitted": False, "reason": "该订单已尝试发起买家报价，等待对账，禁止重复提交"}
+        try:
+            response = self._make_request(
+                "POST", API_BUYER_SEND_OFFER,
+                headers={"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"},
+                data=json.dumps({"buyer_info": encrypted, "bill_orders": [order_id]}),
+                allow_redirects=False,
+            )
+        except (BuffAuthExpired, BuffRequestBlocked, BuffWriteResultUnknown):
+            raise
+        except Exception as exc:
+            raise BuffWriteResultUnknown(
+                "买家发报价请求结果未知，禁止自动重试", method="POST", url=API_BUYER_SEND_OFFER,
+            ) from exc
+        if response.get("code") != "OK":
+            finish_buyer_offer(order_id, "rejected")
+            return {"submitted": False, "reason": "BUFF 未接受买家报价请求，请在 App 核对订单"}
+        statuses = response.get("data")
+        if isinstance(statuses, dict) and order_id in statuses:
+            status = statuses[order_id]
+            if status != "OK":
+                # A per-order rejection overrides the outer OK envelope.
+                finish_buyer_offer(order_id, "rejected")
+                return {"submitted": False, "reason": "BUFF 返回该订单报价未完成，请在 App 核对"}
+        finish_buyer_offer(order_id, "submitted")
+        return {"submitted": True, "already_started": False}
+
     def ask_seller_to_send(self, bill_order_id_or_ids, game: str = "csgo") -> bool:
         self.last_offer_errors = {}
         if isinstance(bill_order_id_or_ids, (list, tuple)):
