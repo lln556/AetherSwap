@@ -4,6 +4,7 @@ The small session boundary also adapts steampy's cookie API. All network I/O
 uses HTTPX; no requests session or curl subprocess is used here.
 """
 from collections import OrderedDict
+from copy import copy
 from http.cookiejar import Cookie
 import os
 import threading
@@ -44,6 +45,25 @@ def _timeout(value):
         connect, read = value
         return httpx.Timeout(connect=connect, read=read, write=read, pool=connect)
     return value
+
+
+def _scoped_cookies(cookies, url):
+    """Bind imported dictionary cookies to their first destination.
+
+    A cookie with an empty domain otherwise travels to every host and cannot
+    be replaced/deleted by a server's host-scoped Set-Cookie response.
+    Explicit cookie domains, paths and expiry remain authoritative.
+    """
+    target = httpx.URL(url)
+    result = Cookies()
+    for original in Cookies(cookies).jar:
+        cookie = copy(original)
+        if not cookie.domain:
+            cookie.domain = target.host if '.' in target.host else target.host + '.local'
+            cookie.domain_specified = False
+            cookie.secure = target.scheme == 'https'
+        result.set_cookie(cookie)
+    return result
 
 
 def _encode_body(kwargs, session_headers):
@@ -120,7 +140,13 @@ class Client:
                 raise RuntimeError('HTTP client is closed')
             client = self._client(self.verify if verify is None else verify, proxies)
             client.headers = self.headers
+            self.cookies = _scoped_cookies(self.cookies, url)
             client.cookies = self.cookies
+            # HTTPX uses its client jar for redirects, not request cookies.
+            # Keep overrides there for this call only; persist server updates
+            # (including deletion) separately, even if a later redirect fails.
+            client.cookies.update(_scoped_cookies(kwargs.pop('cookies', None), url))
+            client.event_hooks['response'] = [self.cookies.extract_cookies]
             if follow_redirects is None:
                 follow_redirects = self.follow_redirects if allow_redirects is None else allow_redirects
             _encode_body(kwargs, self.headers)
@@ -128,13 +154,17 @@ class Client:
                 return client.request(method, url, timeout=_timeout(self.timeout if timeout is None else timeout),
                                       follow_redirects=follow_redirects, **kwargs)
             finally:
-                # Preserve rotated/expired cookies even when a redirect fails.
-                self.cookies = Cookies(client.cookies.jar)
+                client.event_hooks['response'] = []
+                client.cookies = self.cookies
 
     def build_request(self, method, url, **kwargs):
         with self._lock:
+            if self._closed:
+                raise RuntimeError('HTTP client is closed')
             client = self._client(self.verify, None)
+            self.cookies = _scoped_cookies(self.cookies, url)
             client.headers, client.cookies = self.headers, self.cookies
+            kwargs['cookies'] = _scoped_cookies(kwargs.get('cookies'), url)
             _encode_body(kwargs, self.headers)
             return client.build_request(method, url, **kwargs)
 

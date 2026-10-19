@@ -126,3 +126,44 @@ def test_listing_transport_errors_preserve_submission_certainty(monkeypatch, fai
     assert out['status_code'] is None
     assert '上架' in out['error'] and '撤单' not in out['error'] and 'secret' not in out['error']
     runner.assert_called_once()
+
+
+@pytest.mark.parametrize('operation', ['listing', 'withdrawal'])
+def test_market_write_uses_rotated_csrf_cookie_for_its_destination(monkeypatch, operation):
+    from urllib.parse import parse_qs
+    from steam.session import create_market_session
+    seen = []
+
+    def handle(_transport, request):
+        request.read()
+        seen.append(request)
+        if request.method == 'GET':
+            return httpx.Response(200, headers={'set-cookie': 'sessionid=rotated; Path=/; Secure'})
+        return httpx.Response(200, json={'success': True})
+
+    monkeypatch.setattr(httpx.HTTPTransport, 'handle_request', handle)
+    with create_market_session('sessionid=old; steamLoginSecure=test-token', 'test-account') as session:
+        session.get('https://steamcommunity.com/market/')
+        session.cookies.set('sessionid', 'store-only', domain='store.steampowered.com', secure=True)
+        data = {'sessionid': 'old', 'assetid': 'test-asset'}
+        post_market(session, 'https://steamcommunity.com/market/write', data=data,
+                    headers={}, timeout=3, outcome={}, operation=operation)
+    assert len(seen) == 2
+    assert parse_qs(seen[-1].content.decode())['sessionid'] == ['rotated']
+    assert seen[-1].headers['cookie'].count('sessionid=') == 1
+    assert 'store-only' not in seen[-1].headers['cookie']
+    assert data['sessionid'] == 'old'
+
+
+def test_market_write_rejects_conflicting_session_cookies_before_sending(monkeypatch):
+    send = Mock()
+    monkeypatch.setattr(httpx.Client, 'send', send)
+    with http.Client(trust_env=False) as session:
+        session.cookies.set('sessionid', 'first', domain='steamcommunity.com')
+        session.cookies.set('sessionid', 'second', domain='steamcommunity.com', path='/market')
+        outcome = {}
+        with pytest.raises(MarketRequestError, match='会话凭据冲突'):
+            post_market(session, 'https://steamcommunity.com/market/write', data={'sessionid': 'first'},
+                        headers={}, timeout=3, outcome=outcome)
+    assert not outcome['request_sent']
+    send.assert_not_called()

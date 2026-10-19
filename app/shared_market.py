@@ -76,6 +76,7 @@ def _fetch_one_deduped(name: str, app_id: int, cookies: str, steam_id: str) -> t
         except Exception:
             return name, None
     from steam.session import create_market_session
+    session = None
     try:
         try:
             session = create_market_session(cookies, steam_id)
@@ -84,6 +85,8 @@ def _fetch_one_deduped(name: str, app_id: int, cookies: str, steam_id: str) -> t
         except Exception:
             value = (name, None)
     finally:
+        if session is not None:
+            session.close()
         with _inflight_lock:
             _inflight_fetches.pop(key, None)
         future.set_result(value)

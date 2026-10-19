@@ -299,6 +299,8 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                                     break
                 except Exception:
                     pass
+                finally:
+                    sess.close()
         if not listing_id:
             return False, None, f"未找到 assetid {assetid} 对应的上架记录，请确认该物品在「我的上架」中"
         if not classid:

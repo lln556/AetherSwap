@@ -105,12 +105,15 @@ def test_scan_extracts_display_metadata(monkeypatch):
         ],
     }
     monkeypatch.setattr(inventory_cs2, "get_steam", lambda: {"steam_id": "1", "cookies": "x"})
-    monkeypatch.setattr(inventory_cs2, "create_market_session", lambda *args, **kwargs: object())
+    from unittest.mock import Mock
+    session = Mock()
+    monkeypatch.setattr(inventory_cs2, "create_market_session", lambda *args, **kwargs: session)
     monkeypatch.setattr(inventory_cs2, "fetch_cs2_inventory", lambda *args, **kwargs: data)
     persisted = []
     monkeypatch.setattr(inventory_cs2, "_persist_item_meta", persisted.append)
 
     ok, items, err = inventory_cs2.scan_cs2_inventory()
+    session.close.assert_called_once()
 
     assert ok and not err
     [item] = items

@@ -283,3 +283,73 @@ def test_wallet_query_survives_steam_eligibility_redirects(monkeypatch, currency
     assert wallet['currency_code'] == code
     assert wallet['balance_raw'] == 0
     assert len(seen) == 3
+
+
+def test_dictionary_cookies_rotate_delete_and_stay_on_their_host(wire):
+    seen, responses = wire
+    responses.extend([
+        httpx.Response(302, headers={'location': '/market/', 'set-cookie': 'sessionid=new; Path=/; Secure'}),
+        httpx.Response(200, headers={'set-cookie': 'steamLoginSecure=; Max-Age=0; Path=/; Secure'}),
+    ])
+    with http.Client(cookies={'sessionid': 'old', 'steamLoginSecure': 'test-token'}, trust_env=False) as client:
+        client.get('https://steamcommunity.com/start')
+        client.get('https://steamcommunity.com/market/')
+        client.get('https://unrelated.example/')
+        client.get('http://steamcommunity.com/market/')
+        assert client.cookies.get('sessionid') == 'new'
+        assert 'steamLoginSecure' not in client.cookies
+    assert 'sessionid=old' not in seen[1].headers['cookie']
+    assert seen[1].headers['cookie'].count('sessionid=') == 1
+    assert seen[2].headers['cookie'] == 'sessionid=new'
+    assert all('cookie' not in r.headers for r in seen[3:])
+
+
+@pytest.mark.parametrize('redirect_fails', [False, True])
+def test_per_request_cookies_survive_redirect_without_persisting_overrides(monkeypatch, redirect_fails):
+    seen = []
+
+    def handle(_transport, request):
+        seen.append(request)
+        if request.url.path == '/start':
+            return httpx.Response(302, headers={
+                'location': '/finish', 'set-cookie': 'sessionid=rotated; Path=/; Secure',
+            })
+        if request.url.path == '/finish' and redirect_fails:
+            raise httpx.ReadTimeout('test timeout', request=request)
+        return httpx.Response(200)
+
+    monkeypatch.setattr(httpx.HTTPTransport, 'handle_request', handle)
+    with http.Client(cookies={'sessionid': 'old', 'steamLoginSecure': 'session-token'}, trust_env=False) as client:
+        def send():
+            return client.get('https://steamcommunity.com/start', cookies={
+                'steamLoginSecure': 'override-token', 'transient': 'this-call-only',
+            })
+        if redirect_fails:
+            with pytest.raises(httpx.ReadTimeout):
+                send()
+        else:
+            send()
+        assert client.cookies.get('sessionid') == 'rotated'
+        client.get('https://steamcommunity.com/next')
+        client.get('https://other.example/')
+    assert 'steamLoginSecure=override-token' in seen[1].headers['cookie']
+    assert 'transient=this-call-only' in seen[1].headers['cookie']
+    assert 'sessionid=rotated' in seen[1].headers['cookie']
+    assert 'steamLoginSecure=session-token' in seen[2].headers['cookie']
+    assert 'transient=' not in seen[2].headers['cookie']
+    assert 'cookie' not in seen[3].headers
+
+
+def test_server_cookie_deletion_during_redirect_does_not_restore_request_override(wire):
+    seen, responses = wire
+    responses.extend([
+        httpx.Response(302, headers={
+            'location': '/finish', 'set-cookie': 'steamLoginSecure=; Max-Age=0; Path=/; Secure',
+        }),
+        httpx.Response(200),
+    ])
+    with http.Client(cookies={'steamLoginSecure': 'session-token'}, trust_env=False) as client:
+        client.get('https://steamcommunity.com/start', cookies={'steamLoginSecure': 'override-token'})
+        client.get('https://steamcommunity.com/next')
+        assert 'steamLoginSecure' not in client.cookies
+    assert all('cookie' not in r.headers for r in seen[1:])

@@ -169,7 +169,10 @@ def scan_cs2_inventory() -> Tuple[bool, List[Dict[str, Any]], str]:
     if not steam_id or not cookies:
         return False, [], "未配置 Steam steam_id 或 cookies"
     session = create_market_session(cookies, steam_id)
-    data = fetch_cs2_inventory(session, steam_id)
+    try:
+        data = fetch_cs2_inventory(session, steam_id)
+    finally:
+        session.close()
     if not data:
         return False, [], "获取 CS2 库存失败"
     if isinstance(data, dict) and data.get("auth_expired"):

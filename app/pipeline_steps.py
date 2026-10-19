@@ -282,6 +282,7 @@ def _fetch_steam_sell_data(
             missing.append("steam_id")
         reason = "Steam 凭据缺失: " + "、".join(missing)
         return (None, reason) if return_error else None
+    session = None
     try:
         session = create_market_session(cookies, steam_id)
         cfg = config.get("pipeline", {})
@@ -323,6 +324,9 @@ def _fetch_steam_sell_data(
             detail = detail[:117] + "..."
         reason = f"Steam 卖单获取异常: {type(e).__name__}" + (f" - {detail}" if detail else "")
         return (None, reason) if return_error else None
+    finally:
+        if session is not None:
+            session.close()
 
 def _check_buff_price(
     item,

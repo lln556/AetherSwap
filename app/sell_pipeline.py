@@ -121,6 +121,7 @@ def _resolve_steam_session(ctx: PipelineContext, cred_steam: dict):
     session = create_market_session(cookies, steam_id)
     session_id_effective = session.cookies.get("sessionid") or session_id
     if not session_id_effective:
+        session.close()
         ctx.log("Cookie 中无 sessionid，无法上架", "warn", category="steam")
         return None
     return session, session_id_effective
@@ -640,100 +641,103 @@ def _run_sell_phase_impl(cfg: dict, state, flow_id: str, items: Optional[list] =
         return
     session, session_id_effective = session_result
 
-    items = _get_inventory(ctx, items)
-    if items is None:
-        return
+    try:
+        items = _get_inventory(ctx, items)
+        if items is None:
+            return
 
-    sellable = [it for it in items if it.get("can_sell")]
-    if not sellable:
-        ctx.log("当前无可出售物品", "info", category="steam")
-        return
+        sellable = [it for it in items if it.get("can_sell")]
+        if not sellable:
+            ctx.log("当前无可出售物品", "info", category="steam")
+            return
 
-    listing_delay = max(1, int(pipeline_cfg.get("listing_delay_seconds", 3) or 3))
-    steam_debug = bool(pipeline_cfg.get("verbose_debug") or pipeline_cfg.get("steam_listings_debug"))
-    debug_fn = (lambda m: ctx.log(m, "debug", category="steam")) if steam_debug else None
+        listing_delay = max(1, int(pipeline_cfg.get("listing_delay_seconds", 3) or 3))
+        steam_debug = bool(pipeline_cfg.get("verbose_debug") or pipeline_cfg.get("steam_listings_debug"))
+        debug_fn = (lambda m: ctx.log(m, "debug", category="steam")) if steam_debug else None
 
-    ok_listings, active_listing_ids, err_listings, listing_assetid_to_name = fetch_my_listings(
-        cred_steam.get("cookies"), debug_fn=debug_fn
-    )
-    if ok_listings:
-        ctx.log(f"[出售] Steam 在售列表拉取成功，共 {len(active_listing_ids)} 个在售", "info", category="steam")
-    else:
-        ctx.log(f"[出售] Steam 在售列表拉取失败: {err_listings or '未知'}，同名在售校验将按本地购买记录", "warn", category="steam")
+        ok_listings, active_listing_ids, err_listings, listing_assetid_to_name = fetch_my_listings(
+            cred_steam.get("cookies"), debug_fn=debug_fn
+        )
+        if ok_listings:
+            ctx.log(f"[出售] Steam 在售列表拉取成功，共 {len(active_listing_ids)} 个在售", "info", category="steam")
+        else:
+            ctx.log(f"[出售] Steam 在售列表拉取失败: {err_listings or '未知'}，同名在售校验将按本地购买记录", "warn", category="steam")
 
-    purchases_snapshot = ctx.state.get_purchases()
-    from app.services.repricing import reserved_purchase_ids
-    reserved = reserved_purchase_ids() if any(p.get("_db_id") for p in purchases_snapshot) else set()
-    purchases_snapshot = [{**p, "reprice_reserved": p.get("_db_id") in reserved} for p in purchases_snapshot]
-    account = get_current_account()
-    if account is None:
-        # 工厂重置后账号列表为空，直接跳过出售避免以错误币种上架
-        ctx.log("[出售] 无有效账号（可能刚执行了出厂重置），跳过本次出售", "warn", category="steam")
-        return
-    account_currency_cached = (account.get("currency_code") or "").strip().upper()
-    region_check = refresh_account_region_currency(
-        account.get("id"),
-        cookies_raw=cred_steam.get("cookies", ""),
-    )
-    if not region_check.get("ok"):
+        purchases_snapshot = ctx.state.get_purchases()
+        from app.services.repricing import reserved_purchase_ids
+        reserved = reserved_purchase_ids() if any(p.get("_db_id") for p in purchases_snapshot) else set()
+        purchases_snapshot = [{**p, "reprice_reserved": p.get("_db_id") in reserved} for p in purchases_snapshot]
+        account = get_current_account()
+        if account is None:
+            # 工厂重置后账号列表为空，直接跳过出售避免以错误币种上架
+            ctx.log("[出售] 无有效账号（可能刚执行了出厂重置），跳过本次出售", "warn", category="steam")
+            return
+        account_currency_cached = (account.get("currency_code") or "").strip().upper()
+        region_check = refresh_account_region_currency(
+            account.get("id"),
+            cookies_raw=cred_steam.get("cookies", ""),
+        )
+        if not region_check.get("ok"):
+            ctx.log(
+                "[出售] 无法实时确认 Steam 账号结算币种，已拒绝上架，"
+                f"防止跨区价格误卖。原因: {region_check.get('error') or '未知原因'}",
+                "error",
+                category="steam",
+            )
+            return
+        account_currency = (region_check.get("currency_code") or "").strip().upper()
+        account_region = (region_check.get("region_code") or "").strip().upper()
+        if not account_currency:
+            ctx.log(
+                "[出售] Steam 未返回结算币种，已拒绝上架，防止跨区价格误卖。",
+                "error",
+                category="steam",
+            )
+            return
+        if account_currency_cached and account_currency_cached != account_currency:
+            ctx.log(
+                f"[出售] 检测到账号币种变化: 缓存={account_currency_cached} 实时={account_currency}，"
+                "已更新并使用实时币种定价。",
+                "warn",
+                category="steam",
+            )
+        if account_region:
+            ctx.debug(
+                f"[出售] 账号地区按结算币种派生: 币种={account_currency} 地区={account_region}",
+                category="steam",
+            )
+        rate_map = _load_rate_map()
+
+        assetid_to_name_map = {
+            str(p.get("assetid") or "").strip(): (p.get("market_hash_name") or p.get("name") or "").strip()
+            for p in purchases_snapshot if str(p.get("assetid") or "").strip()
+        }
+
         ctx.log(
-            "[出售] 无法实时确认 Steam 账号结算币种，已拒绝上架，"
-            f"防止跨区价格误卖。原因: {region_check.get('error') or '未知原因'}",
-            "error",
-            category="steam",
+            f"策略{sell_strategy}，可出售 {len(sellable)} 件"
+            f"（智能定价：墙+断层；上架间隔={listing_delay}s）",
+            "info", category="steam",
         )
-        return
-    account_currency = (region_check.get("currency_code") or "").strip().upper()
-    account_region = (region_check.get("region_code") or "").strip().upper()
-    if not account_currency:
-        ctx.log(
-            "[出售] Steam 未返回结算币种，已拒绝上架，防止跨区价格误卖。",
-            "error",
-            category="steam",
+
+        to_list = _build_listing_plan(
+            ctx, cfg, session, sellable, sell_strategy, pipeline_cfg,
+            purchases_snapshot, ok_listings, active_listing_ids,
+            listing_assetid_to_name, assetid_to_name_map, account_currency, rate_map,
         )
-        return
-    if account_currency_cached and account_currency_cached != account_currency:
-        ctx.log(
-            f"[出售] 检测到账号币种变化: 缓存={account_currency_cached} 实时={account_currency}，"
-            "已更新并使用实时币种定价。",
-            "warn",
-            category="steam",
-        )
-    if account_region:
-        ctx.debug(
-            f"[出售] 账号地区按结算币种派生: 币种={account_currency} 地区={account_region}",
-            category="steam",
-        )
-    rate_map = _load_rate_map()
 
-    assetid_to_name_map = {
-        str(p.get("assetid") or "").strip(): (p.get("market_hash_name") or p.get("name") or "").strip()
-        for p in purchases_snapshot if str(p.get("assetid") or "").strip()
-    }
+        if not to_list:
+            ctx.debug("[出售] 本轮回无需上架", category="steam")
+            return
 
-    ctx.log(
-        f"策略{sell_strategy}，可出售 {len(sellable)} 件"
-        f"（智能定价：墙+断层；上架间隔={listing_delay}s）",
-        "info", category="steam",
-    )
+        ctx.log(f"[出售] 开始上架 {len(to_list)} 件", "info", category="steam")
+        listed = _submit_listings(ctx, to_list, session, session_id_effective, listing_delay)
 
-    to_list = _build_listing_plan(
-        ctx, cfg, session, sellable, sell_strategy, pipeline_cfg,
-        purchases_snapshot, ok_listings, active_listing_ids,
-        listing_assetid_to_name, assetid_to_name_map, account_currency, rate_map,
-    )
-
-    if not to_list:
-        ctx.debug("[出售] 本轮回无需上架", category="steam")
-        return
-
-    ctx.log(f"[出售] 开始上架 {len(to_list)} 件", "info", category="steam")
-    listed = _submit_listings(ctx, to_list, session, session_id_effective, listing_delay)
-
-    if listed:
-        ctx.log(f"[出售] 本轮回已提交 {listed} 件上架请求，核实 Steam 状态", "info", category="steam")
-        _auto_confirm_listings(ctx, cfg, cred_steam.get("steam_id", ""), cred_steam.get("cookies", ""),
-                               [entry["aid"] for entry in to_list if entry.get("submitted")])
+        if listed:
+            ctx.log(f"[出售] 本轮回已提交 {listed} 件上架请求，核实 Steam 状态", "info", category="steam")
+            _auto_confirm_listings(ctx, cfg, cred_steam.get("steam_id", ""), cred_steam.get("cookies", ""),
+                                   [entry["aid"] for entry in to_list if entry.get("submitted")])
+    finally:
+        session.close()
 
 
 def _run_sell_phase(cfg: dict, state, flow_id: str, items: Optional[list] = None) -> None:
