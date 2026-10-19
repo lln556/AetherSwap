@@ -151,6 +151,12 @@ def confirmation_flow(monkeypatch):
         {"_db_id": 2, "assetid": "sold", "listing": False, "sale_price": 10},
     ])
     ctx = SimpleNamespace(state=state, log=Mock())
+    def record_snapshot(rows, account, *, purchase_ids):
+        for p in state.get_purchases():
+            row = rows.get(p.get("assetid"))
+            if row and p["_db_id"] in purchase_ids and p.get("listing"):
+                state.update_purchase_by_id(p["_db_id"], {"listing_status": row["status"]})
+    monkeypatch.setattr(flow, "record_snapshot", record_snapshot)
     pending = {"owned": {"listing_id": "owned-listing", "status": "pending_confirmation", "name": "Owned"},
                "personal": {"listing_id": "personal-listing", "status": "pending_confirmation", "name": "Personal"}}
     active = {"owned": {"listing_id": "owned-listing", "status": "active", "name": "Owned"}}

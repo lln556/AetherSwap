@@ -3,6 +3,7 @@
 from app.config_loader import get_steam_credentials
 from app.steam_confirm import auto_confirm_once
 from app.steam_listings import fetch_listing_snapshot
+from app.trading_ledger import record_snapshot
 
 
 def sync_listing_confirmations(ctx, cfg, cred, assetids=None, snapshot=None):
@@ -30,6 +31,8 @@ def sync_listing_confirmations(ctx, cfg, cred, assetids=None, snapshot=None):
     def update_states(rows):
         # Re-read before each write so a concurrent sale/delist is not reverted.
         current = {p.get("_db_id"): p for p in ctx.state.get_purchases() if p.get("_db_id")}
+        eligible_ids = set()
+        changed = []
         for p in purchases:
             aid = str(p["assetid"])
             row = rows.get(aid)
@@ -37,10 +40,15 @@ def sync_listing_confirmations(ctx, cfg, cred, assetids=None, snapshot=None):
             if (not row or not now or not now.get("listing") or now.get("sale_price")
                     or now.get("sold_at") or str(now.get("assetid")) != aid):
                 continue
+            eligible_ids.add(p["_db_id"])
             if now.get("listing_status") != row["status"]:
-                if ctx.state.update_purchase_by_id(p["_db_id"], {"listing_status": row["status"]}):
-                    label = "已正式在售" if row["status"] == "active" else "等待 Steam 确认"
-                    ctx.log(f"[确认] assetid={aid} {label}", "info", category="steam")
+                changed.append((aid, row["status"]))
+        # One transaction updates purchases, listing identities, activation
+        # time and journal. Background reconciliation uses this same entry.
+        record_snapshot(rows, str(cred.get("steam_id") or ""), purchase_ids=eligible_ids)
+        for aid, status in changed:
+            label = "已正式在售" if status == "active" else "等待 Steam 确认"
+            ctx.log(f"[确认] assetid={aid} {label}", "info", category="steam")
 
     if not same_account():
         return False, {}, "Steam 账号或会话已变化，跳过确认"

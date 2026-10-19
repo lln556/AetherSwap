@@ -1,6 +1,7 @@
 """Transaction-local business journal and materialized listing/settlement records."""
 import json
 import math
+import threading
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
@@ -11,6 +12,7 @@ from app.trading_models import MarketListing, RepriceJob, TradeEvent, TradeSettl
 OPEN_JOBS = {"planned", "removing", "awaiting_inventory", "ready", "submitting", "confirming", "needs_review"}
 OPEN_LISTINGS = {"submitted", "pending_confirmation", "active", "unknown", "repricing"}
 TZ = ZoneInfo("Asia/Shanghai")
+_snapshot_lock = threading.RLock()
 
 
 def minor(value):
@@ -105,13 +107,15 @@ def live_listing(s, purchase_id):
                   MarketListing.status.in_(OPEN_LISTINGS)).order_by(MarketListing.submitted_at.desc())).first()
 
 
-def record_snapshot(snapshot, account_id, now=None):
+def record_snapshot(snapshot, account_id, now=None, *, purchase_ids=None):
     """A complete remote snapshot provides positive listing evidence, not sale evidence."""
     from app.database import Purchase, get_session
     now = time.time() if now is None else now
-    with get_session() as s:
+    with _snapshot_lock, get_session() as s:
         policy = s.get(TradingPolicy, 1) or TradingPolicy()
         for p in s.exec(select(Purchase)).all():
+            if purchase_ids is not None and (p.id not in purchase_ids or not p.listing):
+                continue
             if p.archived_at or p.sale_price or p.pending_receipt or (p.account_id and p.account_id != account_id):
                 continue
             remote = snapshot.get(str(p.assetid or ""))
@@ -159,8 +163,16 @@ def record_snapshot(snapshot, account_id, now=None):
             s.add(current)
             s.add(p)
             if old_status != current.status:
-                add_event(s, p.id, "listing_verified", "已核实正式在售" if current.status == "active" else "等待 Steam 确认",
-                          at=now, details={"listing_id": current.steam_listing_id, "state": current.status})
+                # A temporarily missing/repricing listing can be observed again.
+                # Its identity is unchanged: record each verified state once.
+                previous = s.exec(select(TradeEvent).where(
+                    TradeEvent.purchase_id == p.id, TradeEvent.kind == "listing_verified")).all()
+                observed = any(json.loads(e.details).get("listing_id") == current.steam_listing_id
+                               and json.loads(e.details).get("state") == current.status for e in previous)
+                if not observed:
+                    add_event(s, p.id, "listing_verified", "已核实正式在售" if current.status == "active" else "等待 Steam 确认",
+                              key=f"listing:{current.steam_listing_id}:{current.status}",
+                              at=now, details={"listing_id": current.steam_listing_id, "state": current.status})
         s.commit()
 
 

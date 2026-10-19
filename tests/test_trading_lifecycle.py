@@ -99,6 +99,73 @@ def test_positive_snapshot_starts_24_hour_clock_and_missing_is_not_sale(ledger):
         assert s.get(ledger.Purchase,1).sale_price is None
 
 
+def test_confirmation_and_background_sync_share_one_listing_milestone(ledger, monkeypatch):
+    from types import SimpleNamespace
+    from app.services import listing_confirmation as flow
+    from app.state import State
+    from app.trading_ledger import record_snapshot
+    from app.trading_models import MarketListing, TradeEvent
+    ledger.db_append_purchase({'name': 'Item', 'price': 10, 'at': 100, 'assetid': 'a',
+                               'listing': True, 'listing_status': 'submitted'})
+    cred = {'steam_id': 'account', 'cookies': 'cookie'}
+    monkeypatch.setattr(flow, 'get_steam_credentials', lambda: cred)
+    pending = {'a': {'listing_id': 'lid', 'status': 'pending_confirmation'}}
+    active = {'a': {'listing_id': 'lid', 'status': 'active'}}
+    monkeypatch.setattr(flow, 'fetch_listing_snapshot', Mock(side_effect=[(True, pending, ''), (True, active, '')]))
+    confirm = Mock(return_value=(True, 1, ''))
+    monkeypatch.setattr(flow, 'auto_confirm_once', confirm)
+    cfg = {'steam_confirm': {'enabled': True, 'identity_secret': 'test'}}
+    ctx = SimpleNamespace(state=State(), log=Mock())
+    assert flow.sync_listing_confirmations(ctx, cfg, cred)[0]
+    with ledger.get_session() as s:
+        listing = s.exec(select(MarketListing)).one()
+        assert listing.status == s.get(ledger.Purchase, 1).listing_status == 'active'
+        activated, due = listing.activated_at, listing.next_evaluation_at
+        assert activated and due == activated + 86400
+    record_snapshot(active, 'account', now=activated + 600)
+    # A later routine check does not call mobile confirmation again either.
+    assert flow.sync_listing_confirmations(ctx, cfg, cred, snapshot=active)[0]
+    confirm.assert_called_once()
+    with ledger.get_session() as s:
+        events = s.exec(select(TradeEvent)).all()
+        assert len([e for e in events if e.kind == 'listing_state']) == 0
+        assert len([e for e in events if e.message == '已核实正式在售']) == 1
+        assert len([e for e in events if e.message == '等待 Steam 确认']) == 1
+        listing = s.exec(select(MarketListing)).one()
+        assert (listing.activated_at, listing.next_evaluation_at) == (activated, due)
+
+
+def test_same_listing_reappearance_does_not_restart_clock_or_repeat_event(ledger):
+    from app.trading_ledger import record_snapshot
+    from app.trading_models import MarketListing, TradeEvent
+    ledger.db_append_purchase({'name': 'Item', 'price': 10, 'at': 100, 'assetid': 'a'})
+    snapshot = {'a': {'listing_id': 'lid', 'status': 'active'}}
+    record_snapshot(snapshot, 'account', now=1000)
+    record_snapshot({}, 'account', now=1100)
+    record_snapshot(snapshot, 'account', now=1200)
+    with ledger.get_session() as s:
+        listing = s.exec(select(MarketListing)).one()
+        assert listing.activated_at == 1000 and listing.checked_at == 1200
+        assert len(s.exec(select(TradeEvent).where(TradeEvent.kind == 'listing_verified')).all()) == 1
+    record_snapshot({'a': {'listing_id': 'new-lid', 'status': 'active'}}, 'account', now=1300)
+    with ledger.get_session() as s:
+        assert len(s.exec(select(TradeEvent).where(TradeEvent.kind == 'listing_verified')).all()) == 2
+
+
+def test_selected_confirmation_does_not_update_other_or_delisted_purchases(ledger):
+    from app.trading_ledger import record_snapshot
+    from app.trading_models import MarketListing
+    for aid in ('a', 'b'):
+        ledger.db_append_purchase({'name': aid, 'price': 10, 'at': 100, 'assetid': aid,
+                                   'listing': aid == 'a'})
+    snapshot = {aid: {'listing_id': 'lid-' + aid, 'status': 'active'} for aid in ('a', 'b')}
+    record_snapshot(snapshot, 'account', now=1000, purchase_ids={2})
+    with ledger.get_session() as s:
+        assert s.exec(select(MarketListing)).all() == []
+        assert s.get(ledger.Purchase, 1).listing_status is None
+        assert not s.get(ledger.Purchase, 2).listing
+
+
 def test_settlement_is_idempotent_and_preserves_actual_proceeds(ledger):
     from app.trading_ledger import record_settlements
     from app.trading_models import TradeSettlement, TradeEvent

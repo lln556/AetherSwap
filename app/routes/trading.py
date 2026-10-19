@@ -26,7 +26,8 @@ def overview(days: int = Query(0, ge=0, le=3650), status: str = "", query: str =
 
 
 @router.get("/api/trading/items/{purchase_id}")
-def detail(purchase_id: int):
+def detail(purchase_id: int, raw: bool = False):
+    from app.services.trading_timeline import listing_timeline
     with get_session() as s:
         p = s.get(Purchase, purchase_id)
         if not p:
@@ -34,7 +35,9 @@ def detail(purchase_id: int):
         events = s.exec(select(TradeEvent).where(TradeEvent.purchase_id == purchase_id).order_by(TradeEvent.recorded_at)).all()
         listings = s.exec(select(MarketListing).where(MarketListing.purchase_id == purchase_id).order_by(MarketListing.submitted_at)).all()
         return {"item": {"id": p.id, "name": p.name, "assetid": p.assetid},
-                "events": [{**e.model_dump(), "details": json.loads(e.details)} for e in events],
+                "events": ([{**e.model_dump(), "details": json.loads(e.details)} for e in events]
+                           if raw else listing_timeline(events, listings)),
+                "raw_event_count": len(events),
                 "listings": [l.model_dump() for l in listings]}
 
 
