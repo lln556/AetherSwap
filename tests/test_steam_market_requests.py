@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 
-import requests
+import httpx
+from utils import http_client as http
 
 from steam.market import SELL_ITEM_URL
 from steam.market import list_item
@@ -9,9 +10,7 @@ from steam.session import create_market_session
 
 def test_market_session_sends_language_header_on_listing_request():
     with create_market_session("sessionid=test-session", "test-account") as session:
-        request = session.prepare_request(
-            requests.Request("POST", SELL_ITEM_URL, data={"sessionid": "test-session"})
-        )
+        request = session.build_request("POST", SELL_ITEM_URL, data={"sessionid": "test-session"})
 
     assert request.headers["Accept-Language"] == "en-US,en;q=0.9"
     assert request.headers["X-Requested-With"] == "XMLHttpRequest"
@@ -26,10 +25,13 @@ def test_market_session_preserves_explicit_language_override():
         assert session.headers["Accept-Language"] == "zh-CN"
 
 
-def test_listing_retains_retry_after_metadata():
+def test_listing_retains_retry_after_metadata(monkeypatch):
     session = Mock()
-    session.post.return_value = Mock(status_code=429, text="null", headers={"Retry-After": "120"})
+    send = Mock(return_value=Mock(status_code=429, text="null", headers={"Retry-After": "120"}))
+    monkeypatch.setattr("steam.market.post_market", send)
     result = list_item(session, "test-session", 730, "2", "fake-asset", 100)
     assert result["status_code"] == 429
     assert result["retry_after"] == "120"
-    assert session.post.call_args.kwargs["data"]["assetid"] == "fake-asset"
+    assert send.call_args.kwargs["data"]["assetid"] == "fake-asset"
+    assert send.call_args.kwargs["operation"] == "listing"
+    session.post.assert_not_called()

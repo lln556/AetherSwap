@@ -7,7 +7,7 @@ def test_buff_trade_poll_uses_shared_client_and_parses_pending_items(monkeypatch
     def unexpected_request(*_args, **_kwargs):
         raise AssertionError("BUFF receive polling must not use raw requests")
 
-    monkeypatch.setattr("app.receive_flow.requests.get", unexpected_request)
+    monkeypatch.setattr("app.receive_flow.http.get", unexpected_request)
 
     class Client:
         def __init__(self):

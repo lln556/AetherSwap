@@ -240,6 +240,7 @@
     }
   </style>
 
+  <link rel="stylesheet" href="/css/trading.css?v=1" />
 </head>
 
 <body>
@@ -298,7 +299,7 @@
             <line x1="16" y1="17" x2="8" y2="17"></line>
             <polyline points="10 9 9 9 8 9"></polyline>
           </svg>
-          <span>操作记录</span>
+          <span>交易中心</span>
         </button>
         <button class="nav-item" data-tab="analytics">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -316,7 +317,7 @@
             <line x1="16" y1="17" x2="8" y2="17"></line>
             <polyline points="10 9 9 9 8 9"></polyline>
           </svg>
-          <span>上架记录</span>
+          <span>成交记录</span>
         </button>
         <button class="nav-item" data-tab="accounts">
           <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -601,61 +602,36 @@
       </section>
 
       <section id="panel-purchase-history" class="panel">
-        <div class="panel-toolbar panel-toolbar--purchase-history">
-          <div class="panel-toolbar-row">
-            <span class="label">操作记录</span>
-            <button id="btn-history-multiselect" class="btn btn-sm btn-secondary">多选</button>
-            <div id="history-batch-actions" class="hidden" style="display:none;gap:8px;align-items:center;">
-              <button id="btn-history-batch-del" class="btn btn-sm btn-danger-outline">批量删除</button>
-            </div>
-          </div>
-          <div id="purchase-history-summary" class="purchases-summary"></div>
+        <div class="trading-heading"><div><h2>交易中心</h2><p class="muted">购买、挂售与成交，每件饰品都有完整记录。</p></div><button class="btn btn-secondary" id="trading-sync">核实 Steam 状态</button></div>
+        <div id="trading-summary" class="trading-summary"></div>
+        <p id="trading-sync-status" class="muted small" role="status"></p>
+        <details class="trading-policy"><summary>自动调价设置 <span id="trading-policy-state"></span></summary>
+          <form id="trading-policy-form" class="trading-policy-fields">
+            <label><input id="trading-enabled" type="checkbox" /> 启用自动降价</label>
+            <label>未售出时长（小时）<input id="trading-age" type="number" min="1" max="720" value="24" required /></label>
+            <label>最大亏损比例（%）<input id="trading-loss" type="number" min="0" max="99" value="30" required /></label>
+            <label>最小价差（%）<input id="trading-delta-pct" type="number" min="0" max="50" step="0.1" value="1" required /></label>
+            <label>最小价差（元）<input id="trading-delta-amount" type="number" min="0.01" max="100" step="0.01" value="0.10" required /></label>
+            <button class="btn btn-primary" type="submit">保存调价规则</button>
+          </form>
+          <p class="muted small">只降不涨；亏损以扣费后的钱包到账与原始购入成本比较。两项最小价差都满足才会调价。重挂后重新计时；行情低于底线时按底线挂售。</p>
+        </details>
+        <div class="trading-filters">
+          <label>记录类型<select id="trading-view"><option value="purchases">购买记录</option><option value="listings">在售挂单</option><option value="settlements">成交记录</option></select></label>
+          <label>时间范围<select id="trading-days"><option value="1">今日</option><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="0" selected>全部</option></select></label>
+          <label>购买状态<select id="trading-status"><option value="">全部状态</option><option value="pending_receipt">待收货</option><option value="holding">持有中</option><option value="active">出售中</option><option value="pending_confirmation">待 Steam 确认</option><option value="repricing">调价处理中</option><option value="unknown">状态待核实</option><option value="attention">需人工核实</option><option value="sold">已出售</option><option value="archived">已归档</option></select></label>
+          <label class="trading-search">搜索饰品<input id="trading-query" type="search" placeholder="名称或资产 ID" /></label>
         </div>
-        <div class="table-container">
-          <table id="transactions-table-purchase-history">
-            <thead>
-              <tr>
-                <th id="history-select-th" class="hidden" style="width:52px;min-width:52px"></th>
-                <th>图片</th>
-                <th>时间</th>
-                <th>物品说明</th>
-                <th>assetid</th>
-                <th>购入价</th>
-                <th>购入市场价</th>
-                <th>出售状态</th>
-                <th>出售价格</th>
-                <th>实际折扣比率</th>
-                <th>变现收益</th>
-                <th>自用收益</th>
-                <th>价格偏离度</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <p id="trading-filter-note" class="muted small"></p>
+        <div class="table-container"><table class="trading-table"><thead id="trading-head"></thead><tbody id="trading-body"></tbody></table></div>
+        <div class="trading-pagination"><button id="trading-prev" class="btn btn-sm btn-secondary">上一页</button><span id="trading-page"></span><button id="trading-next" class="btn btn-sm btn-secondary">下一页</button></div>
       </section>
-
       <section id="panel-sales" class="panel">
-        <div class="panel-toolbar">
-          <span class="label">上架记录</span>
-          <button id="btn-refresh-sales" class="btn btn-sm btn-secondary">刷新</button>
-        </div>
-        <div class="table-container">
-          <table id="transactions-table-sales">
-            <thead>
-              <tr>
-                <th>时间</th>
-                <th>物品/说明</th>
-                <th>assetid</th>
-                <th>金额</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
+        <div class="trading-heading"><div><h2>成交记录</h2><p class="muted">按 Steam 成交证据记录实际到账；仅有上架动作的物品不会出现在这里。</p></div><button id="btn-refresh-sales" class="btn btn-secondary">刷新</button></div>
+        <div class="table-container"><table class="trading-table"><thead><tr><th>成交日期</th><th>饰品</th><th>购入成本</th><th>实际到账</th><th>钱包收益</th><th>记录来源</th><th>操作</th></tr></thead><tbody id="trading-sales-body"></tbody></table></div>
+        <p class="muted small">显示最近 50 条；在交易中心选择“成交记录”可筛选日期并翻页。</p>
       </section>
+      <dialog id="trading-detail" class="trading-dialog"><div class="trading-heading"><h2 id="trading-detail-title">物品时间线</h2><button id="trading-detail-close" class="btn btn-secondary">关闭</button></div><p id="trading-detail-subtitle" class="muted small"></p><div id="trading-timeline"></div></dialog>
 
       <section id="panel-analytics" class="panel">
         <div class="panel-toolbar">
@@ -954,7 +930,7 @@
                 </div>
                 <div class="field">
                   <label for="cfg-steam-device-id">device_id</label>
-                  <input type="password" id="cfg-steam-device-id" placeholder="Steam 手机确认 device_id"
+                  <input type="password" id="cfg-steam-device-id" placeholder="可留空，自动生成"
                     autocomplete="new-password" />
                 </div>
               </div>
@@ -1854,7 +1830,8 @@
   <script src="/js/accounts.js"></script>
   <script src="/js/console.js"></script>
   <script src="/js/steamGuard.js"></script>
-  <script src="/js/transactions.js?v=1"></script>
+  <script src="/js/transactions.js?v=2"></script>
+  <script src="/js/trading.js?v=4"></script>
   <script src="/js/settings.js?v=2"></script>
   <script src="/js/proxy.js"></script>
   <script src="/js/strategies.js"></script>

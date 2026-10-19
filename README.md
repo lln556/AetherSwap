@@ -291,6 +291,10 @@ python -m pip install -r requirements.txt
 - 模块数量有限制；重复添加、依赖缺失、顺序错误、互斥冲突都会被阻止。
 - 模拟运行是 dry-run，不会触发 Buff 锁单、付款等待或 Steam 上架。
 
+自动上架后，操作记录会区分“上架状态待核实”“待 Steam 确认”和“出售中”。开启【系统设置 → 自动确认上架】并配置 `identity_secret` 后，程序只会确认本地购买记录对应的市场挂单；`device_id` 可留空，程序会按当前 Steam 账号生成。确认请求成功后还会读取市场状态，确认正式在售后才显示“出售中”。暂未完成的确认会在后台在售检查时重试，也可以点击该物品的“确认上架”或“核实状态”；未配置确认密钥时，请在 Steam App 中手动确认。
+
+切换出售策略不会自动调整已有挂单。手动下架后，程序会核实物品返回库存后的资产 ID（可能保持不变）；重新上架会使用当时启用的策略，并可能再次触发 Steam 确认。
+
 ### 4. 用户自定义模块
 
 当前版本开放的是**安全声明式模块**，而不是任意代码执行。
@@ -582,7 +586,7 @@ python -m uvicorn app.api:app --host 0.0.0.0 --port 28472
 
 ## 📄 开发者说明
 
-- **后端栈**：`Python 3.10+` · `FastAPI` · `SQLModel (SQLite)` · `Playwright`
+- **后端栈**：`Python 3.10+` · `FastAPI` · `SQLModel (PostgreSQL / SQLite)` · `Playwright`
 - **前端栈**：原生 `HTML / JS / CSS`（无框架依赖）
 - **并发机制**：异步 + 多线程融合的后台 Task Queue（`app/services/workers`）
 - **扩展性**：高内聚、低耦合的模块化设计，接入 C5、IGXE 等其他平台仅需添加对应 API 封装层
@@ -611,3 +615,16 @@ python -m uvicorn app.api:app --host 0.0.0.0 --port 28472
 Made with ❤️ for the Steam community
 
 </div>
+
+
+## 交易中心与自动调价
+
+交易中心按购买、挂单、成交分别记录，提供今日/近 7 天/近 30 天筛选和单件物品时间线。
+成交必须有明确证据；挂单消失不会自动标为售出。Steam 只提供成交日期时，界面保留日期精度。
+
+自动调价默认关闭，可在交易中心启用。默认正式在售满 24 小时后评估，只降价，净到账最低为原始买入成本的 70%；价差须同时达到 1% 和 ¥0.10。遵守当前出售策略的趋势、利润及自定义限制。当前自动调价支持人民币钱包的 CS2 饰品。
+市场核实独立每 10 分钟执行；未调价每小时重评，重新上架成功后重新计时。撤单和上架分阶段持久保存，响应不明时先核实。
+
+服务端可通过 `AETHERSWAP_DATABASE_URL` 使用 PostgreSQL。Compose 部署添加 `compose.postgres.yaml`，并在私有 `.env` 中设置独立的 `AETHERSWAP_DB_PASSWORD`（建议随机十六进制密码）。数据库不向主机发布端口。迁移前停止应用并用 SQLite backup API 制作离线备份，再运行 `scripts/migrate_trading_database.py <备份路径>`；目标必须为空，脚本逐列核对迁移结果。保留原库用于回滚。PostgreSQL 后续应单独使用 `pg_dump` 备份，旧 JSON 导出仅用于兼容旧记录，不包含完整新流水。
+
+完整规则见 [交易生命周期设计](docs/trading-lifecycle.md)。

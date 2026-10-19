@@ -8,7 +8,7 @@ import re
 import time
 from typing import Optional
 
-import requests
+from utils import http_client as http
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
@@ -119,7 +119,7 @@ def _download_banner(url: str) -> Optional[Image.Image]:
     for attempt in range(attempts):
         proxies = pm.get_proxies_for_request(failed=(attempt > 0))
         try:
-            resp = requests.get(url, timeout=(5.0, 10.0), proxies=proxies)
+            resp = http.get(url, timeout=(5.0, 10.0), proxies=proxies)
             resp.raise_for_status()
             return Image.open(io.BytesIO(resp.content)).convert("RGBA")
         except Exception as e:
@@ -142,7 +142,7 @@ def _get_flag(country_code: str) -> Optional[Image.Image]:
     if not flag_path.exists():
         try:
             url = f"https://flagcdn.com/w40/{c_code}.png"
-            resp = requests.get(url, timeout=5)
+            resp = http.get(url, timeout=5)
             if resp.status_code == 200:
                 with open(flag_path, "wb") as f:
                     f.write(resp.content)

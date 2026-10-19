@@ -1,0 +1,13 @@
+title = "AetherSwap secret scanning"
+
+[extend]
+useDefault = true
+
+# Public Steam method names next to the jwt_token variable are not credentials.
+# Match only these exact values in this file; never exempt tokens or whole files.
+[[allowlists]]
+description = "Public Steam cart API method names"
+condition = "AND"
+paths = ['''(^|/)app/gift_engine\.py$''']
+regexTarget = "secret"
+regexes = ['''^(RemoveItemFromCart|AddItemsToCart)/v1$''']

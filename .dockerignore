@@ -30,6 +30,9 @@ Thumbs.db
 !.env.example
 
 # Local runtime data (mounted as volumes at runtime)
+config/**
+!config/__init__.py
+!config/config.json
 config/app.db
 config/app.db-*
 config/credentials.json

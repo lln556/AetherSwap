@@ -17,6 +17,7 @@ services:
       AETHERSWAP_MANUAL_LOGIN_ONLY: ${AETHERSWAP_MANUAL_LOGIN_ONLY:-}
       AETHERSWAP_AUTH_USER: ${AETHERSWAP_AUTH_USER:-}
       AETHERSWAP_AUTH_PASS: ${AETHERSWAP_AUTH_PASS:-}
+      AETHERSWAP_DATABASE_URL: ${AETHERSWAP_DATABASE_URL:-}
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-}
@@ -27,7 +28,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:28472/api/runtime')",
+          "import httpx; httpx.get('http://127.0.0.1:28472/api/runtime', trust_env=False, timeout=5).raise_for_status()",
         ]
       interval: 30s
       timeout: 10s

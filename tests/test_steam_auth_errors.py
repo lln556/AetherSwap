@@ -21,7 +21,7 @@ class _JsonResponse:
 def test_steam_login_connection_error_message_is_explicit():
     from app.services import steam_auth
 
-    exc = steam_auth._req.exceptions.ConnectionError(
+    exc = steam_auth.httpx.ConnectError(
         "HTTPSConnectionPool(host='steamcommunity.com', port=443): "
         "Max retries exceeded with url: / "
         "(Caused by NewConnectionError: failed to establish a new connection)"
@@ -52,7 +52,7 @@ def test_steam_login_error_redacts_proxy_credentials():
     from app.services import steam_auth
 
     msg = steam_auth._classify_steam_login_exception(
-        steam_auth._req.exceptions.ProxyError(
+        steam_auth.httpx.ProxyError(
             "HTTPSConnectionPool(proxy='http://alice:secret@proxy.example:8080')"
         )
     )
@@ -130,7 +130,8 @@ def test_steam_refresh_token_poll_timeout_has_actionable_error():
 
 
 def test_do_steampy_login_repairs_upstream_single_poll_and_restores_patch(monkeypatch):
-    import requests
+    import httpx
+    from utils import http_client as http
     from steampy import client as steampy_client
     from steampy.login import LoginExecutor
     from app.services import steam_auth
@@ -140,7 +141,7 @@ def test_do_steampy_login_repairs_upstream_single_poll_and_restores_patch(monkey
 
     class FakeSteamClient:
         def __init__(self, **kwargs):
-            self._session = requests.Session()
+            self._session = http.Client()
             self._session.cookies.set(
                 "steamLoginSecure",
                 "76561198000000000%7C%7Caccess-token",
@@ -186,7 +187,8 @@ def test_do_steampy_login_repairs_upstream_single_poll_and_restores_patch(monkey
 
 
 def test_do_steampy_login_once_injects_proxy_and_bounded_timeout(monkeypatch):
-    import requests
+    import httpx
+    from utils import http_client as http
     from steampy import client as steampy_client
     from app.services import steam_auth
 
@@ -198,7 +200,7 @@ def test_do_steampy_login_once_injects_proxy_and_bounded_timeout(monkeypatch):
 
     class FakeSteamClient:
         def __init__(self, **_kwargs):
-            self._session = requests.Session()
+            self._session = http.Client()
             self._session.cookies.set(
                 "steamLoginSecure",
                 "76561198000000000%7C%7Caccess-token",
@@ -215,7 +217,7 @@ def test_do_steampy_login_once_injects_proxy_and_bounded_timeout(monkeypatch):
         "http": "http://proxy.example:8080/",
         "https": "http://proxy.example:8080/",
     }
-    monkeypatch.setattr(requests.Session, "request", fake_request)
+    monkeypatch.setattr(http.Client, "request", fake_request)
     monkeypatch.setattr(steampy_client, "SteamClient", FakeSteamClient)
 
     ok, error, _cookies = steam_auth._do_steampy_login_once(
@@ -380,17 +382,18 @@ def test_steam_login_strategy_two_never_falls_back_to_direct(monkeypatch):
 
 
 def test_do_steampy_login_converts_refresh_token_key_error_to_auth_pending(monkeypatch):
-    import requests
+    import httpx
+    from utils import http_client as http
     from steampy import client as steampy_client
     from steampy.login import LoginExecutor
     from app.services import steam_auth
 
-    original_request = requests.Session.request
+    original_request = http.Client.request
     original_pool = LoginExecutor._pool_sessions_steam
 
     class FakeSteamClient:
         def __init__(self, **kwargs):
-            self._session = requests.Session()
+            self._session = http.Client()
 
         def login(self):
             raise KeyError("refresh_token")
@@ -407,21 +410,22 @@ def test_do_steampy_login_converts_refresh_token_key_error_to_auth_pending(monke
     assert error.startswith("auth_pending:")
     assert "refresh_token" not in error
     assert cookies == {}
-    assert requests.Session.request is original_request
+    assert http.Client.request is original_request
     assert LoginExecutor._pool_sessions_steam is original_pool
     assert steam_auth._steampy_login_patch_lock.acquire(blocking=False)
     steam_auth._steampy_login_patch_lock.release()
 
 
 def test_do_steampy_login_releases_lock_when_login_executor_import_fails(monkeypatch):
-    import requests
+    import httpx
+    from utils import http_client as http
     from steampy import client as steampy_client
     from app.services import steam_auth
 
     # Ensure steampy.client is already loaded, then make only the subsequent
     # LoginExecutor import fail inside _do_steampy_login.
     assert steampy_client.SteamClient
-    original_request = requests.Session.request
+    original_request = http.Client.request
     monkeypatch.setitem(sys.modules, "steampy.login", types.ModuleType("steampy.login"))
 
     ok, _error, cookies = steam_auth._do_steampy_login(
@@ -432,7 +436,7 @@ def test_do_steampy_login_releases_lock_when_login_executor_import_fails(monkeyp
 
     assert ok is False
     assert cookies == {}
-    assert requests.Session.request is original_request
+    assert http.Client.request is original_request
     assert steam_auth._steampy_login_patch_lock.acquire(blocking=False)
     steam_auth._steampy_login_patch_lock.release()
 

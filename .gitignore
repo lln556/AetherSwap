@@ -1,3 +1,27 @@
+# Local secrets and machine-specific deployment settings
+.env
+.env.*
+!.env.example
+.agreed_disclaimer
+/DEPLOYMENT.local.md
+/Dockerfile.deploy
+/compose.override.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Runtime configuration is private; only source/default files are publishable.
+/config/*
+!/config/__init__.py
+!/config/config.json
+
+# Generated local artifacts
+/output_cards/
+.pytest_cache/
+.coverage
+htmlcov/
+
 config/credentials.json
 config/app_config.json
 config/accounts.json

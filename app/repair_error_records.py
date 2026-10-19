@@ -9,13 +9,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from utils.money import currency_code_from_price_text, parse_price_text
-import requests
+from utils import http_client as http
 from bs4 import BeautifulSoup
-try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except Exception:
-    pass
 CREDENTIALS_FILE = ROOT / "config" / "credentials.json"
 MYHISTORY_RENDER_URL = "https://steamcommunity.com/market/myhistory/render/"
 HISTORY_PAGE_SIZE = 500
@@ -141,7 +136,7 @@ def _fetch_sold_with_names(cookies: dict) -> tuple:
     total_count = None
     for _ in range(HISTORY_MAX_PAGES):
         params = {"query": "", "start": start, "count": HISTORY_PAGE_SIZE, "contextid": 2, "appid": 730}
-        r = requests.get(MYHISTORY_RENDER_URL, params=params, headers=headers, cookies=cookies, verify=False, timeout=TIMEOUT)
+        r = http.get(MYHISTORY_RENDER_URL, params=params, headers=headers, cookies=cookies, verify=False, timeout=TIMEOUT)
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}")
         data = r.json() if r.text else {}

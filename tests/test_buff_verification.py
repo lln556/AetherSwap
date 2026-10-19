@@ -29,7 +29,7 @@ def test_verification_response_opens_circuit_without_retry(monkeypatch, method):
         calls.append(args)
         return FakeResponse()
 
-    monkeypatch.setattr("requests.Session.request", request)
+    monkeypatch.setattr("utils.http_client.Client.request", request)
     buyer = BuffBuyer(
         "csrf_token=abc",
         request_policy=BuffRequestPolicy(min_interval=0, state_path=None, persist=False),

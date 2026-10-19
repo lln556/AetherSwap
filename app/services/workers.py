@@ -147,7 +147,7 @@ def holdings_report_worker() -> None:
 _EXCHANGE_RATE_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "exchange_rate.json"
 def _fetch_exchange_rates(base: str = "CNY", targets: Optional[list] = None) -> Optional[dict]:
     try:
-        import requests
+        from utils import http_client as http
         from utils.proxy_manager import get_proxy_manager, mask_proxy_url
         pm = get_proxy_manager()
         proxies = pm.get_proxies_for_request()  
@@ -155,7 +155,7 @@ def _fetch_exchange_rates(base: str = "CNY", targets: Optional[list] = None) -> 
         from app.state import log
         if proxies:
             log(f"exchange_rate: 正在使用代理 {mask_proxy_url(proxies.get('http'))} 访问: {url}", "debug", category="exchange_rate")
-        r = requests.get(url, timeout=10, proxies=proxies)
+        r = http.get(url, timeout=10, proxies=proxies)
         data = r.json()
         if data.get("result") != "success":
             return None
@@ -331,7 +331,10 @@ def receive_worker() -> None:
             _worker_alert("receive_worker", e)
             time.sleep(60)
 def listing_check_worker() -> None:
-    from app.steam_listings import fetch_my_listings, fetch_my_history_sold
+    from app.steam_listings import fetch_my_history_sold
+    from app.services.listing_confirmation import sync_listing_confirmations
+    from app.pipeline_context import PipelineContext
+    from app.state import get_state
     while True:
         try:
             cfg = load_app_config_validated()
@@ -343,6 +346,7 @@ def listing_check_worker() -> None:
             listing_idx = [(i, p) for i, p in enumerate(purchases) if p.get("listing") and p.get("assetid")]
             if not listing_idx:
                 continue
+            tracked_listings = {(p.get("_db_id"), str(p["assetid"])) for _, p in listing_idx}
             cred = get_steam_credentials()
             cookies = cred.get("cookies") or ""
             if not cookies:
@@ -350,9 +354,16 @@ def listing_check_worker() -> None:
             pipeline_cfg = cfg.get("pipeline") or {}
             steam_debug = bool(pipeline_cfg.get("steam_listings_debug") or pipeline_cfg.get("verbose_debug"))
             debug_fn = (lambda m: log(m, "debug", category="steam")) if steam_debug else None
-            ok, active_ids, err, _ = fetch_my_listings(cookies, debug_fn=debug_fn)
+            ctx = PipelineContext(get_state(), "listing_check")
+            ok, snapshot, err = sync_listing_confirmations(ctx, cfg, cred)
             if not ok:
                 continue
+            # Pending confirmations are still owned market requests, not sales.
+            active_ids = set(snapshot)
+            purchases = get_purchases()
+            listing_idx = [(i, p) for i, p in enumerate(purchases)
+                           if p.get("listing") and p.get("assetid")
+                           and (p.get("_db_id"), str(p["assetid"])) in tracked_listings]
             not_in_active = [(i, p) for i, p in listing_idx if str(p.get("assetid") or "") and str(p.get("assetid") or "") not in active_ids]
             if steam_debug and not_in_active:
                 log(f"[listing_check] 本地 {len(listing_idx)} 条在售, Steam 活跃 {len(active_ids)}, 可能已售 {len(not_in_active)} 条", "debug", category="steam")

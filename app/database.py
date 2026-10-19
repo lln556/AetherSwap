@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional
 from sqlmodel import Field, Session, SQLModel, create_engine, select
+from app import trading_models
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 _DB_PATH = _CONFIG_DIR / "app.db"
 _TRANSACTIONS_JSON = _CONFIG_DIR / "transactions.json"
@@ -47,6 +48,9 @@ class Purchase(SQLModel, table=True):
     buff_sell_order_id: Optional[str] = None
     batch_id: Optional[str] = Field(default=None, index=True)
     bill_order_id: Optional[str] = None
+    account_id: str = ""
+    archived_at: Optional[float] = None
+    archive_reason: str = ""
 class Sale(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = ""
@@ -112,25 +116,34 @@ def get_engine():
         if _engine is not None:
             return _engine
         _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        _engine = create_engine(
-            f"sqlite:///{_DB_PATH}",
-            echo=False,
-            connect_args={"check_same_thread": False},
-        )
+        url = os.getenv("AETHERSWAP_DATABASE_URL") or f"sqlite:///{_DB_PATH}"
+        if url.startswith("postgresql://"):
+            url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+        kwargs = {"echo": False, "pool_pre_ping": True}
+        if url.startswith("sqlite:"):
+            kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+        _engine = create_engine(url, **kwargs)
         return _engine
 def get_session() -> Session:
     return Session(get_engine())
 def init_db() -> None:
     """Create all tables if they don't exist, and run lightweight migrations."""
-    from sqlalchemy import text as sa_text
+    from sqlalchemy import text as sa_text, inspect
+    from app import trading_models  # Register the lifecycle tables with SQLModel.
     engine = get_engine()
     SQLModel.metadata.create_all(engine)
-    with engine.connect() as conn:
-        try:
+    with engine.begin() as conn:
+        if "wilson_score" not in {c["name"] for c in inspect(conn).get_columns("steamdealgame")}:
             conn.execute(sa_text("ALTER TABLE steamdealgame ADD COLUMN wilson_score REAL"))
-            conn.commit()
-        except Exception:
-            pass  
+    with engine.begin() as conn:
+        for table, columns in {
+            "repricejob": (("consecutive_failures", "INTEGER NOT NULL DEFAULT 0"), ("last_quoted_at", "DOUBLE PRECISION NOT NULL DEFAULT 0")),
+            "tradingpolicy": (("mutation_retry_at", "DOUBLE PRECISION NOT NULL DEFAULT 0"), ("mutation_error", "TEXT NOT NULL DEFAULT ''")),
+        }.items():
+            existing = {c["name"] for c in inspect(conn).get_columns(table)}
+            for column, sql_type in columns:
+                if column not in existing:
+                    conn.execute(sa_text(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}"))
     purchase_columns = (
         ("buff_order_id", "TEXT"),
         ("buff_sell_order_id", "TEXT"),
@@ -140,31 +153,28 @@ def init_db() -> None:
         ("item_type", "TEXT"),
         ("exterior", "TEXT"),
         ("paintwear", "TEXT"),
+        ("account_id", "TEXT NOT NULL DEFAULT ''"),
+        ("archived_at", "DOUBLE PRECISION"),
+        ("archive_reason", "TEXT NOT NULL DEFAULT ''"),
     )
-    with engine.connect() as conn:
+    with engine.begin() as conn:
+        existing_columns = {c["name"] for c in inspect(conn).get_columns("purchase")}
         for column_name, column_type in purchase_columns:
-            try:
+            if column_name not in existing_columns:
                 conn.execute(
                     sa_text(
                         f"ALTER TABLE purchase ADD COLUMN {column_name} {column_type}"
                     )
                 )
-                conn.commit()
-            except Exception:
-                pass
         # Empty/NULL legacy values are intentionally excluded.  Every real
         # BUFF bill/order id may be recorded at most once.
-        try:
-            conn.execute(
+        conn.execute(
                 sa_text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS "
                     "ux_purchase_buff_order_id ON purchase(buff_order_id) "
                     "WHERE buff_order_id IS NOT NULL AND buff_order_id != ''"
                 )
             )
-            conn.commit()
-        except Exception:
-            pass
     with engine.connect() as conn:
         rows = conn.execute(
             sa_text("SELECT id, positive_rate, total_reviews FROM steamdealgame WHERE wilson_score IS NULL")
@@ -200,6 +210,9 @@ def _purchase_from_dict(d: dict) -> Purchase:
         buff_sell_order_id=str(d["buff_sell_order_id"]) if d.get("buff_sell_order_id") else None,
         batch_id=str(d["batch_id"]) if d.get("batch_id") else None,
         bill_order_id=str(d["bill_order_id"]) if d.get("bill_order_id") else None,
+        account_id=str(d.get("account_id") or ""),
+        archived_at=d.get("archived_at"),
+        archive_reason=str(d.get("archive_reason") or ""),
     )
 def _sale_from_dict(d: dict) -> Sale:
     sid = d.get("_db_id")
@@ -241,6 +254,8 @@ def _purchase_to_dict(p: Purchase) -> dict:
         d["batch_id"] = p.batch_id
     if p.bill_order_id is not None:
         d["bill_order_id"] = p.bill_order_id
+    if p.account_id:
+        d["account_id"] = p.account_id
     if p.icon_url:
         d["icon_url"] = p.icon_url
     if p.item_type:
@@ -297,21 +312,30 @@ _PURCHASE_UPDATABLE = frozenset({
     "sold_at", "pending_receipt", "assetid", "listing", "listing_status",
     "buff_order_id", "buff_sell_order_id", "batch_id", "bill_order_id",
     "icon_url", "item_type", "exterior", "paintwear",
+    "account_id",
 })
 _SALE_UPDATABLE = frozenset({"name", "price", "goods_id", "assetid", "at"})
 def db_append_purchase(p: dict) -> None:
     record = {k: v for k, v in p.items() if k != "_db_id"}
     with get_session() as session:
-        session.add(_purchase_from_dict(record))
+        row = _purchase_from_dict(record)
+        session.add(row)
+        session.flush()
+        from app.trading_ledger import audit_purchase
+        audit_purchase(session, row, None)
         session.commit()
 def db_get_purchases() -> list:
     with get_session() as session:
-        rows = session.exec(select(Purchase).order_by(Purchase.id)).all()
+        rows = session.exec(select(Purchase).where(Purchase.archived_at == None).order_by(Purchase.id)).all()
         return [_purchase_to_dict(r) for r in rows]
 def db_append_sale(s: dict) -> None:
     record = {k: v for k, v in s.items() if k != "_db_id"}
     with get_session() as session:
-        session.add(_sale_from_dict(record))
+        row = _sale_from_dict(record)
+        session.add(row)
+        session.flush()
+        from app.trading_ledger import import_listing_action
+        import_listing_action(session, row)
         session.commit()
 def db_get_sales() -> list:
     with get_session() as session:
@@ -320,25 +344,48 @@ def db_get_sales() -> list:
 def db_clear_transactions() -> None:
     from sqlmodel import delete as sql_delete
     with get_session() as session:
+        for model in (trading_models.TradeEvent, trading_models.TradeSettlement, trading_models.RepriceJob, trading_models.MarketListing, trading_models.TradingPolicy):
+            session.exec(sql_delete(model))
         session.exec(sql_delete(Purchase))
         session.exec(sql_delete(Sale))
         session.commit()
 def db_replace_transactions(purchases: list, sales: list) -> None:
     from sqlmodel import delete as sql_delete
     with get_session() as session:
-        session.exec(sql_delete(Purchase))
+        if session.exec(select(trading_models.RepriceJob).where(trading_models.RepriceJob.status.in_({"planned", "removing", "awaiting_inventory", "ready", "submitting", "confirming", "needs_review"}))).first():
+            raise ValueError("存在未完成调价任务，请先完成核实再重建记录")
+        existing = {p.id: p for p in session.exec(select(Purchase)).all()}
+        before = {pid: p.model_dump() for pid, p in existing.items()}
         session.exec(sql_delete(Sale))
+        from app.trading_ledger import audit_purchase, import_listing_action
+        kept = set()
         for p in purchases:
-            session.add(_purchase_from_dict(p))
+            row = _purchase_from_dict(p)
+            if row.id in existing:
+                current = existing[row.id]
+                for k, value in row.model_dump().items():
+                    if k != "id":
+                        setattr(current, k, value)
+                row = current
+            session.add(row)
+            session.flush()
+            kept.add(row.id)
+            audit_purchase(session, row, before.get(row.id), legacy=True)
+        for pid, row in existing.items():
+            if pid not in kept and not row.archived_at:
+                _archive_purchase(session, row, "records_replaced")
         for s in sales:
-            session.add(_sale_from_dict(s))
+            row = _sale_from_dict(s)
+            session.add(row)
+            session.flush()
+            import_listing_action(session, row)
         session.commit()
 def db_delete_purchase(idx: int) -> bool:
     """Delete purchase by positional index (0-based, ordered by id)."""
     with get_session() as session:
-        rows = session.exec(select(Purchase).order_by(Purchase.id)).all()
+        rows = session.exec(select(Purchase).where(Purchase.archived_at == None).order_by(Purchase.id)).all()
         if 0 <= idx < len(rows):
-            session.delete(rows[idx])
+            _archive_purchase(session, rows[idx], "user_archived")
             session.commit()
             return True
     return False
@@ -353,13 +400,17 @@ def db_delete_sale(idx: int) -> bool:
 def db_update_purchase(idx: int, data: dict) -> bool:
     """按位置索引更新（兼容旧接口，UI 路由使用）。"""
     with get_session() as session:
-        rows = session.exec(select(Purchase).order_by(Purchase.id)).all()
+        rows = session.exec(select(Purchase).where(Purchase.archived_at == None).order_by(Purchase.id)).all()
         if 0 <= idx < len(rows):
             row = rows[idx]
+            before = row.model_dump()
             for k, v in data.items():
                 if k in _PURCHASE_UPDATABLE:
                     setattr(row, k, v)
             session.add(row)
+            from app.trading_ledger import audit_purchase, sync_manual_sale
+            audit_purchase(session, row, before)
+            sync_manual_sale(session, row, data)
             session.commit()
             return True
     return False
@@ -398,30 +449,39 @@ def db_update_purchase_by_id(db_id: int, data: dict) -> bool:
         row = session.get(Purchase, db_id)
         if row is None:
             return False
+        before = row.model_dump()
         for k, v in data.items():
             if k in _PURCHASE_UPDATABLE:
                 setattr(row, k, v)
         session.add(row)
+        from app.trading_ledger import audit_purchase, sync_manual_sale
+        audit_purchase(session, row, before)
+        sync_manual_sale(session, row, data)
         session.commit()
         return True
 def db_apply_receipt_reconciliation(expected: dict, *, assetid: str = "", closed: bool = False) -> bool:
     """Apply only to the still-pending, unchanged order used by the audit."""
     with get_session() as session:
         row = session.get(Purchase, expected.get("_db_id"))
-        if (row is None or not row.pending_receipt or row.assetid or row.listing
+        if (row is None or row.archived_at or not row.pending_receipt or row.assetid or row.listing
                 or row.sale_price or row.sold_at
                 or row.buff_order_id != expected.get("buff_order_id")
                 or row.goods_id != expected.get("goods_id")
                 or row.price != expected.get("price") or row.name != expected.get("name")):
             return False
         if closed:
-            session.delete(row)
+            from app.trading_ledger import add_event
+            add_event(session, row.id, "purchase_cancelled", "订单已关闭，移出待收货", details={"name": row.name, "cost": row.price})
+            _archive_purchase(session, row, "order_closed")
         else:
             if not assetid or session.exec(select(Purchase).where(Purchase.assetid == assetid)).first():
                 return False
+            before = row.model_dump()
             row.assetid = str(assetid)
             row.pending_receipt = False
             session.add(row)
+            from app.trading_ledger import audit_purchase
+            audit_purchase(session, row, before)
         session.commit()
         return True
 
@@ -434,9 +494,18 @@ def db_delete_purchase_by_id(db_id: int) -> bool:
         row = session.get(Purchase, db_id)
         if row is None:
             return False
-        session.delete(row)
+        _archive_purchase(session, row, "user_archived")
         session.commit()
         return True
+
+
+def _archive_purchase(session, row, reason):
+    import time
+    from app.trading_ledger import add_event
+    row.archived_at, row.archive_reason = time.time(), reason
+    session.add(row)
+    add_event(session, row.id, "archived", "购买记录已归档" if reason != "order_closed" else "订单已关闭，记录已归档",
+              at=row.archived_at, details={"reason": reason})
 def db_update_sale(idx: int, data: dict) -> bool:
     with get_session() as session:
         rows = session.exec(select(Sale).order_by(Sale.id)).all()

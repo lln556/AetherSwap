@@ -18,6 +18,7 @@ from app.config_loader import (
 )
 from config import load_app_config, save_credentials, get_all_credentials
 from app.accounts import list_accounts, replace_all as accounts_replace_all
+from app.services.trading_coordination import market_mutation
 router = APIRouter()
 def _save_credentials_with_auth_lock(data: dict) -> None:
     """Serialize bulk credential replacement with active BUFF operations."""
@@ -177,6 +178,7 @@ def _api_data_init_unlocked():
 
 
 @router.post("/api/data/init")
+@market_mutation
 def api_data_init():
     from app.pipeline import (
         PipelineMaintenanceBlocked,
@@ -244,6 +246,7 @@ def api_export_full_download():
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 @router.post("/api/import_full")
+@market_mutation
 def api_import_full(body: ImportFullBody):
     from app.accounts import get_current_id
     from app.pipeline import (

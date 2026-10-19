@@ -22,7 +22,7 @@ BUFF_ACCOUNT_ID = "default"
 BUFF_ORIGIN = "https://buff.163.com/"
 BUFF_BROWSER_LAUNCH_ARGS = [
     "--disable-blink-features=AutomationControlled",
-    # The authenticated requests.Session deliberately ignores environment and
+    # The authenticated HTTPX session deliberately ignores environment and
     # OS proxies.  Force the BUFF login profile onto the same direct egress.
     "--no-proxy-server",
 ]

@@ -1,0 +1,24 @@
+# Add with: docker compose -f docker-compose.yml -f compose.override.yaml -f compose.postgres.yaml ...
+services:
+  aetherswap-db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: aetherswap
+      POSTGRES_USER: aetherswap
+      POSTGRES_PASSWORD: ${AETHERSWAP_DB_PASSWORD:?Set a dedicated database password}
+    volumes:
+      - aetherswap-pg:/var/lib/postgresql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aetherswap -d aetherswap"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  aetherswap:
+    depends_on:
+      aetherswap-db:
+        condition: service_healthy
+    environment:
+      AETHERSWAP_DATABASE_URL: postgresql+psycopg://aetherswap:${AETHERSWAP_DB_PASSWORD}@aetherswap-db/aetherswap
+volumes:
+  aetherswap-pg:

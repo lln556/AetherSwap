@@ -1,0 +1,26 @@
+.trading-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:20px; }
+.trading-heading h2 { margin:0 0 6px; }
+.trading-summary { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:12px; }
+.trading-summary article { padding:18px; border:1px solid var(--border-color); background:var(--bg-surface); border-radius:12px; }
+.trading-summary strong { display:block; font-size:25px; margin:7px 0; font-variant-numeric:tabular-nums; }
+.trading-policy { margin:22px 0; padding:16px; border:1px solid var(--border-color); border-radius:12px; }
+.trading-policy summary { cursor:pointer; font-weight:600; }
+.trading-policy-fields,.trading-filters { display:flex; align-items:end; flex-wrap:wrap; gap:14px; margin:16px 0; }
+.trading-policy-fields label,.trading-filters label { display:flex; flex-direction:column; gap:6px; font-size:13px; }
+.trading-policy-fields input[type=number] { width:140px; }
+.trading-search { flex:1; min-width:180px; }
+.trading-table { width:100%; }
+.trading-table td { vertical-align:top; }
+.trading-table .trading-item { min-width:190px; max-width:300px; white-space:normal; }
+.trading-table small { display:block; margin-top:5px; line-height:1.5; }
+.trading-badge { display:inline-block; padding:4px 9px; border-radius:7px; background:var(--bg-surface); border:1px solid var(--border-color); white-space:nowrap; }
+.trading-badge.sold,.trading-badge.active { color:var(--success,#16a085); }
+.trading-badge.unknown,.trading-badge.attention { color:var(--warning,#d38b24); }
+.trading-pagination { display:flex; justify-content:center; align-items:center; gap:16px; margin-top:18px; }
+.trading-dialog { width:min(720px,92vw); max-height:85vh; overflow:auto; background:var(--bg-surface); color:var(--text-primary); border:1px solid var(--border-color); border-radius:16px; padding:24px; }
+.trading-dialog::backdrop { background:rgba(0,0,0,.5); }
+.trading-event { border-left:2px solid var(--border-color); padding:0 0 22px 18px; margin-left:6px; }
+.trading-event h3 { margin:5px 0; font-size:15px; }
+.trading-event p { margin:4px 0; line-height:1.6; overflow-wrap:anywhere; }
+.trading-empty { padding:40px!important; text-align:center; color:var(--text-secondary); }
+@media(max-width:800px) { .trading-summary { grid-template-columns:repeat(2,minmax(0,1fr)); } .trading-heading { align-items:flex-start; flex-direction:column; } .trading-policy-fields label { flex:1; } .trading-dialog { padding:16px; } }

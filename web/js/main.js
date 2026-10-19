@@ -31,6 +31,7 @@ async function tabSwitch(name) {
   if (name === "inventory") refreshInventory(false);
   if (name === "purchases" || name === "sales" || name === "purchase-history") {
     await refreshTransactions();
+    if (name !== "purchases" && typeof refreshTrading === "function") await refreshTrading();
     if (name === "purchases") refreshMarketPrices();
   }
   if (name === "analytics") refreshAnalytics();
@@ -602,7 +603,7 @@ function bindEvents() {
       .catch((e) => toast("保存失败", e.message || "请稍后再试"))
   );
   el("btn-refresh-inventory")?.addEventListener("click", () => refreshInventory(true));
-  el("btn-refresh-sales")?.addEventListener("click", () => refreshTransactions());
+  el("btn-refresh-sales")?.addEventListener("click", () => refreshTrading());
   el("btn-add-account")?.addEventListener("click", () => openAccountForm());
   el("accounts-search")?.addEventListener("input", (e) => {
     accountsSearchTerm = e.target?.value || "";

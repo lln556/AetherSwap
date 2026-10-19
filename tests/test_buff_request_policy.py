@@ -2,8 +2,14 @@ import json
 import threading
 
 import pytest
-import requests
-from requests.cookies import RequestsCookieJar, create_cookie
+import httpx
+from utils import http_client as http
+from utils.http_client import Cookies
+
+def create_cookie(name, value, **kwargs):
+    jar = Cookies()
+    jar.set(name, value, **kwargs)
+    return next(iter(jar.jar))
 
 from buff.buyer import (
     API_BATCH_PREVIEW,
@@ -58,7 +64,7 @@ class FakeResponse:
         )
         self.url = url
         self.history = history or []
-        self.cookies = RequestsCookieJar()
+        self.cookies = Cookies()
         for name, value in (cookies or {}).items():
             self.cookies.set(name, value)
 
@@ -73,7 +79,7 @@ class FakeSession:
         self.responses = list(responses)
         self.calls = []
         self.close_calls = 0
-        self.cookies = RequestsCookieJar()
+        self.cookies = Cookies()
         self.headers = {}
 
     def request(self, method, url, **kwargs):
@@ -157,7 +163,7 @@ def test_generic_alipay_uses_wallet_channel_not_credit_card_huabei():
 
 def test_close_only_releases_an_internally_owned_session(monkeypatch):
     owned = FakeSession()
-    monkeypatch.setattr("buff.buyer.requests.Session", lambda: owned)
+    monkeypatch.setattr("buff.buyer.http.Client", lambda: owned)
     buyer = BuffBuyer("session=owned", request_policy=no_wait_policy())
     buyer.close()
     buyer.close()
@@ -591,7 +597,7 @@ def test_waiting_writer_reads_csrf_only_after_preceding_response_rotates_it():
 
 
 def test_write_network_timeout_is_explicit_unknown_result():
-    session = FakeSession(requests.Timeout("timed out"))
+    session = FakeSession(httpx.ReadTimeout("timed out"))
     buyer = BuffBuyer(
         "session=s; csrf_token=c", session=session, request_policy=no_wait_policy()
     )
@@ -601,12 +607,12 @@ def test_write_network_timeout_is_explicit_unknown_result():
     assert exc_info.value.method == "POST"
     assert exc_info.value.url.endswith("/api/write")
     assert exc_info.value.status_code is None
-    assert isinstance(exc_info.value.__cause__, requests.Timeout)
+    assert isinstance(exc_info.value.__cause__, httpx.ReadTimeout)
 
 
 def test_public_lock_method_does_not_swallow_unknown_write_result():
     session = FakeSession(
-        *checkout_responses(requests.ConnectionError("connection dropped"))
+        *checkout_responses(httpx.ConnectError("connection dropped"))
     )
     buyer = BuffBuyer(
         "session=s; csrf_token=c", session=session, request_policy=no_wait_policy()
@@ -989,7 +995,7 @@ def test_every_issued_abnormal_write_is_unknown_and_keeps_relevant_circuit(
 @pytest.mark.parametrize(
     "pay_response",
     [
-        requests.Timeout("payment lookup timed out"),
+        httpx.ReadTimeout("payment lookup timed out"),
         FakeResponse({"code": "LOGIN_REQUIRED"}, status_code=401),
         FakeResponse({"code": "FAIL"}, status_code=403),
         FakeResponse({"code": "OK", "data": []}),
@@ -1175,13 +1181,13 @@ def test_initial_cookie_is_domain_scoped_and_expiration_removes_it():
     )
     try:
         session_cookie = next(
-            cookie for cookie in buyer.session.cookies if cookie.name == "session"
+            cookie for cookie in buyer.session.cookies.jar if cookie.name == "session"
         )
         assert session_cookie.domain == "buff.163.com"
         assert session_cookie.path == "/"
         assert session_cookie.secure is True
 
-        expired = RequestsCookieJar()
+        expired = Cookies()
         expired.set_cookie(
             create_cookie(
                 "session",

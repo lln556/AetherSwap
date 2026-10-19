@@ -3,11 +3,9 @@ import html
 import json
 import re
 import time
-import requests
-import urllib3
+from utils import http_client as http
 from bs4 import BeautifulSoup
 from steam.session import parse_cookies
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 def _build_cookies(cookies_raw: str) -> dict:
     """从完整 cookie 字符串构建 cookies dict，并确保必要字段存在。"""
@@ -30,7 +28,7 @@ def get_friend_list(cookies_raw: str, my_steamid: str) -> list:
                 f"[gift_engine] get_friend_list attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            resp = requests.get(
+            resp = http.get(
                 url, params={"ajax": "1"}, cookies=cookies,
                 headers=_HEADERS, proxies=proxies, verify=False, timeout=15
             )
@@ -174,7 +172,7 @@ def get_base_auth_status(cookies_raw: str, *, require_country: bool = False):
     pm = get_proxy_manager()
     try:
         proxies = pm.get_proxies_for_request()
-        resp = requests.get(url, cookies=cookies, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
+        resp = http.get(url, cookies=cookies, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
         page_text = resp.text or ""
         jwt_token = ""
         config_data = _extract_store_user_config(page_text)
@@ -195,7 +193,7 @@ def get_wallet_balance(cookies_raw: str) -> dict:
     proxies = pm.get_proxies_for_request()
     unknown_currency_id = None
     try:
-        resp = requests.get(
+        resp = http.get(
             "https://steamcommunity.com/market/",
             cookies=cookies,
             headers={**_HEADERS, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
@@ -241,7 +239,7 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                 "https://api.steampowered.com/IWalletService/GetWalletDetails/v1"
                 f"?access_token={jwt_token}"
             )
-            resp = requests.get(api_url, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
+            resp = http.get(api_url, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
             if resp.status_code == 200:
                 data = resp.json().get("response", {})
                 balance_raw  = int(data.get("balance", 0))
@@ -291,7 +289,7 @@ def get_all_available_editions(app_id: str, cookies_raw: str) -> list:
     pm = get_proxy_manager()
     try:
         proxies = pm.get_proxies_for_request()
-        resp = requests.get(url, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=15)
+        resp = http.get(url, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=15)
         soup = BeautifulSoup(resp.text, "html.parser")
         editions = []
         seen_ids = set()
@@ -400,7 +398,7 @@ def _grpc_request(jwt_token: str, endpoint: str, payload_b64: str) -> bool:
                 f"[gift_engine] gRPC {endpoint} attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            resp = requests.post(url, headers=headers, proxies=proxies, files={"input_protobuf_encoded": (None, payload_b64)}, verify=False, timeout=15)
+            resp = http.post(url, headers=headers, proxies=proxies, files={"input_protobuf_encoded": (None, payload_b64)}, verify=False, timeout=15)
             result = resp.headers.get('X-Eresult') == '1'
             _log(f"gRPC {endpoint} → X-Eresult={resp.headers.get('X-Eresult')} ok={result}", "debug", category="proxy")
             return result
@@ -425,7 +423,7 @@ def _get_cart_items(jwt_token: str) -> list:
                 f"[gift_engine] GetCart attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            resp = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Origin": "https://store.steampowered.com"}, proxies=proxies, verify=False, timeout=15)
+            resp = http.get(url, headers={"User-Agent": "Mozilla/5.0", "Origin": "https://store.steampowered.com"}, proxies=proxies, verify=False, timeout=15)
             if resp.status_code == 200:
                 data = resp.json().get("response", resp.json())
                 items = [str(item.get("line_item_id")) for item in data.get("cart", {}).get("line_items", [])]
@@ -545,7 +543,7 @@ def _do_checkout(cookies_raw: str, country_code: str, giftee_account_id: int = 0
                 f"[gift_engine] checkout inittransaction attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            init_res = requests.post(
+            init_res = http.post(
                 "https://checkout.steampowered.com/checkout/inittransaction/",
                 data=init_payload, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=15
             )
@@ -556,7 +554,7 @@ def _do_checkout(cookies_raw: str, country_code: str, giftee_account_id: int = 0
                     continue  
                 return False
             transid = init_data.get("transid")
-            fin_res = requests.post(
+            fin_res = http.post(
                 "https://checkout.steampowered.com/checkout/finalizetransaction/",
                 data={
                     "transid": transid, "CardCVV2": "",

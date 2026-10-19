@@ -14,6 +14,9 @@ from app.api_auth import basic_header_matches, credentials_from_env, requires_au
 from app.database import init_db, migrate_from_json
 init_db()
 migrate_from_json()
+from app.trading_ledger import bootstrap_ledger
+bootstrap_ledger()
+from app.services.trading_worker import trading_worker
 from app.services.workers import (
     exchange_rate_worker,
     holdings_report_worker,
@@ -38,7 +41,7 @@ def _start_background_workers() -> None:
     q.submit(sync_account_region_worker, name="sync_account_region", max_retries=3, retry_base_delay=10.0)
     for fn in (
         receive_worker,
-        listing_check_worker,
+        trading_worker,
         exchange_rate_worker,
         holdings_report_worker,
         session_keepalive_worker,

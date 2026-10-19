@@ -1,13 +1,14 @@
 import json
 
 import pytest
-import requests
+import httpx
+from utils import http_client as http
 
 from steam import client
 
 
 def response(status=200, body=None, headers=None):
-    result = requests.Response()
+    result = httpx.Response(200)
     result.status_code = status
     result._content = json.dumps(body).encode()
     result.headers.update({"Content-Type": "application/json", **(headers or {})})
@@ -16,7 +17,7 @@ def response(status=200, body=None, headers=None):
 
 def test_history_can_report_429_without_exposing_response_secrets(monkeypatch):
     raw = response(429, {"cookie": "secret-cookie"}, {"Retry-After": "120"})
-    monkeypatch.setattr(client.requests, "get", lambda *_args, **_kwargs: raw)
+    monkeypatch.setattr(client.http, "get", lambda *_args, **_kwargs: raw)
 
     with pytest.raises(client.SteamHistoryError) as caught:
         client.fetch_history("Test Item", raise_on_error=True)
@@ -37,7 +38,7 @@ def test_history_can_report_429_without_exposing_response_secrets(monkeypatch):
      ({"success": True, "prices": "invalid"}, "invalid_prices")],
 )
 def test_history_reports_invalid_success_responses(monkeypatch, body, reason):
-    monkeypatch.setattr(client.requests, "get", lambda *_args, **_kwargs: response(body=body))
+    monkeypatch.setattr(client.http, "get", lambda *_args, **_kwargs: response(body=body))
     with pytest.raises(client.SteamHistoryError, match=reason):
         client.fetch_history("Test Item", raise_on_error=True)
     assert client.fetch_history("Test Item") is None
@@ -45,9 +46,9 @@ def test_history_reports_invalid_success_responses(monkeypatch, body, reason):
 
 def test_history_transport_errors_do_not_leak_credentials(monkeypatch):
     def fail(*_args, **_kwargs):
-        raise requests.exceptions.ProxyError("http://user:secret-password@example.com")
+        raise httpx.ProxyError("http://user:secret-password@example.com")
 
-    monkeypatch.setattr(client.requests, "get", fail)
+    monkeypatch.setattr(client.http, "get", fail)
     with pytest.raises(client.SteamHistoryError, match="ProxyError") as caught:
         client.fetch_history("Test Item", raise_on_error=True)
     assert "secret-password" not in str(caught.value)
@@ -63,7 +64,7 @@ def test_history_success_contract_is_unchanged(monkeypatch, return_currency):
         sent.append(kwargs)
         return raw
 
-    monkeypatch.setattr(client.requests, "get", get)
+    monkeypatch.setattr(client.http, "get", get)
     result = client.fetch_history("Test Item", return_currency=return_currency)
     assert result == ({"history": prices, "currency": "USD"} if return_currency else prices)
     assert "Accept-Language" not in sent[0]["headers"]
@@ -78,7 +79,7 @@ def test_history_preserves_explicit_headers(monkeypatch):
         sent.append(kwargs)
         return response(body={"success": True, "prices": []})
 
-    monkeypatch.setattr(client.requests, "get", get)
+    monkeypatch.setattr(client.http, "get", get)
     headers = {
         "Accept-Language": "zh-CN",
         "Accept": "application/json",

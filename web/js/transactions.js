@@ -67,7 +67,7 @@ function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, mult
   tbody.innerHTML = rowHtmls.join("");
   tbody.querySelectorAll(".tx-btn-del").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if (!(await appConfirm("确定删除这条记录？", { title: "删除记录", danger: true, confirmText: "删除" }))) return;
+      if (!(await appConfirm("确定归档这条记录？交易中心将保留历史。", { title: "归档记录", danger: true, confirmText: "归档" }))) return;
       const type = btn.dataset.type;
       const idx = parseInt(btn.dataset.idx, 10);
       try {
@@ -150,8 +150,10 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
     const mp = t.market_price != null ? Number(t.market_price).toFixed(2) : "未记录";
     const sold = t.sale_price != null && Number(t.sale_price) > 0;
     const listingError = t.listing_status === "error";
-    const statusStr = t.pending_receipt ? "待收货" : sold ? "已出售" : listingError ? "ERROR" : t.listing ? "出售中" : "持有中";
-    const statusCellClass = t.pending_receipt ? "status-pending" : sold ? "status-sold" : listingError ? "status-error" : t.listing ? "status-listing" : "status-holding";
+    const pendingConfirmation = t.listing && t.listing_status === "pending_confirmation";
+    const submitted = t.listing && t.listing_status === "submitted";
+    const statusStr = t.pending_receipt ? "待收货" : sold ? "已出售" : listingError ? "ERROR" : pendingConfirmation ? "待 Steam 确认" : submitted ? "上架状态待核实" : t.listing ? "出售中" : "持有中";
+    const statusCellClass = t.pending_receipt || pendingConfirmation || submitted ? "status-pending" : sold ? "status-sold" : listingError ? "status-error" : t.listing ? "status-listing" : "status-holding";
     const salePriceStr = sold ? Number(t.sale_price).toFixed(2) : "—";
     let discountRatioStr = "—", cashProfitStr = "—", selfUseStr = "—", discountRatioClass = "";
     if (sold) {
@@ -181,15 +183,33 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
       deviationCell = `<td class="mono">—</td>`;
     }
     const dbId = Number(t.db_id) || 0;
+    const confirmBtn = !multiSelectMode && (pendingConfirmation || submitted) ? `<button type="button" class="btn btn-sm btn-primary ph-btn-confirm" data-idx="${idx}" data-db-id="${dbId}">${pendingConfirmation ? "确认上架" : "核实状态"}</button> ` : "";
     const delistBtn = !multiSelectMode && t.listing ? `<button type="button" class="btn btn-sm btn-warning-outline ph-btn-delist" data-type="purchase" data-idx="${idx}" data-db-id="${dbId}">下架</button> ` : "";
-    const actHtml = !multiSelectMode ? (delistBtn + `<button type="button" class="btn btn-sm btn-danger-outline ph-btn-del" data-type="purchase" data-idx="${idx}" data-db-id="${dbId}">删除</button>`) : "";
+    const actHtml = !multiSelectMode ? (confirmBtn + delistBtn + `<button type="button" class="btn btn-sm btn-danger-outline ph-btn-del" data-type="purchase" data-idx="${idx}" data-db-id="${dbId}">删除</button>`) : "";
     const assetidStr = t.assetid ?? "—";
     rowHtmls.push(`<tr>${checkCell}${itemThumbCellHtml(t.icon_url)}<td class="mono">${escapeHtml(timeStr)}</td>${nameCell}<td class="mono">${escapeHtml(assetidStr)}</td><td class="mono">${escapeHtml(Number(t.price).toFixed(2))}</td><td class="mono">${escapeHtml(mp)}</td><td class="status-cell ${statusCellClass}">${escapeHtml(statusStr)}</td><td class="mono">${escapeHtml(salePriceStr)}</td><td class="mono ${discountRatioClass}">${escapeHtml(discountRatioStr)}</td><td class="mono ${cashClass}">${escapeHtml(cashProfitStr)}</td><td class="mono ${selfUseClass}">${escapeHtml(selfUseStr)}</td>${deviationCell}<td class="tx-actions">${actHtml}</td></tr>`);
   }
   tbody.innerHTML = rowHtmls.join("");
+  tbody.querySelectorAll(".ph-btn-confirm").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      try {
+        const idx = parseInt(btn.dataset.idx, 10);
+        const dbId = parseInt(btn.dataset.dbId, 10) || 0;
+        const query = dbId ? "?" + new URLSearchParams({ db_id: dbId }) : "";
+        const r = await fetchJson(API + "/purchase/" + idx + "/confirm_listing" + query, { method: "POST" });
+        toast(r.ok ? (r.status === "active" ? "已正式在售" : "状态已核实") : "确认失败", r.message || r.error || "");
+        refreshTransactions();
+      } catch (e) {
+        toast("确认失败", e.message || "请求异常");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
   tbody.querySelectorAll(".ph-btn-delist").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if (!(await appConfirm("确定下架该饰品？下架后 assetid 会变更。", { title: "下架饰品", confirmText: "下架" }))) return;
+      if (!(await appConfirm("确定下架该饰品？系统会核实返回库存后的资产 ID。重新上架可能需要 Steam 确认。", { title: "下架饰品", confirmText: "下架" }))) return;
       const idx = parseInt(btn.dataset.idx, 10);
       btn.disabled = true;
       toast("下架中", "请稍候…");
@@ -198,7 +218,7 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
         const query = dbId ? "?" + new URLSearchParams({ db_id: dbId }) : "";
         const r = await fetchJson(API + "/purchase/" + idx + "/delist" + query, { method: "POST" });
         if (r.ok) {
-          const assetDetail = r.assetid != null && r.assetid !== "" ? "新 assetid: " + r.assetid : "新 assetid 为空，请使用「同步售出/持有」补全";
+          const assetDetail = r.assetid != null && r.assetid !== "" ? "库存 assetid: " + r.assetid : "库存 assetid 待同步，请使用「同步售出/持有」补全";
           const detail = [assetDetail, r.warning || r.message || ""].filter(Boolean).join("；");
           toast("下架成功", detail);
           refreshTransactions();
@@ -215,7 +235,7 @@ function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelect
   });
   tbody.querySelectorAll(".ph-btn-del").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if (!(await appConfirm("确定删除这条记录？删除后将从持有饰品与操作记录中同时移除。", { title: "删除持有记录", danger: true, confirmText: "删除" }))) return;
+      if (!(await appConfirm("确定归档这条记录？交易中心将保留历史。删除后将从持有饰品与操作记录中同时移除。", { title: "删除持有记录", danger: true, confirmText: "删除" }))) return;
       const idx = parseInt(btn.dataset.idx, 10);
       try {
         const dbId = parseInt(btn.dataset.dbId, 10) || 0;

@@ -3,14 +3,15 @@ Steam authentication service – extracted from api.py.
 Contains steampy-based login automation, profile fetching,
 and auto-relogin logic.
 """
+import ssl
+import httpx
 import re
 import threading
 import time
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from typing import Optional, Tuple
 from urllib.parse import unquote, urlparse
-import urllib3
-import requests as _req
+from utils import http_client as _http
 from app.state import log
 from app.config_loader import (
     get_steam_credentials,
@@ -24,7 +25,6 @@ from app.accounts import (
     set_current,
     update_account,
 )
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _STEAM_AUTH_POLL_MAX_ATTEMPTS = 30
 _STEAM_AUTH_POLL_INTERVAL_SECONDS = 1.0
@@ -51,7 +51,7 @@ def _verify_steam_cookies_valid(cookie_str: str, steam_id: str = "") -> Optional
     cookie_steam_id = steam_id_from_cookie_str(cookie_str)
     if not cookie_steam_id or (steam_id and cookie_steam_id != steam_id):
         return False
-    session = _req.Session()
+    session = _http.Client()
     session.verify = False
     session.cookies.update(cookie_dict)
     session.headers.update({
@@ -65,7 +65,7 @@ def _verify_steam_cookies_valid(cookie_str: str, steam_id: str = "") -> Optional
             timeout=12,
             allow_redirects=True,
         )
-        final_url = urlparse(response.url or "")
+        final_url = urlparse(str(response.url or ""))
         if final_url.scheme != "https" or final_url.hostname != "steamcommunity.com":
             return None
         if final_url.path.startswith("/login"):
@@ -81,7 +81,7 @@ def _verify_steam_cookies_valid(cookie_str: str, steam_id: str = "") -> Optional
         if response.history and re.fullmatch(r"/id/[^/]+(?:/.*)?", final_url.path):
             return True
         return None
-    except _req.RequestException:
+    except httpx.RequestError:
         return None
     finally:
         session.close()
@@ -130,74 +130,78 @@ def fetch_steam_profile_via_api(steam_id: str, cookies_str: str) -> tuple:
     if not steam_id:
         return "", ""
     display_name, avatar_url = "", ""
-    session = _req.Session()
-    session.verify = False
-    cookie_dict = {}
-    for part in (cookies_str or "").split(";"):
-        s = part.strip()
-        if "=" in s:
-            k, _, v = s.partition("=")
-            cookie_dict[k.strip()] = v.strip()
-    session.cookies.update(cookie_dict)
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    })
+    session = _http.Client()
     try:
-        r = session.get(f"https://steamcommunity.com/miniprofile/{int(steam_id) - 76561197960265728}/json", timeout=15)
-        if r.status_code == 200:
-            data = r.json()
-            display_name = (data.get("persona_name") or "").strip()
-            avatar_url = (data.get("avatar_url") or "").strip()
-            if avatar_url and not avatar_url.startswith("http"):
-                avatar_url = "https://avatars.steamstatic.com/" + avatar_url
-            if avatar_url and "_medium" in avatar_url:
-                avatar_url = avatar_url.replace("_medium", "_full")
-    except Exception:
-        pass
-    if display_name and avatar_url:
+        session.verify = False
+        cookie_dict = {}
+        for part in (cookies_str or "").split(";"):
+            s = part.strip()
+            if "=" in s:
+                k, _, v = s.partition("=")
+                cookie_dict[k.strip()] = v.strip()
+        session.cookies.update(cookie_dict)
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        })
+        try:
+            r = session.get(f"https://steamcommunity.com/miniprofile/{int(steam_id) - 76561197960265728}/json", timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                display_name = (data.get("persona_name") or "").strip()
+                avatar_url = (data.get("avatar_url") or "").strip()
+                if avatar_url and not avatar_url.startswith("http"):
+                    avatar_url = "https://avatars.steamstatic.com/" + avatar_url
+                if avatar_url and "_medium" in avatar_url:
+                    avatar_url = avatar_url.replace("_medium", "_full")
+        except Exception:
+            pass
+        if display_name and avatar_url:
+            return display_name, avatar_url
+        try:
+            r = session.get(f"https://steamcommunity.com/profiles/{steam_id}", params={"xml": "1"}, timeout=15)
+            if r.status_code == 200 and r.text:
+                if not display_name:
+                    name_m = re.search(r"<steamID><!\[CDATA\[(.+?)\]\]></steamID>", r.text)
+                    if name_m:
+                        display_name = name_m.group(1).strip()
+                if not avatar_url:
+                    avatar_m = re.search(r"<avatarFull><!\[CDATA\[(.+?)\]\]></avatarFull>", r.text)
+                    if avatar_m:
+                        avatar_url = avatar_m.group(1).strip()
+        except Exception:
+            pass
+        if display_name and avatar_url:
+            return display_name, avatar_url
+        try:
+            r = session.get(f"https://steamcommunity.com/profiles/{steam_id}", timeout=15)
+            if r.status_code == 200 and r.text:
+                html = r.text
+                if not display_name:
+                    for pat in [
+                        r'class="actual_persona_name"[^>]*>([^<]+)<',
+                        r'"personaname"\s*:\s*"([^"]+)"',
+                        r'<title>Steam Community :: (.+?)</title>',
+                    ]:
+                        m = re.search(pat, html)
+                        if m:
+                            display_name = m.group(1).strip()
+                            break
+                if not avatar_url:
+                    for pat in [
+                        r'class="playerAvatarAutoSizeInner"[^>]*>\s*<img[^>]+src="([^"]+)"',
+                        r'"avatarfull"\s*:\s*"([^"]+)"',
+                        r'property="og:image"[^>]+content="([^"]+)"',
+                    ]:
+                        m = re.search(pat, html)
+                        if m:
+                            avatar_url = m.group(1).strip().replace("\\/", "/")
+                            break
+        except Exception:
+            pass
         return display_name, avatar_url
-    try:
-        r = session.get(f"https://steamcommunity.com/profiles/{steam_id}", params={"xml": "1"}, timeout=15)
-        if r.status_code == 200 and r.text:
-            if not display_name:
-                name_m = re.search(r"<steamID><!\[CDATA\[(.+?)\]\]></steamID>", r.text)
-                if name_m:
-                    display_name = name_m.group(1).strip()
-            if not avatar_url:
-                avatar_m = re.search(r"<avatarFull><!\[CDATA\[(.+?)\]\]></avatarFull>", r.text)
-                if avatar_m:
-                    avatar_url = avatar_m.group(1).strip()
-    except Exception:
-        pass
-    if display_name and avatar_url:
-        return display_name, avatar_url
-    try:
-        r = session.get(f"https://steamcommunity.com/profiles/{steam_id}", timeout=15)
-        if r.status_code == 200 and r.text:
-            html = r.text
-            if not display_name:
-                for pat in [
-                    r'class="actual_persona_name"[^>]*>([^<]+)<',
-                    r'"personaname"\s*:\s*"([^"]+)"',
-                    r'<title>Steam Community :: (.+?)</title>',
-                ]:
-                    m = re.search(pat, html)
-                    if m:
-                        display_name = m.group(1).strip()
-                        break
-            if not avatar_url:
-                for pat in [
-                    r'class="playerAvatarAutoSizeInner"[^>]*>\s*<img[^>]+src="([^"]+)"',
-                    r'"avatarfull"\s*:\s*"([^"]+)"',
-                    r'property="og:image"[^>]+content="([^"]+)"',
-                ]:
-                    m = re.search(pat, html)
-                    if m:
-                        avatar_url = m.group(1).strip().replace("\\/", "/")
-                        break
-    except Exception:
-        pass
-    return display_name, avatar_url
+    finally:
+        session.close()
+
 def _get_shared_secret() -> str:
     try:
         cfg = load_app_config_validated()
@@ -259,7 +263,7 @@ def _classify_steam_login_exception(exc: Exception) -> str:
             "这通常由代理、加速器或安全网关返回，不是 Steam 账号错误。"
             f" 原始错误: {detail}"
         )
-    if isinstance(exc, _req.exceptions.SSLError) or "ssl" in err or "certificate" in err:
+    if isinstance(exc, ssl.SSLError) or "ssl" in err or "certificate" in err:
         return (
             "network_error: Steam 登录 HTTPS/SSL 握手失败；通常是代理、加速器、"
             "证书拦截或本机网络环境导致。"
@@ -282,9 +286,9 @@ def _classify_steam_login_exception(exc: Exception) -> str:
         "proxyconnectionerror",
     )
     request_network_types = (
-        _req.exceptions.ConnectionError,
-        _req.exceptions.Timeout,
-        _req.exceptions.ProxyError,
+        httpx.ConnectError,
+        httpx.TimeoutException,
+        httpx.ProxyError,
     )
     if isinstance(exc, request_network_types) or any(m in err for m in network_markers):
         return (
@@ -392,10 +396,7 @@ def _do_steampy_login_once(
     Returns (ok, error_code, cookie_dict).
     """
     import json
-    import requests as _req
-    import requests.utils as rutils
-    import urllib3
-    urllib3.disable_warnings()
+    from utils import http_client as _http
     _steampy_login_patch_lock.acquire()
     _old_pool_sessions = None
     client = None
@@ -417,6 +418,15 @@ def _do_steampy_login_once(
         sg_str = json.dumps(steam_guard_dict) if steam_guard_dict else None
         client = SteamClient(api_key="", username=username, password=password,
                              steam_guard=sg_str)
+        # steampy constructs a requests session internally. Replace it before
+        # login makes any request; its LoginExecutor then uses HTTPX as well.
+        original_session = client._session
+        cookie_jar = getattr(original_session.cookies, 'jar', original_session.cookies)
+        client._session = _http.Client(cookies=cookie_jar, verify=False,
+                                       proxies=active_proxies, timeout=_STEAM_LOGIN_REQUEST_TIMEOUT)
+        original_session.close()
+        if getattr(client, 'market', None) is not None:
+            client.market._session = client._session
         old_client_request = client._session.request
         client._session.request = _steam_request
         client._session.headers.update({
@@ -434,7 +444,7 @@ def _do_steampy_login_once(
         store_cookies = client._session.cookies.get_dict(domain='store.steampowered.com')
         merged = {**store_cookies, **comm_cookies}
         if not merged.get('steamLoginSecure'):
-            merged = rutils.dict_from_cookiejar(client._session.cookies)
+            merged = client._session.cookies.get_dict()
         return True, '', merged
     except Exception as e:
         err = str(e).lower()
@@ -464,6 +474,7 @@ def _do_steampy_login_once(
             LoginExecutor._pool_sessions_steam = _old_pool_sessions
         if client is not None and old_client_request is not None:
             client._session.request = old_client_request
+            client._session.close()
         _steampy_login_patch_lock.release()
 
 

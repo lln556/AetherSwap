@@ -232,7 +232,7 @@ def test_fetch_sold_with_names_paginates_history(monkeypatch):
         calls.append(params["start"])
         return FakeResponse(pages[len(calls) - 1])
 
-    monkeypatch.setattr(repair_error_records.requests, "get", fake_get)
+    monkeypatch.setattr(repair_error_records.http, "get", fake_get)
     monkeypatch.setattr(repair_error_records, "_load_rate_map", lambda: {})
     monkeypatch.setattr(repair_error_records, "HISTORY_PAGE_SIZE", 500)
     monkeypatch.setattr(repair_error_records, "HISTORY_MAX_PAGES", 5)

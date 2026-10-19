@@ -6,6 +6,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+@pytest.fixture(autouse=True)
+def no_repricing_job(monkeypatch):
+    monkeypatch.setattr("app.services.repricing.item_has_job", lambda purchase_id: False)
+
+
 def _listing(db_id: int = 7, assetid: str = "asset-old", **overrides):
     purchase = {
         "_db_id": db_id,
@@ -171,6 +176,7 @@ def test_delist_rejects_obvious_failure_after_http_200(
 
     class Response:
         status_code = 200
+        headers = {}
 
         def __init__(self):
             self.text = response_text
@@ -210,9 +216,6 @@ def test_delist_rejects_obvious_failure_after_http_200(
                 )()
             raise AssertionError("unexpected GET")
 
-        def post(self, *args, **kwargs):
-            return Response()
-
     monkeypatch.setattr(
         steam_delist,
         "get_steam",
@@ -221,7 +224,8 @@ def test_delist_rejects_obvious_failure_after_http_200(
             "steam_id": "steam-id",
         },
     )
-    monkeypatch.setattr(steam_delist.requests, "Session", Session)
+    monkeypatch.setattr(steam_delist.http, "Client", Session)
+    monkeypatch.setattr(steam_delist, "post_market", lambda *args, **kwargs: Response())
     monkeypatch.setattr(
         steam_delist,
         "_get_assetids_by_class_instance",
@@ -266,3 +270,30 @@ def test_inventory_query_distinguishes_failure_from_empty_inventory():
         EmptySession(),
         *args,
     ) == set()
+
+
+def test_inventory_diagnostics_preserve_throttle_and_retry_after():
+    from app.steam_delist import _get_assetids_by_class_instance
+    from unittest.mock import Mock
+    session=Mock();session.get.return_value=Mock(status_code=429,headers={'Retry-After':'3600'})
+    details={}
+    assert _get_assetids_by_class_instance(session,'steam','730','2','class','0',diagnostics=details) is None
+    assert details['http_status']==429 and details['retry_after']==3600
+    assert 'HTTP 429' in details['reason']
+    assert session.get.call_count==1
+
+
+def test_delist_preflight_failure_proves_no_post_was_sent(monkeypatch):
+    from app import steam_delist
+    from unittest.mock import Mock
+    session=Mock();monkeypatch.setattr(steam_delist.http,'Client',lambda:session)
+    monkeypatch.setattr(steam_delist,'get_steam',lambda:{'cookies':'steamLoginSecure=x; sessionid=y','steam_id':'steam'})
+    monkeypatch.setattr(steam_delist,'_get_mylistings_api',lambda s:{'a':{'listingid':'l','classid':'c','instanceid':'0'}})
+    def unavailable(*args,diagnostics):
+        diagnostics.update(http_status=429,retry_after=120,reason='库存接口 HTTP 429')
+        return None
+    monkeypatch.setattr(steam_delist,'_get_assetids_by_class_instance',unavailable)
+    outcome={};ok,aid,error=steam_delist.delist_item('a','Item',outcome=outcome)
+    assert not ok and aid is None and 'HTTP 429' in error
+    assert outcome['request_sent'] is False
+    session.post.assert_not_called();session.close.assert_called_once()

@@ -223,7 +223,7 @@ def test_get_base_auth_status_strict_reads_store_user_config_country(monkeypatch
     page = f'<div data-store_user_config="{config}"></div>'
 
     monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: _ProxyManager())
-    monkeypatch.setattr(gift_engine.requests, "get", lambda *args, **kwargs: _Response(page))
+    monkeypatch.setattr(gift_engine.http, "get", lambda *args, **kwargs: _Response(page))
 
     token, country_code, config_data = gift_engine.get_base_auth_status(
         "steamLoginSecure=x",
@@ -245,7 +245,7 @@ def test_get_wallet_balance_returns_wallet_country(monkeypatch):
     )
 
     monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: _ProxyManager())
-    monkeypatch.setattr(gift_engine.requests, "get", lambda *args, **kwargs: _Response(page))
+    monkeypatch.setattr(gift_engine.http, "get", lambda *args, **kwargs: _Response(page))
 
     wallet = gift_engine.get_wallet_balance("steamLoginSecure=x")
 
@@ -269,7 +269,7 @@ def test_get_wallet_balance_fallback_returns_currency_for_zero_balance(monkeypat
 
     monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: _ProxyManager())
     monkeypatch.setattr(gift_engine, "get_base_auth_status", lambda cookies: ("jwt-token", "CN", {}))
-    monkeypatch.setattr(gift_engine.requests, "get", lambda *args, **kwargs: _Response("", payload))
+    monkeypatch.setattr(gift_engine.http, "get", lambda *args, **kwargs: _Response("", payload))
 
     wallet = gift_engine.get_wallet_balance("steamLoginSecure=x")
 
@@ -288,7 +288,7 @@ def test_get_wallet_balance_rejects_unknown_currency_id(monkeypatch):
     )
 
     monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: _ProxyManager())
-    monkeypatch.setattr(gift_engine.requests, "get", lambda *args, **kwargs: _Response(page))
+    monkeypatch.setattr(gift_engine.http, "get", lambda *args, **kwargs: _Response(page))
 
     try:
         gift_engine.get_wallet_balance("steamLoginSecure=x")

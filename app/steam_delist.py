@@ -2,15 +2,12 @@ import json
 import re
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
-import requests
+from utils import http_client as http
 from config import get_steam
 from steam.session import create_market_session
+from app.steam_listings import fetch_listing_snapshot
+from app.steam_transport import MarketRequestError, post_market
 from utils.delay import jittered_sleep
-try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except Exception:
-    pass
 MYLISTINGS_API_URL = "https://steamcommunity.com/market/mylistings/"
 REMOVE_LISTING_URL = "https://steamcommunity.com/market/removelisting/"
 MARKET_URL = "https://steamcommunity.com/market/"
@@ -142,9 +139,11 @@ def _get_asset_class_instance_from_market_page(html: str, assetid: str) -> Optio
                     return (str(cid), str(iid))
     return None
 def _get_assetids_by_class_instance(
-    session, steam_id: str, appid: str, contextid: str, classid: str, instanceid: str
+    session, steam_id: str, appid: str, contextid: str, classid: str, instanceid: str, *, diagnostics=None
 ) -> Optional[set]:
     result = set()
+    diagnostics = diagnostics if diagnostics is not None else {}
+    seen_cursors = set()
     url = f"https://steamcommunity.com/inventory/{steam_id}/{appid}/{contextid}"
     last_assetid = None
     try:
@@ -154,12 +153,15 @@ def _get_assetids_by_class_instance(
                 params["start_assetid"] = last_assetid
             r = session.get(url, params=params, verify=False, timeout=20)
             if r.status_code != 200:
+                diagnostics.update(http_status=r.status_code, reason=f"库存接口 HTTP {r.status_code}", retry_after=_retry_after(r))
                 return None
             try:
                 data = r.json() if r.text else {}
             except (ValueError, TypeError):
+                diagnostics["reason"] = "库存接口返回非 JSON 数据"
                 return None
-            if data.get("success") != 1:
+            if not isinstance(data, dict) or data.get("success") != 1:
+                diagnostics["reason"] = "库存接口未返回成功结果"
                 return None
             assets = data.get("assets") or []
             for asset in assets:
@@ -174,13 +176,31 @@ def _get_assetids_by_class_instance(
             last_assetid = data.get("last_assetid")
             if not last_assetid and assets:
                 last_assetid = assets[-1].get("assetid")
-            if not last_assetid:
-                break
+            if not last_assetid or last_assetid in seen_cursors:
+                diagnostics["reason"] = "库存分页不完整，无法核实返库资产"
+                return None
+            seen_cursors.add(last_assetid)
             jittered_sleep(0.5)
-    except Exception:
+    except Exception as exc:
+        diagnostics["reason"] = f"库存请求异常（{type(exc).__name__}）"
         return None
     return result
-def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], None]] = None) -> Tuple[bool, Optional[str], Optional[str]]:
+def _retry_after(response):
+    from email.utils import parsedate_to_datetime
+    value = (getattr(response, "headers", {}) or {}).get("Retry-After", "")
+    try:
+        return max(0, int(value))
+    except (ValueError, TypeError):
+        try:
+            return max(0, int(parsedate_to_datetime(value).timestamp() - time.time()))
+        except (ValueError, TypeError, AttributeError, OverflowError):
+            return 0
+
+
+def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], None]] = None, *, outcome=None) -> Tuple[bool, Optional[str], Optional[str]]:
+    details = outcome if outcome is not None else {}
+    details.update(request_sent=False, phase="preflight", http_status=None, retry_after=0)
+    session = None
     try:
         cred = get_steam()
     except Exception as exc:
@@ -206,7 +226,7 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
         "Referer": "https://steamcommunity.com/market/",
     }
     try:
-        session = requests.Session()
+        session = http.Client()
         session.headers.update(headers)
         session.cookies.update(c)
         session.verify = False
@@ -283,9 +303,15 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
             return False, None, f"未找到 assetid {assetid} 对应的上架记录，请确认该物品在「我的上架」中"
         if not classid:
             return False, None, "无法获取物品的 classid/instanceid，请先打开 Steam 市场「我的上架」页确认该物品在售"
-        set_before = _get_assetids_by_class_instance(session, steam_id, appid, contextid, classid, instanceid)
+        def read_inventory():
+            args = (session, steam_id, appid, contextid, classid, instanceid)
+            if outcome is not None:
+                return _get_assetids_by_class_instance(*args, diagnostics=details)
+            return _get_assetids_by_class_instance(*args)
+        set_before = read_inventory()
         if set_before is None:
-            return False, None, "下架前读取 Steam 库存失败，尚未提交下架请求，请稍后重试"
+            reason = details.get("reason") or "读取 Steam 库存失败"
+            return False, None, f"下架前{reason}，尚未提交下架请求"
         if log_fn:
             log_fn("已获取下架前库存 assetid 集合", "info")
         remove_url = f"{REMOVE_LISTING_URL}{listing_id}"
@@ -295,8 +321,13 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
             "X-Requested-With": "XMLHttpRequest",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         }
-        resp = session.post(remove_url, data={"sessionid": sessionid}, headers=post_headers, timeout=TIMEOUT)
+        resp = post_market(
+            session, remove_url, data={"sessionid": sessionid},
+            headers=post_headers, timeout=TIMEOUT, outcome=details,
+        )
+        details.update(http_status=resp.status_code, retry_after=_retry_after(resp))
         if resp.status_code != 200:
+            details["rejected"] = resp.status_code in (400, 401, 403, 404, 429)
             return False, None, f"下架请求失败 HTTP {resp.status_code}"
         response_text = (resp.text or "").strip()
         if response_text:
@@ -319,18 +350,38 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                 return False, None, "Steam 返回登录页面，Cookie 可能已失效，请重新登录"
             elif response_text.lower() in {"false", "failure", "failed", "error"}:
                 return False, None, "Steam 返回下架失败"
+        details["phase"] = "inventory_verification"
         if log_fn:
             log_fn("等待 3 秒让 Steam 后端刷新库存…", "info")
         jittered_sleep(3)
         new_ids = set()
         inventory_checked = False
+        unchanged_unverified = False
         for attempt in range(3):
-            set_after = _get_assetids_by_class_instance(session, steam_id, appid, contextid, classid, instanceid)
+            set_after = read_inventory()
             if set_after is None:
+                if details.get("http_status") == 429:
+                    break
                 if attempt < 2:
                     jittered_sleep(2)
                 continue
             inventory_checked = True
+            unchanged_unverified = False
+            if assetid in set_after:
+                # Steam can retain an asset ID (and even expose listed assets
+                # in inventory). Inventory presence alone does not prove a delist.
+                ok_market, snapshot, _ = fetch_listing_snapshot(cookies_str)
+                if ok_market and assetid not in snapshot and all(
+                    row["listing_id"] != listing_id for row in snapshot.values()
+                ):
+                    if log_fn:
+                        log_fn(f"下架已核实，库存保留原 assetid={assetid}", "info")
+                    return True, assetid, None
+                # Do not claim another same-class item that arrived concurrently.
+                unchanged_unverified = True
+                if attempt < 2:
+                    jittered_sleep(2)
+                continue
             new_ids = set_after - set_before
             if len(new_ids) == 1:
                 break
@@ -341,6 +392,8 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
             if log_fn:
                 log_fn(warning, "warn")
             return True, None, warning
+        if unchanged_unverified:
+            return False, None, "下架请求已提交，但市场状态尚未核实；请刷新市场状态，勿立即重复下架"
         if len(new_ids) == 1:
             new_assetid = next(iter(new_ids))
             if log_fn:
@@ -351,5 +404,10 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
                 log_fn("下架成功但库存中未检测到新 assetid，已清空本地 assetid，请使用「同步售出/持有」补全", "warn")
             return True, None, None
         return False, None, f"下架后新 assetid 数量异常: {len(new_ids)} (期望 1)"
+    except MarketRequestError as e:
+        return False, None, str(e)
     except Exception as e:
-        return False, None, str(e)[:150]
+        return False, None, f"撤单流程请求异常（{type(e).__name__}）"
+    finally:
+        if session is not None and callable(getattr(session, "close", None)):
+            session.close()

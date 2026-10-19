@@ -4,7 +4,8 @@ import json
 import time
 
 import pytest
-import requests
+import httpx
+from utils import http_client as http
 
 from buff import BuffRequestBlocked, BuffWriteResultUnknown
 from buff import buyer_offer
@@ -138,7 +139,7 @@ def test_wrong_steam_cookie_owner_does_not_even_query_buff(monkeypatch):
 
 
 def test_unknown_write_result_is_durable_and_never_retried(monkeypatch):
-    buyer, calls = client(monkeypatch, exception=requests.Timeout("after send"))
+    buyer, calls = client(monkeypatch, exception=httpx.ReadTimeout("after send"))
     with pytest.raises(BuffWriteResultUnknown):
         send(buyer)
     assert len(calls) == 1

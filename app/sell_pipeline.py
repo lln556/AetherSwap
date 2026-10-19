@@ -15,7 +15,7 @@ from app.pipeline_context import PipelineContext
 from app.services.account_region import refresh_account_region_currency
 from app.strategy_engine import apply_strategy_to_config, evaluate_strategy_runtime_modules
 from app.state import get_state, append_sale
-from app.steam_confirm import auto_confirm_once
+from app.services.listing_confirmation import sync_listing_confirmations
 from app.steam_listings import fetch_my_listings
 from steam.market import list_item, parse_sell_response
 from steam.market_orders import compute_smart_list_price, get_sell_orders_cny
@@ -96,9 +96,9 @@ def _record_listing_success(ctx, aid: str, name: str, list_price: float, listing
             if str(p.get("assetid") or "") == aid:
                 db_id = p.get("_db_id")
                 if db_id:
-                    ctx.state.update_purchase_by_id(db_id, {"listing": True})
+                    ctx.state.update_purchase_by_id(db_id, {"listing": True, "listing_status": "submitted"})
                 else:
-                    ctx.state.update_purchase(i, {"listing": True})
+                    ctx.state.update_purchase(i, {"listing": True, "listing_status": "submitted"})
                 break
     jittered_sleep(listing_delay)
 
@@ -368,6 +368,8 @@ def _build_listing_plan(
             "it": it, "list_price": list_price, "reason": reason,
             "price_cents": price_cents, "market_hash_name": market_hash_name,
             "name": name, "aid": aid,
+            "purchase_id": buy_record.get("_db_id"), "currency": account_currency,
+            "buyer_minor": int(round(display_price * 100)),
         })
 
     if skip_same_name_cap:
@@ -408,7 +410,7 @@ def _find_buy_record(purchases_snapshot: list, aid: str, market_hash_name: str) 
                 continue
         if p.get("sold_at") not in (None, "", 0, 0.0):
             continue
-        if p.get("pending_receipt") or p.get("listing"):
+        if p.get("pending_receipt") or p.get("listing") or p.get("reprice_reserved"):
             continue
         return p
     return None
@@ -454,6 +456,8 @@ def _parse_listing_response(out: object) -> tuple[Optional[dict], str]:
         return None, "无响应"
     if not isinstance(out, dict):
         return None, f"返回类型异常: {type(out).__name__}"
+    if out.get("error"):
+        return None, _listing_response_body_preview(out["error"])
 
     status_code = out.get("status_code")
     status_label = str(status_code) if status_code is not None else "unknown"
@@ -526,6 +530,11 @@ def _submit_listings(
         price_cents = entry["price_cents"]
         name = entry["name"]
         aid = entry["aid"]
+        attempt_id = None
+        if entry.get("purchase_id"):
+            from app.trading_ledger import begin_listing_attempt, minor
+            attempt_id = begin_listing_attempt(entry["purchase_id"], aid, entry.get("buyer_minor", minor(list_price)), price_cents, entry.get("currency", "CNY"))
+        from app.trading_ledger import finish_listing_attempt
 
         ctx.log(f"[出售] 上架请求 {name} assetid={aid} 价格={list_price:.2f} ({reason})", "info", category="steam")
 
@@ -541,9 +550,12 @@ def _submit_listings(
         try:
             out = _do_list()
             if _listing_rate_limited(ctx, out):
+                finish_listing_attempt(attempt_id, rejected=True, message="Steam 限流，等待冷却后再试")
                 break
             data, response_error = _parse_listing_response(out)
             if data is None:
+                not_sent = isinstance(out, dict) and out.get("request_sent") is False
+                finish_listing_attempt(attempt_id, rejected=not_sent, message=response_error)
                 ctx.log(
                     f"[出售] {name} assetid={aid} 上架响应异常: {response_error}",
                     "warn",
@@ -557,7 +569,8 @@ def _submit_listings(
 
             if _listing_response_is_success(out, data, msg):
                 listed += 1
-                ctx.log(f"[出售] 已上架 assetid={aid} {name} 价格={list_price:.2f} ({reason})", "info", category="steam")
+                entry["submitted"] = True
+                ctx.log(f"[出售] 上架请求已接受 assetid={aid} {name} 价格={list_price:.2f}，正在核实在售/待确认状态 ({reason})", "info", category="steam")
                 _record_listing_success(ctx, aid, name, list_price, listing_delay)
                 continue
 
@@ -566,6 +579,7 @@ def _submit_listings(
                 jittered_sleep(5)
                 out2 = _do_list()
                 if _listing_rate_limited(ctx, out2):
+                    finish_listing_attempt(attempt_id, rejected=True, message="Steam 限流，等待冷却后再试")
                     break
                 data2, retry_error = _parse_listing_response(out2)
                 if data2 is None:
@@ -578,7 +592,8 @@ def _submit_listings(
                     msg2 = _listing_response_message(data2).lower()
                     if _listing_response_is_success(out2, data2, msg2):
                         listed += 1
-                        ctx.log(f"[出售] 已上架 assetid={aid} {name} 价格={list_price:.2f} ({reason}) [重试成功]", "info", category="steam")
+                        entry["submitted"] = True
+                        ctx.log(f"[出售] 上架请求已接受 assetid={aid} {name} 价格={list_price:.2f}，正在核实在售/待确认状态 ({reason}) [重试成功]", "info", category="steam")
                         _record_listing_success(ctx, aid, name, list_price, listing_delay)
                         continue
 
@@ -588,7 +603,9 @@ def _submit_listings(
                 else type(out).__name__
             )
             ctx.log(f"[出售] 上架失败 assetid={aid} {name}: {msg or response_preview}", "warn", category="steam")
+            finish_listing_attempt(attempt_id, message=msg or "结果待核实")
         except Exception as ex:
+            finish_listing_attempt(attempt_id, message=f"请求异常（{type(ex).__name__}），等待核实")
             error_detail = _listing_response_body_preview(ex)
             ctx.log(f"[出售] 上架时发生未捕获异常 assetid={aid} {name}: {type(ex).__name__} - {error_detail}", "error", category="steam")
 
@@ -597,28 +614,9 @@ def _submit_listings(
     return listed
 
 
-def _auto_confirm_listings(ctx: PipelineContext, cfg: dict, steam_id: str, cookies: str) -> None:
-    """Confirm pending Steam Guard confirmations after listing, if configured."""
-    steam_confirm_cfg = cfg.get("steam_confirm") or {}
-    if not bool(steam_confirm_cfg.get("enabled")):
-        return
-    identity_secret = (steam_confirm_cfg.get("identity_secret") or "").strip()
-    device_id = (steam_confirm_cfg.get("device_id") or "").strip()
-    if not identity_secret or not device_id:
-        ctx.log("[确认] 已开启自动确认，但 identity_secret/device_id 未配置，跳过", "warn", category="steam")
-        return
-    jittered_sleep(2)
-    ctx.log("[确认] 正在检查待确认列表…", "info", category="steam")
-    okc, n, errc = auto_confirm_once(
-        identity_secret=identity_secret,
-        device_id=device_id,
-        steam_id=str(steam_id),
-        cookies=str(cookies),
-    )
-    if okc:
-        ctx.log(f"[确认] 已自动确认 {n} 项", "info", category="steam")
-    else:
-        ctx.log(f"[确认] 自动确认失败: {errc}", "warn", category="steam")
+def _auto_confirm_listings(ctx: PipelineContext, cfg: dict, steam_id: str, cookies: str, assetids) -> None:
+    """Reconcile this batch, and confirm only its owned pending market listings."""
+    sync_listing_confirmations(ctx, cfg, {"steam_id": steam_id, "cookies": cookies}, assetids=assetids)
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +662,9 @@ def _run_sell_phase_impl(cfg: dict, state, flow_id: str, items: Optional[list] =
         ctx.log(f"[出售] Steam 在售列表拉取失败: {err_listings or '未知'}，同名在售校验将按本地购买记录", "warn", category="steam")
 
     purchases_snapshot = ctx.state.get_purchases()
+    from app.services.repricing import reserved_purchase_ids
+    reserved = reserved_purchase_ids() if any(p.get("_db_id") for p in purchases_snapshot) else set()
+    purchases_snapshot = [{**p, "reprice_reserved": p.get("_db_id") in reserved} for p in purchases_snapshot]
     account = get_current_account()
     if account is None:
         # 工厂重置后账号列表为空，直接跳过出售避免以错误币种上架
@@ -730,8 +731,9 @@ def _run_sell_phase_impl(cfg: dict, state, flow_id: str, items: Optional[list] =
     listed = _submit_listings(ctx, to_list, session, session_id_effective, listing_delay)
 
     if listed:
-        ctx.log(f"[出售] 本轮回共上架 {listed} 件，等待下一轮", "info", category="steam")
-        _auto_confirm_listings(ctx, cfg, cred_steam.get("steam_id", ""), cred_steam.get("cookies", ""))
+        ctx.log(f"[出售] 本轮回已提交 {listed} 件上架请求，核实 Steam 状态", "info", category="steam")
+        _auto_confirm_listings(ctx, cfg, cred_steam.get("steam_id", ""), cred_steam.get("cookies", ""),
+                               [entry["aid"] for entry in to_list if entry.get("submitted")])
 
 
 def _run_sell_phase(cfg: dict, state, flow_id: str, items: Optional[list] = None) -> None:

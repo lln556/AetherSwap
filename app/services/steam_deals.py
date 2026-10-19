@@ -7,8 +7,7 @@ import re
 import random
 import threading
 import time
-import requests
-import urllib3
+from utils import http_client as http
 import json
 from pathlib import Path
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
@@ -16,7 +15,6 @@ from typing import List, Optional
 
 _CHECKPOINT_SAVE_EVERY = 25
 _CHECKPOINT_SAVE_INTERVAL_SECONDS = 30.0
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 ROOT = Path(__file__).resolve().parent.parent.parent
 CHECKPOINT_FILE = ROOT / "config" / "steam_deals_checkpoint.json"
 CHECKPOINT_VERSION = 1
@@ -170,7 +168,7 @@ def _build_valid_proxies() -> list:
         steam_test = "https://store.steampowered.com/api/appdetails?appids=10&cc=us&filters=basic"
         start = time.time()
         try:
-            resp = requests.get(steam_test, proxies=proxy_dict, timeout=min(timeout, 8), verify=False)
+            resp = http.get(steam_test, proxies=proxy_dict, timeout=min(timeout, 8), verify=False)
             if resp.status_code == 200:
                 return (proxy_dict, time.time() - start)
         except Exception:
@@ -193,7 +191,7 @@ def _fetch_with_proxy(url: str, valid_proxies: list, max_retries: int = 5):
     for attempt in range(max_retries):
         proxy = random.choice(valid_proxies) if valid_proxies else None
         try:
-            resp = requests.get(url, proxies=proxy, headers=headers, timeout=8, verify=False)
+            resp = http.get(url, proxies=proxy, headers=headers, timeout=8, verify=False)
             if resp.status_code == 200:
                 return resp.json()
             elif resp.status_code == 429:

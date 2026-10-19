@@ -1,6 +1,6 @@
 """代理池配置与测试路由."""
 import time
-import requests
+from utils import http_client as http
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 from fastapi import APIRouter
@@ -106,7 +106,7 @@ def api_fetch_webshare():
             url = f"https://proxy.webshare.io/api/v2/proxy/list/?mode={mode}&page={page}&page_size=100"
             headers = {"Authorization": f"Token {api_key}"}
             try:
-                resp = requests.get(url, headers=headers, timeout=15)
+                resp = http.get(url, headers=headers, timeout=15)
                 if resp.status_code == 401:
                     return {"ok": False, "message": "API Key 无效或已过期（401 Unauthorized）"}
                 if resp.status_code != 200:

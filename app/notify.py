@@ -5,12 +5,12 @@ import time
 from email.header import decode_header
 from urllib.parse import quote
 from typing import Callable, Optional
-import requests
+from utils import http_client as http
 def send_pushplus(token: str, title: str, content: str, template: str = "html") -> bool:
     if not token or not token.strip():
         return False
     try:
-        r = requests.post(
+        r = http.post(
             "http://www.pushplus.plus/send",
             json={"token": token.strip(), "title": title, "content": content, "template": template},
             timeout=10,

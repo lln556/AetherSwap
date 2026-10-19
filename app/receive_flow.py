@@ -1,15 +1,10 @@
 from collections import Counter
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import requests
+from utils import http_client as http
 
 from buff import BuffAuthExpired, BuffRequestBlocked
 from utils.delay import jittered_sleep
-try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except Exception:
-    pass
 STEAM_ACCEPT_REFERER = "https://steamcommunity.com/tradeoffer/{trade_offer_id}/"
 STEAM_ACCEPT_URL = "https://steamcommunity.com/tradeoffer/{trade_offer_id}/accept"
 INVENTORY_SETTLE_ATTEMPTS = 5
@@ -119,7 +114,7 @@ def accept_steam_trade_offer(
             "captcha": "",
         }
         proxies = pm.get_proxies_for_request(failed=False)
-        r = requests.post(
+        r = http.post(
             url,
             headers=headers,
             cookies=steam_cookies,

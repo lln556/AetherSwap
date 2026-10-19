@@ -1,4 +1,5 @@
-import requests
+import httpx
+from utils import http_client as http
 
 from app import receive_flow
 
@@ -17,13 +18,13 @@ def test_accept_timeout_is_unknown_and_non_idempotent_post_is_not_retried(
 
     def timeout_once(*_args, **_kwargs):
         calls.append(True)
-        raise requests.Timeout("response lost")
+        raise httpx.ReadTimeout("response lost")
 
     monkeypatch.setattr(
         "utils.proxy_manager.get_proxy_manager",
         lambda: ProxyManager(),
     )
-    monkeypatch.setattr(receive_flow.requests, "post", timeout_once)
+    monkeypatch.setattr(receive_flow.http, "post", timeout_once)
 
     result = receive_flow.accept_steam_trade_offer(
         "offer-1",

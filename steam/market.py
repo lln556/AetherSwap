@@ -1,5 +1,6 @@
 import json
 from typing import Optional, Union
+from app.steam_transport import MarketRequestError, post_market
 SELL_ITEM_URL = "https://steamcommunity.com/market/sellitem/"
 
 
@@ -32,7 +33,7 @@ def list_item(
     assetid: str,
     price: Union[int, float],
     amount: int = 1,
-) -> Optional[dict]:
+) -> dict:
     payload = {
         "sessionid": session_id,
         "appid": str(appid),
@@ -41,15 +42,21 @@ def list_item(
         "amount": str(amount),
         "price": str(int(price) if isinstance(price, float) and price == int(price) else price),
     }
+    outcome = {"request_sent": False, "transport": "httpx", "phase": "preflight"}
     try:
-        r = session.post(SELL_ITEM_URL, data=payload, timeout=15)
+        r = post_market(session, SELL_ITEM_URL, data=payload, headers={}, timeout=15,
+                           outcome=outcome, operation="listing")
         return {
+            **outcome,
             "status_code": r.status_code,
             "text": r.text,
             "retry_after": r.headers.get("Retry-After"),
         }
-    except Exception:
-        return None
+    except MarketRequestError as exc:
+        error = str(exc)
+    except Exception as exc:
+        error = f"上架请求异常（{type(exc).__name__}）"
+    return {**outcome, "status_code": None, "text": "", "retry_after": None, "error": error}
 def list_item_by_name(
     session,
     steam_id: str,

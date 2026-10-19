@@ -3,10 +3,8 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qs, quote, unquote, urlparse
-import requests
-import urllib3
+from utils import http_client as http
 from .request_policy import parse_retry_after
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 CURRENCY_CNY = "CNY"
 CURRENCY_USD = "USD"
 DEFAULT_HEADERS = {
@@ -214,7 +212,7 @@ def resolve_market_hash_name_from_listing_url(
     if not _is_market_group_id(name):
         return name
     request_url = _coerce_listing_url(url)
-    client = session or requests.Session()
+    client = session or http.Client()
     headers = {**DEFAULT_HEADERS, "Referer": request_url}
     kwargs = {
         "headers": headers,
@@ -234,6 +232,9 @@ def resolve_market_hash_name_from_listing_url(
         return _extract_group_market_hash_name(getattr(resp, "text", "") or "", request_url)
     except Exception:
         return None
+    finally:
+        if session is None:
+            client.close()
 def _parse_cookie_str(s: str) -> dict:
     out = {}
     for part in (s or "").split(";"):
@@ -310,7 +311,7 @@ def fetch_history(
     if isinstance(cookies, str):
         cookies = _parse_cookie_str(cookies)
     try:
-        resp = requests.get(
+        resp = http.get(
             url,
             headers=h,
             verify=verify,

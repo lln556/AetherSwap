@@ -2,8 +2,8 @@ import json
 import random
 import time
 from typing import Any, Dict, List, Optional
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+import httpx
+from utils import http_client as http
 
 from .models import SteamDTQueryParams, SteamDTRow
 from .parser import parse_response
@@ -55,17 +55,12 @@ def fetch_steamdt_data(
             "User-Agent": DEFAULT_USER_AGENT,
             "Access-Token": "undefined",
         }
-        req = Request(
-            f"{API_URL}?timestamp={timestamp}",
-            data=body,
-            headers=headers,
-            method="POST",
-        )
         try:
-            with urlopen(req, timeout=timeout) as resp:
-                charset = resp.headers.get_content_charset() or "utf-8"
-                result = json.loads(resp.read().decode(charset))
-        except (HTTPError, URLError, TimeoutError, OSError) as e:
+            resp = http.post(f"{API_URL}?timestamp={timestamp}", content=body,
+                             headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            result = resp.json()
+        except (httpx.HTTPError, TimeoutError, OSError) as e:
             result = {"success": False, "error": str(e)}
         except (ValueError, UnicodeDecodeError) as e:
             result = {"success": False, "error": f"响应不是有效 JSON: {e}"}

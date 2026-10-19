@@ -1,3 +1,4 @@
+import httpx
 import json
 import math
 import time
@@ -8,9 +9,8 @@ from typing import Callable, Optional
 from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
-import requests
-import urllib3
-from requests.cookies import RequestsCookieJar
+from utils import http_client as http
+from utils.http_client import Cookies
 
 from .request_policy import (
     BuffAuthExpired,
@@ -34,7 +34,6 @@ DEFAULT_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 def _is_auth_error(status_code: int, data: dict) -> bool:
     if status_code == 401:
@@ -214,11 +213,11 @@ def _normalize_server_identifier(value) -> str:
     normalized = str(value).strip()
     return normalized if normalized and normalized != "0" else ""
 
-def _cookie_jar_dict(cookie_jar: RequestsCookieJar) -> dict:
+def _cookie_jar_dict(cookie_jar: Cookies) -> dict:
     """Select the most specific cookies applicable to BUFF API paths."""
 
     selected = {}
-    for cookie in cookie_jar:
+    for cookie in cookie_jar.jar:
         if cookie.is_expired():
             continue
         domain = str(cookie.domain or "").lstrip(".").lower()
@@ -241,7 +240,7 @@ class BuffBuyer:
         use_ssl: bool = True,
         *,
         user_agent: Optional[str] = None,
-        session: Optional[requests.Session] = None,
+        session: Optional[http.Client] = None,
         request_policy: Optional[BuffRequestPolicy] = None,
         account_id: Optional[str] = None,
         request_timeout: float = 10.0,
@@ -251,7 +250,7 @@ class BuffBuyer:
         self.csrf_token = _csrf(self.cookies_dict)
         self.pay_method = pay_method
         self.use_ssl = use_ssl
-        self.session = session if session is not None else requests.Session()
+        self.session = session if session is not None else http.Client()
         self._owns_session = session is None
         self._closed = False
         if self._owns_session:
@@ -259,7 +258,7 @@ class BuffBuyer:
             # HTTP_PROXY/HTTPS_PROXY or OS proxy settings between requests.
             self.session.trust_env = False
         for name, value in self.cookies_dict.items():
-            for old_cookie in list(self.session.cookies):
+            for old_cookie in list(self.session.cookies.jar):
                 old_domain = str(old_cookie.domain or "").lstrip(".").lower()
                 if (
                     old_cookie.name == name
@@ -325,10 +324,10 @@ class BuffBuyer:
         self.cookies_dict = _cookie_jar_dict(self.session.cookies)
         self.csrf_token = _csrf(self.cookies_dict)
 
-    def _merge_response_cookies(self, response_cookies: RequestsCookieJar) -> None:
+    def _merge_response_cookies(self, response_cookies: Cookies) -> None:
         """Apply rotated cookies without retaining an older duplicate by domain."""
 
-        for response_cookie in list(response_cookies):
+        for response_cookie in list(response_cookies.jar):
             new_cookie = copy.copy(response_cookie)
             if not new_cookie.domain:
                 new_cookie.domain = BUFF_COOKIE_DOMAIN
@@ -340,7 +339,7 @@ class BuffBuyer:
             new_domain = str(new_cookie.domain or "").lstrip(".").lower()
             # Collapse only equivalent root-scoped BUFF cookies.  Legitimate
             # same-name cookies on a narrower path remain untouched.
-            for old_cookie in list(self.session.cookies):
+            for old_cookie in list(self.session.cookies.jar):
                 old_domain = str(old_cookie.domain or "").lstrip(".").lower()
                 if (
                     old_cookie.name == new_cookie.name
@@ -405,7 +404,7 @@ class BuffBuyer:
                     timeout=timeout,
                     **kwargs,
                 )
-            except requests.RequestException as exc:
+            except httpx.RequestError as exc:
                 if is_write:
                     raise BuffWriteResultUnknown(
                         "BUFF 写请求发生网络异常，结果未知，禁止自动重试",

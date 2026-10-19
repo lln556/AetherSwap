@@ -23,6 +23,7 @@ from app.config_loader import (
 )
 from app.shared_market import batch_fetch_prices, fill_current_market_prices, get_steam_smart_price_cny
 from app.services.item_meta import enrich_transaction_rows
+from app.services.trading_coordination import market_mutation
 router = APIRouter()
 STEAM_FEE_FACTOR = 1.15
 
@@ -170,8 +171,14 @@ def api_transactions(enrich_current_price: bool = False):
         resell_ratio = 0.85
     return {"transactions": out, "resell_ratio": resell_ratio}
 @router.delete("/api/transaction")
+@market_mutation
 def api_delete_transaction(type: str = "purchase", idx: int = 0, db_id: int = 0):
     if type == "purchase":
+        rows = get_purchases()
+        p = next((p for p in rows if p.get("_db_id") == db_id), None) if db_id else (rows[idx] if 0 <= idx < len(rows) else None)
+        from app.services.repricing import item_has_job
+        if p and (p.get("listing") or p.get("pending_receipt") or (p.get("_db_id") and item_has_job(p["_db_id"]))):
+            return {"ok": False, "error": "在售、待收货或调价中的物品暂不能归档，请先完成交易处理"}
         ok = delete_purchase_by_id(db_id) if db_id else delete_purchase(idx)
     elif type == "sale":
         ok = delete_sale_by_id(db_id) if db_id else delete_sale(idx)
@@ -179,6 +186,7 @@ def api_delete_transaction(type: str = "purchase", idx: int = 0, db_id: int = 0)
         return {"ok": False, "error": "type 须为 purchase 或 sale"}
     return {"ok": ok, "error": None if ok else "记录不存在或索引无效"} if ok else {"ok": False, "error": "记录不存在或索引无效"}
 @router.put("/api/transaction")
+@market_mutation
 def api_update_transaction(body: TransactionUpdateBody):
     data: dict = {}
     if body.name is not None:
@@ -193,6 +201,8 @@ def api_update_transaction(body: TransactionUpdateBody):
         else:
             data["market_price"] = None
     if body.sale_proceeds is not None:
+        from app.trading_ledger import minor
+        data["_sale_proceeds_minor"] = minor(body.sale_proceeds)
         if float(body.sale_proceeds) > 0:
             data["sale_price"] = round(
                 float(body.sale_proceeds) * STEAM_FEE_FACTOR,
@@ -273,7 +283,37 @@ def api_stats():
         "total_profit": round(total_profit, 2),
         "discount_ratio": round(discount_ratio, 4) if discount_ratio is not None else None,
     }
+@router.post("/api/purchase/{idx}/confirm_listing")
+def api_confirm_purchase_listing(idx: int, db_id: int = 0):
+    from app.pipeline_context import PipelineContext
+    from app.services.listing_confirmation import sync_listing_confirmations
+    from app.state import get_state
+
+    purchases = get_purchases()
+    purchase = next((p for p in purchases if p.get("_db_id") == db_id), None) if db_id else (
+        purchases[idx] if 0 <= idx < len(purchases) else None
+    )
+    if not purchase or not purchase.get("listing") or not purchase.get("assetid"):
+        return {"ok": False, "error": "挂单记录已变化或不存在，请刷新后重试"}
+    if purchase.get("sale_price") or purchase.get("sold_at") or purchase.get("pending_receipt"):
+        return {"ok": False, "error": "该记录不是待处理的市场挂单"}
+    cfg = load_app_config_validated()
+    # This explicit per-item action also works when automatic confirmation is off.
+    cfg["steam_confirm"] = {**(cfg.get("steam_confirm") or {}), "enabled": True}
+    aid = str(purchase["assetid"])
+    ok, snapshot, err = sync_listing_confirmations(
+        PipelineContext(get_state(), "manual_listing_confirmation"), cfg,
+        get_steam_credentials(), assetids=[aid],
+    )
+    if not ok:
+        return {"ok": False, "error": err}
+    status = (snapshot.get(aid) or {}).get("status", "submitted")
+    messages = {"active": "已核实正式在售", "pending_confirmation": "仍待 Steam 确认，请稍后重试或在 Steam App 确认"}
+    return {"ok": True, "status": status, "message": messages.get(status, "暂未核实到挂单，请稍后刷新")}
+
+
 @router.post("/api/purchase/{idx}/delist")
+@market_mutation
 def api_delist_purchase(idx: int, db_id: int = 0):
     from app.steam_delist import delist_item
 
@@ -304,6 +344,9 @@ def api_delist_purchase(idx: int, db_id: int = 0):
 
     if not p.get("listing"):
         return {"ok": False, "error": "该记录非出售中状态"}
+    from app.services.repricing import item_has_job
+    if p.get("_db_id") and item_has_job(p["_db_id"]):
+        return {"ok": False, "error": "该物品有未完成调价任务，请在交易中心核实后操作"}
     assetid = str(p.get("assetid") or "").strip()
     if not assetid:
         return {"ok": False, "error": "无 assetid"}
@@ -403,6 +446,7 @@ def api_delist_purchase(idx: int, db_id: int = 0):
             )
     return out
 @router.post("/api/sync_sold_from_history")
+@market_mutation
 def api_sync_sold_from_history():
     from app.sync_sold import run_sync_sold_from_history
     def log_fn(msg: str, level: str = "info"):
@@ -425,7 +469,11 @@ def api_sync_sold_from_history():
         "sold_count": result.get("sold_count", 0),
     }
 @router.post("/api/repair_error_records")
+@market_mutation
 def api_repair_error_records():
+    from app.services.repricing import reserved_purchase_ids
+    if reserved_purchase_ids():
+        return {"ok": False, "error": "有未完成调价任务，请先在交易中心处理，避免重建时丢失资产关联"}
     from app.repair_error_records import run as run_repair
     def log_fn(msg: str, level: str = "info"):
         log(msg, level, category="repair")

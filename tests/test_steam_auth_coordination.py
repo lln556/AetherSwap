@@ -141,16 +141,16 @@ def test_default_polling_accepts_token_after_old_ten_poll_limit(monkeypatch):
 @pytest.mark.parametrize("status", [429, 500, 503])
 def test_cookie_http_errors_are_unknown_not_valid(monkeypatch, status):
     response = SimpleNamespace(status_code=status, url="https://steamcommunity.com/my/", text="null", json=lambda: None)
-    monkeypatch.setattr(steam_auth._req.Session, "get", lambda *_args, **_kw: response)
+    monkeypatch.setattr(steam_auth._http.Client, "get", lambda *_args, **_kw: response)
 
     assert steam_auth._verify_steam_cookies_valid("steamLoginSecure=76561198000000000%7C%7Ctest") is None
 
 
 def test_cookie_network_error_is_unknown_not_valid(monkeypatch):
     def fail(*_args, **_kwargs):
-        raise steam_auth._req.exceptions.Timeout("test timeout")
+        raise steam_auth.httpx.ReadTimeout("test timeout")
 
-    monkeypatch.setattr(steam_auth._req.Session, "get", fail)
+    monkeypatch.setattr(steam_auth._http.Client, "get", fail)
 
     assert steam_auth._verify_steam_cookies_valid("steamLoginSecure=76561198000000000%7C%7Ctest") is None
 
@@ -166,7 +166,7 @@ def test_cookie_network_error_is_unknown_not_valid(monkeypatch):
 def test_cookie_verification_requires_authenticated_profile(monkeypatch, path, status, expected):
     response = SimpleNamespace(status_code=status, url="https://steamcommunity.com" + path, history=[object()])
     get = Mock(return_value=response)
-    monkeypatch.setattr(steam_auth._req.Session, "get", get)
+    monkeypatch.setattr(steam_auth._http.Client, "get", get)
 
     assert steam_auth._verify_steam_cookies_valid("steamLoginSecure=76561198000000000%7c%7ctest") is expected
     get.assert_called_once()

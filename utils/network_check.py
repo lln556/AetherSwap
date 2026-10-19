@@ -1,7 +1,7 @@
 import threading
 import time
 from typing import Callable, Optional
-import requests
+from utils import http_client as http
 FAILURE_THRESHOLD: int = 3
 PING_FAILURE_THRESHOLD: int = 3
 PING_TIMEOUT: float = 5.0
@@ -11,16 +11,19 @@ PING_URLS: list = [
     "http://www.baidu.com",
 ]
 def _ping_baidu(timeout: float = PING_TIMEOUT) -> bool:
-    session = requests.Session()
-    session.max_redirects = 3
-    for url in PING_URLS:
-        try:
-            resp = session.get(url, timeout=timeout, allow_redirects=True)
-            if resp.status_code < 600:
-                return True
-        except Exception:
-            continue
-    return False
+    session = http.Client()
+    try:
+        session.max_redirects = 3
+        for url in PING_URLS:
+            try:
+                resp = session.get(url, timeout=timeout, allow_redirects=True)
+                if resp.status_code < 600:
+                    return True
+            except Exception:
+                continue
+        return False
+    finally:
+        session.close()
 class NetworkChecker:
     def __init__(
         self,

@@ -1,24 +1,20 @@
+import httpx
 import json
 import re
 import time
 from typing import Callable, Dict, Optional, Set, Tuple
-import requests
+from utils import http_client as http
 from bs4 import BeautifulSoup
 STEAM_REQUEST_TIMEOUT = 25
 STEAM_REQUEST_RETRIES = 2
 STEAM_REQUEST_RETRY_DELAY = 3
 from utils.proxy_manager import get_proxy_manager, mask_proxy_url
 from utils.money import currency_code_from_price_text, parse_price_text
-try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except Exception:
-    pass
 MYLISTINGS_URL = "https://steamcommunity.com/market/mylistings/"
 MYLISTINGS_HTML_URL = "https://steamcommunity.com/market/mylistings/"
 MYHISTORY_RENDER_URL = "https://steamcommunity.com/market/myhistory/render/"
 RETRY_STATUS_CODES = (502, 503, 504)
-def _get_with_retry(url: str, params: dict, headers: dict, cookies: dict, debug_fn: Optional[Callable[[str], None]]) -> requests.Response:
+def _get_with_retry(url: str, params: dict, headers: dict, cookies: dict, debug_fn: Optional[Callable[[str], None]]) -> httpx.Response:
     last_err = None
     pm = get_proxy_manager()
     for attempt in range(STEAM_REQUEST_RETRIES + 1):
@@ -26,13 +22,13 @@ def _get_with_retry(url: str, params: dict, headers: dict, cookies: dict, debug_
             proxies = pm.get_proxies_for_request(failed=(attempt > 0))
             if proxies:
                 _debug(debug_fn, f"[Steam 请求] 正在使用代理池 {mask_proxy_url(proxies.get('http'))} 访问: {url}")
-            r = requests.get(url, params=params, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=STEAM_REQUEST_TIMEOUT)
+            r = http.get(url, params=params, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=STEAM_REQUEST_TIMEOUT)
             if r.status_code in RETRY_STATUS_CODES and attempt < STEAM_REQUEST_RETRIES:
                 _debug(debug_fn, f"[Steam 请求] HTTP {r.status_code}，{STEAM_REQUEST_RETRY_DELAY}s 后重试 ({attempt + 1}/{STEAM_REQUEST_RETRIES})")
                 time.sleep(STEAM_REQUEST_RETRY_DELAY)
                 continue
             return r
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ProxyError) as e:
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.ProxyError) as e:
             last_err = e
             if attempt < STEAM_REQUEST_RETRIES:
                 _debug(debug_fn, f"[Steam 请求] {type(e).__name__}，{STEAM_REQUEST_RETRY_DELAY}s 后重试 ({attempt + 1}/{STEAM_REQUEST_RETRIES})")
@@ -143,51 +139,86 @@ def _parse_sell_listings_from_html(html: str, debug_fn: Optional[Callable[[str],
         if h:
             name_by_assetid[aid] = h
     return assetids, name_by_assetid
-def fetch_my_listings(cookies, debug_fn: Optional[Callable[[str], None]] = None) -> Tuple[bool, Set[str], str, Dict[str, str]]:
+def fetch_listing_snapshot(cookies, debug_fn=None):
+    """Return actual market rows, including pending confirmations, by asset ID.
+
+    The assets dictionary is metadata, not proof that an item is listed.
+    An incomplete page must not be used to infer a sale or a successful delist.
+    """
+    c = _cookies_to_dict(cookies)
+    if not c.get("steamLoginSecure"):
+        return False, {}, "未登录 Steam"
+    headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+    snapshot = {}
+    seen_active_listings = set()
+    start = 0
     try:
-        c = _cookies_to_dict(cookies)
-        if not c.get("steamLoginSecure"):
-            _debug(debug_fn, "[mylistings] 无 steamLoginSecure，未登录")
-            return False, set(), "未登录 Steam", {}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        }
-        r = _get_with_retry(MYLISTINGS_HTML_URL, {"tab": "sell"}, headers, c, debug_fn)
-        if r.status_code != 200:
-            return False, set(), f"HTTP {r.status_code}", {}
-        html = r.text or ""
-        assetids, name_by_assetid = _parse_sell_listings_from_html(html, debug_fn)
-        if not assetids and "g_rgListingInfo" not in html:
-            headers["Accept"] = "application/json"
-            r2 = _get_with_retry(MYLISTINGS_URL, {"norender": "1", "start": "0", "count": "100"}, headers, c, debug_fn)
-            if r2.status_code == 200:
-                data = r2.json() if r2.text else {}
-                if data.get("success"):
-                    parsed = _parse_assets_730_2(data, debug_fn)
-                    if parsed:
-                        assetids = set(parsed.keys())
-                        name_by_assetid = {
-                            aid: (p.get("market_hash_name") or p.get("name") or "").strip()
-                            for aid, p in parsed.items()
-                            if (p.get("market_hash_name") or p.get("name") or "").strip()
-                        }
-                        _debug(debug_fn, f"[mylistings] 在售 {len(assetids)} 个, 有名称 {len(name_by_assetid)} 个")
-                        return True, assetids, "", name_by_assetid
-                    for appid, ctx_dict in (data.get("assets") or {}).items():
-                        if isinstance(ctx_dict, dict):
-                            for ctx, asset_dict in ctx_dict.items():
-                                if isinstance(asset_dict, dict):
-                                    assetids.update(str(aid) for aid in asset_dict.keys())
-                    _debug(debug_fn, f"[mylistings] 在售 {len(assetids)} 个")
-                    return True, assetids, "", {}
-        if not assetids:
-            return False, set(), "未解析到在售列表", {}
-        _debug(debug_fn, f"[mylistings] 在售 {len(assetids)} 个, 有名称 {len(name_by_assetid)} 个")
-        return True, assetids, "", name_by_assetid
-    except Exception as e:
-        _debug(debug_fn, f"[mylistings] 异常: {type(e).__name__}: {e}")
-        return False, set(), str(e)[:120], {}
+        for _ in range(100):
+            r = _get_with_retry(MYLISTINGS_URL, {"norender": "1", "start": start, "count": 100}, headers, c, debug_fn)
+            if r.status_code != 200:
+                return False, {}, f"HTTP {r.status_code}"
+            data = r.json()
+            if (not isinstance(data, dict) or data.get("success") not in (True, 1)
+                    or "listings" not in data):
+                return False, {}, "Steam 未返回有效挂单列表"
+            assets = _parse_assets_730_2(data)
+            active_count = 0
+            new_active = 0
+            for key, state in (("listings", "active"), ("listings_to_confirm", "pending_confirmation")):
+                raw = data.get(key) or []
+                rows = list(raw.values()) if isinstance(raw, dict) else raw
+                if not isinstance(rows, list):
+                    return False, {}, "Steam 挂单列表格式异常"
+                if key == "listings":
+                    active_count = len(rows)
+                for row in rows:
+                    if not isinstance(row, dict) or not isinstance(row.get("asset"), dict):
+                        return False, {}, "Steam 挂单缺少资产信息"
+                    asset = row["asset"]
+                    aid = str(asset.get("id") or "").strip()
+                    lid = str(row.get("listingid") or "").strip()
+                    if not aid or not lid:
+                        return False, {}, "Steam 挂单缺少唯一标识"
+                    if key == "listings" and lid not in seen_active_listings:
+                        new_active += 1
+                        seen_active_listings.add(lid)
+                    if str(asset.get("appid", "730")) != "730" or str(asset.get("contextid", "2")) != "2":
+                        continue
+                    details = assets.get(aid, {})
+                    snapshot[aid] = {
+                        "listing_id": lid,
+                        "status": state,
+                        "name": (asset.get("market_hash_name") or details.get("market_hash_name") or details.get("name") or "").strip(),
+                    }
+                    if row.get("price") is not None and row.get("fee") is not None:
+                        seller, fee = int(row["price"]), int(row["fee"])
+                        if seller > 0 and fee >= 0:
+                            snapshot[aid].update(seller_minor=seller, buyer_minor=seller + fee)
+                    if row.get("currencyid") is not None:
+                        cid = int(row["currencyid"]) % 2000
+                        snapshot[aid]["currency"] = {23: "CNY", 1: "USD", 3: "EUR", 19: "HKD"}.get(cid, f"STEAM_{cid}")
+                    if row.get("time_created"):
+                        snapshot[aid]["created_at"] = float(row["time_created"])
+            start += active_count
+            if len(seen_active_listings) != start:
+                return False, {}, "Steam 挂单分页重复或发生变化，请稍后重试"
+            total = int(data.get("num_active_listings", start))
+            if start >= total and ("num_active_listings" in data or active_count < 100):
+                return True, snapshot, ""
+            # A repeated page must not silently hide items beyond the first 100.
+            if not active_count or (start > active_count and not new_active):
+                return False, {}, "Steam 挂单分页不完整"
+        return False, {}, "Steam 挂单分页超出限制"
+    except Exception as exc:
+        return False, {}, f"读取 Steam 挂单失败 ({type(exc).__name__})"
+
+
+def fetch_my_listings(cookies, debug_fn: Optional[Callable[[str], None]] = None) -> Tuple[bool, Set[str], str, Dict[str, str]]:
+    ok, snapshot, error = fetch_listing_snapshot(cookies, debug_fn)
+    if ok:
+        names = {aid: row["name"] for aid, row in snapshot.items() if row["name"]}
+        return True, set(snapshot), "", names
+    return False, set(), error, {}
 _HOVER_PATTERN = re.compile(
     r"CreateItemHoverFromContainer\s*\(\s*g_rgAssets\s*,\s*'(history_row_\d+_\d+)_name'\s*,\s*(\d+)\s*,\s*'(\d+)'\s*,\s*'(\d+)'"
 )

@@ -1,3 +1,4 @@
+import httpx
 """
 代理池管理器 — 供 pipeline / steam 请求模块调用。
 策略说明:
@@ -8,7 +9,7 @@
 import random
 import threading
 import time
-import requests
+from utils import http_client as http
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 def _load_proxy_pool_cfg() -> dict:
@@ -55,7 +56,7 @@ def test_one_proxy(proxy_cfg: dict, test_url: str, timeout: int) -> dict:
     }
     start = time.time()
     try:
-        resp = requests.get(test_url, proxies=proxies, timeout=timeout)
+        resp = http.get(test_url, proxies=proxies, timeout=timeout)
         latency = (time.time() - start) * 1000
         if resp.status_code == 200:
             result["status"] = "ok"
@@ -63,9 +64,9 @@ def test_one_proxy(proxy_cfg: dict, test_url: str, timeout: int) -> dict:
             result["latency_ms"] = round(latency, 1)
         else:
             result["error"] = f"HTTP {resp.status_code}"
-    except requests.exceptions.ProxyError:
+    except httpx.ProxyError:
         result["error"] = "代理验证失败或节点拒绝连接"
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         result["error"] = "请求超时"
     except Exception as e:
         result["error"] = str(e)
