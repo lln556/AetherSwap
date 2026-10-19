@@ -356,3 +356,44 @@ def test_gift_balance_syncs_wallet_currency_to_current_account(monkeypatch):
     assert updates["payload"]["account_id"] == "acc-new"
     assert updates["payload"]["currency_code"] == "CNY"
     assert updates["payload"]["region_code"] == "CN"
+
+
+def test_wallet_failure_reports_http_statuses_instead_of_assuming_expired_cookie(monkeypatch):
+    import pytest
+    from app import gift_engine
+    import utils.proxy_manager as proxy_manager
+
+    # Even a wallet-looking body from a failed HTTP response is not proof.
+    market = _Response('var g_rgWalletInfo = {"success":1,"wallet_balance":0,"wallet_currency":23};')
+    market.status_code = 429
+    fallback = _Response('Not Found')
+    fallback.status_code = 404
+    responses = iter([market, fallback])
+    monkeypatch.setattr(proxy_manager, 'get_proxy_manager', lambda: _ProxyManager())
+    monkeypatch.setattr(gift_engine.http, 'get', lambda *args, **kwargs: next(responses))
+    monkeypatch.setattr(gift_engine, 'get_base_auth_status', lambda cookies: ('test-token', 'CN', {}))
+    with pytest.raises(RuntimeError) as exc:
+        gift_engine.get_wallet_balance('steamLoginSecure=test-token')
+    assert '市场页 HTTP 429' in str(exc.value)
+    assert '备用钱包接口 HTTP 404' in str(exc.value)
+    assert 'Cookie' not in str(exc.value)
+    assert 'test-token' not in str(exc.value)
+
+
+def test_wallet_failure_does_not_expose_token_urls_or_proxy_credentials(monkeypatch):
+    import pytest
+    import httpx
+    from app import gift_engine
+    import utils.proxy_manager as proxy_manager
+
+    def fail(*args, **kwargs):
+        raise httpx.ConnectError('https://user:secret@proxy.example/?access_token=private-token')
+
+    monkeypatch.setattr(proxy_manager, 'get_proxy_manager', lambda: _ProxyManager())
+    monkeypatch.setattr(gift_engine.http, 'get', fail)
+    monkeypatch.setattr(gift_engine, 'get_base_auth_status', lambda cookies: ('private-token', 'CN', {}))
+    with pytest.raises(RuntimeError) as exc:
+        gift_engine.get_wallet_balance('steamLoginSecure=private-token')
+    message = str(exc.value)
+    assert 'ConnectError' in message
+    assert 'secret' not in message and 'private-token' not in message and 'proxy.example' not in message

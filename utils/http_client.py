@@ -159,7 +159,11 @@ class Client:
 
 
 def request(method, url, **kwargs):
-    with Client() as client:
+    # HTTPX rebuilds redirect cookies from the client jar. Request-level
+    # cookies alone disappear on the next hop (e.g. Steam market eligibility).
+    # This helper owns an isolated session, so seed that jar before sending.
+    cookies = kwargs.pop('cookies', None)
+    with Client(cookies=cookies) as client:
         return client.request(method, url, **kwargs)
 
 

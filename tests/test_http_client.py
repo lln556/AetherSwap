@@ -214,3 +214,72 @@ def test_explicit_proxy_overrides_ambient_and_buff_can_disable_environment(monke
     assert [p for p, _ in ambient_seen] == ['http://upstream.invalid/ambient']
     assert [p for p, _ in explicit_seen] == ['http://upstream.invalid/explicit']
     assert [p for p, _ in direct_seen] == ['/direct']
+
+
+@pytest.mark.parametrize('method', ['GET', 'POST'])
+def test_one_shot_requests_keep_scoped_cookies_across_redirects_without_leaking(monkeypatch, method):
+    seen = []
+
+    def handle(_transport, request):
+        request.read()
+        seen.append(request)
+        if request.url.path == '/start':
+            return httpx.Response(302, headers={
+                'Location': '/eligibility', 'Set-Cookie': 'browserid=test-browser; Path=/; Secure',
+            })
+        if request.url.path == '/eligibility':
+            assert 'steamLoginSecure=test-token' in request.headers.get('cookie', '')
+            return httpx.Response(302, headers={
+                'Location': '/market', 'Set-Cookie': 'sessionid=rotated; Path=/; Secure',
+            })
+        if request.url.path == '/market':
+            assert 'steamLoginSecure=test-token' in request.headers.get('cookie', '')
+            assert 'sessionid=rotated' in request.headers.get('cookie', '')
+            assert 'sessionid=old' not in request.headers.get('cookie', '')
+            return httpx.Response(302, headers={'Location': 'https://other.example/final'})
+        assert 'cookie' not in request.headers
+        return httpx.Response(200, json={'success': True})
+
+    monkeypatch.setattr(httpx.HTTPTransport, 'handle_request', handle)
+    cookies = http.Cookies()
+    cookies.set('steamLoginSecure', 'test-token', domain='steamcommunity.com', secure=True)
+    cookies.set('sessionid', 'old', domain='steamcommunity.com', secure=True)
+    send = http.get if method == 'GET' else http.post
+    response = send('https://steamcommunity.com/start', cookies=cookies)
+    assert response.status_code == 200
+    assert len(response.history) == 3
+    # A second one-shot call must not inherit any first-call account cookies.
+    http.get('https://steamcommunity.com/independent')
+    assert len(seen) == 5
+
+
+@pytest.mark.parametrize(('currency', 'code'), [(23, 'CNY'), (24, 'INR'), (1, 'USD')])
+def test_wallet_query_survives_steam_eligibility_redirects(monkeypatch, currency, code):
+    from app.gift_engine import get_wallet_balance
+    from types import SimpleNamespace
+    import utils.proxy_manager as proxy_manager
+
+    seen = []
+
+    def handle(_transport, request):
+        seen.append(request)
+        assert request.url.host == 'steamcommunity.com', 'fallback must not be needed'
+        assert 'steamLoginSecure=test-token' in request.headers.get('cookie', '')
+        if len(seen) == 1:
+            return httpx.Response(302, headers={'Location': '/market/eligibilitycheck/'})
+        if len(seen) == 2:
+            return httpx.Response(302, headers={
+                'Location': '/market/', 'Set-Cookie': 'webTradeEligibility=test; Path=/; Secure',
+            })
+        return httpx.Response(200, text=(
+            'var g_rgWalletInfo = {"success":1,"wallet_balance":"0",'
+            f'"wallet_delayed_balance":"0","wallet_currency":{currency},"wallet_country":"CN"}};'
+        ))
+
+    monkeypatch.setattr(httpx.HTTPTransport, 'handle_request', handle)
+    monkeypatch.setattr(proxy_manager, 'get_proxy_manager', lambda: SimpleNamespace(get_proxies_for_request=lambda: None))
+    wallet = get_wallet_balance('steamLoginSecure=test-token; sessionid=test-session')
+    assert wallet['currency_id'] == currency
+    assert wallet['currency_code'] == code
+    assert wallet['balance_raw'] == 0
+    assert len(seen) == 3

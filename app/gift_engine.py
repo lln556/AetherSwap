@@ -192,6 +192,7 @@ def get_wallet_balance(cookies_raw: str) -> dict:
     pm = get_proxy_manager()
     proxies = pm.get_proxies_for_request()
     unknown_currency_id = None
+    failures = []
     try:
         resp = http.get(
             "https://steamcommunity.com/market/",
@@ -201,7 +202,10 @@ def get_wallet_balance(cookies_raw: str) -> dict:
             verify=False,
             timeout=15,
         )
-        m = re.search(r'g_rgWalletInfo\s*=\s*(\{[^;]+\})', resp.text)
+        if resp.status_code != 200:
+            failures.append(f"市场页 HTTP {resp.status_code}")
+        m = (re.search(r'g_rgWalletInfo\s*=\s*(\{[^;]+\})', resp.text)
+             if resp.status_code == 200 else None)
         if m:
             wallet = json.loads(m.group(1))
             if wallet.get("success") == 1 or "wallet_balance" in wallet:
@@ -230,8 +234,10 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                     "wallet_country": wallet_country,
                     "country_code": wallet_country,
                 }
-    except Exception:
-        pass
+        if resp.status_code == 200:
+            failures.append("市场页未返回有效的钱包数据")
+    except Exception as exc:
+        failures.append(f"市场页读取失败（{type(exc).__name__}）")
     try:
         jwt_token, _, _ = get_base_auth_status(cookies_raw)
         if jwt_token:
@@ -272,11 +278,16 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                         "wallet_country": wallet_country,
                         "country_code": wallet_country,
                     }
-    except Exception:
-        pass
+                failures.append("备用钱包接口未返回有效币种")
+            else:
+                failures.append(f"备用钱包接口 HTTP {resp.status_code}")
+        else:
+            failures.append("商店页未返回钱包鉴权令牌")
+    except Exception as exc:
+        failures.append(f"备用钱包查询失败（{type(exc).__name__}）")
     if unknown_currency_id is not None:
         raise RuntimeError(f"未知 Steam 钱包币种 ID: {unknown_currency_id}")
-    raise RuntimeError("无法获取 Steam 钱包余额，请确认 Cookie 有效且账户已设置钱包")
+    raise RuntimeError("无法实时确认 Steam 钱包结算币种：" + "；".join(failures))
 def extract_appid_from_url(url: str) -> str:
     m = re.search(r'/app/(\d+)', url)
     return m.group(1) if m else ""
