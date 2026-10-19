@@ -800,7 +800,7 @@ def test_keepalive_first_wait_uses_full_configured_interval(monkeypatch):
         sleeps.append(seconds)
         raise RuntimeError("stop worker")
 
-    monkeypatch.setattr(workers.time, "sleep", stop_on_sleep)
+    monkeypatch.setattr(workers, "wait_for_shutdown", stop_on_sleep)
 
     try:
         workers.session_keepalive_worker()

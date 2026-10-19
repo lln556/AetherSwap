@@ -5,6 +5,7 @@ workers are started from `app.services.workers`.  This file is
 intentionally kept minimal.
 """
 import sys
+import asyncio
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -48,10 +49,28 @@ def _start_background_workers() -> None:
         steam_session_worker,
     ):
         q.submit(fn, name=fn.__name__, max_retries=3, retry_base_delay=5.0)
+def _stop_background_workers():
+    from app.services.lifecycle import begin_shutdown
+    from app.pipeline import mark_shutdown_pending, wait_for_pipeline_exit
+    from app.sell_pipeline import _sell_phase_lock
+    begin_shutdown()
+    mark_shutdown_pending()
+    request_stop()
+    # Let in-flight work finish recording its outcome before Python tears down
+    # executors. Sleeping workers wake immediately; queued/retry work cancels.
+    get_task_queue().shutdown(wait=True)
+    wait_for_pipeline_exit()
+    with _sell_phase_lock:
+        pass
+
+
 @asynccontextmanager
 async def _lifespan(application: FastAPI):
     _start_background_workers()
-    yield
+    try:
+        yield
+    finally:
+        await asyncio.to_thread(_stop_background_workers)
 app = FastAPI(title="aetherswap", lifespan=_lifespan)
 
 

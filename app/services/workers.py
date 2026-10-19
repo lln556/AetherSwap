@@ -28,11 +28,14 @@ from app.config_loader import (
 from app.notify import send_pushplus, build_holdings_report_content, compute_holdings_stats
 from app.inventory_cs2 import scan_cs2_inventory
 from app.accounts import get_current_account, update_account
+from app.services.lifecycle import is_shutting_down, is_shutdown_error, wait_for_shutdown
 _HOLDINGS_REPORT_LAST_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "holdings_report_last.json"
 _worker_alert_last: dict = {}  
 _WORKER_ALERT_COOLDOWN = 3600  
 def _worker_alert(worker_name: str, error: Exception) -> None:
     """发送 PushPlus 告警，每个 worker 每小时至多发一次。"""
+    if is_shutdown_error(error):
+        return
     now = time.time()
     last = _worker_alert_last.get(worker_name, 0.0)
     if now - last < _WORKER_ALERT_COOLDOWN:
@@ -43,9 +46,9 @@ def _worker_alert(worker_name: str, error: Exception) -> None:
         if not token:
             return
         msg = str(error)[:200] if error else "未知异常"
-        send_pushplus(token, f"[Worker异常] {worker_name}", f"后台任务 <b>{worker_name}</b> 发生异常，已自动重试。<br>错误信息：{msg}")
-        _worker_alert_last[worker_name] = now
-        log(f"[{worker_name}] 异常告警已发送", "info", category="alert")
+        if send_pushplus(token, f"[Worker异常] {worker_name}", f"后台任务 <b>{worker_name}</b> 发生异常，本轮已中止，60 秒后重试。<br>错误信息：{msg}"):
+            _worker_alert_last[worker_name] = now
+            log(f"[{worker_name}] 异常告警已发送", "info", category="alert")
     except Exception:
         pass
 def _load_last_pl_pct() -> Optional[float]:
@@ -125,25 +128,30 @@ def holdings_report_worker() -> None:
     紧急回报另由 run_holdings_report_once(force=False) 负责（在有新市场价时自动触发）。
     """
     first_run = True
-    while True:
+    while not is_shutting_down():
         try:
             cfg = load_app_config_validated()
             n = cfg.get("notify") or {}
             interval_h = int(n.get("holdings_report_interval_hours", 0) or 0)
             if interval_h <= 0:
                 first_run = True
-                time.sleep(3600)
+                if wait_for_shutdown(3600):
+                    return
                 continue
             if first_run:
                 first_run = False
-                time.sleep(60)
+                if wait_for_shutdown(60):
+                    return
             else:
-                time.sleep(interval_h * 3600)
+                if wait_for_shutdown(interval_h * 3600):
+                    return
             while not is_steam_background_allowed():
-                time.sleep(60)
+                if wait_for_shutdown(60):
+                    return
             run_holdings_report_once(force=True)
         except Exception:
-            time.sleep(60)
+            if wait_for_shutdown(60):
+                return
 _EXCHANGE_RATE_FILE = Path(__file__).resolve().parent.parent.parent / "config" / "exchange_rate.json"
 def _fetch_exchange_rates(base: str = "CNY", targets: Optional[list] = None) -> Optional[dict]:
     try:
@@ -187,14 +195,15 @@ def _save_exchange_rates(rates: dict, base: str = "CNY") -> None:
     except Exception:
         return
 def exchange_rate_worker() -> None:
-    while True:
+    while not is_shutting_down():
         try:
             cfg = load_app_config_validated()
             sys_cfg = cfg.get("system") or {}
             interval_h = float(sys_cfg.get("exchange_rate_refresh_hours") or 0)
             if interval_h <= 0:
                 log("exchange_rate: 已关闭, system.exchange_rate_refresh_hours<=0", "debug", category="exchange_rate")
-                time.sleep(3600)
+                if wait_for_shutdown(3600):
+                    return
                 continue
             targets = [
                 "USD", "INR", "RUB", "HKD", "EUR",
@@ -209,10 +218,14 @@ def exchange_rate_worker() -> None:
                 log(f"exchange_rate: 已更新 {len(rates)} 个币种: {preview}", "debug", category="exchange_rate")
             else:
                 log("exchange_rate: 获取失败或无有效结果", "error", category="exchange_rate")
-            time.sleep(max(1, int(interval_h * 3600)))
+            if wait_for_shutdown(max(1, int(interval_h * 3600))):
+                return
         except Exception as e:
+            if is_shutdown_error(e):
+                return
             log(f"exchange_rate: worker 异常 {type(e).__name__}: {e}, 5 分钟后重试", "error", category="exchange_rate")
-            time.sleep(300)
+            if wait_for_shutdown(300):
+                return
 _BUFF_RECONCILIATION_REQUIRED_STEPS = frozenset(
     {
         "BUFF_WRITE_RESULT_UNKNOWN",
@@ -292,54 +305,68 @@ def receive_worker() -> None:
 
     buff_client = None
     last_inventory_check = 0.0
-    while True:
-        try:
-            cfg = load_app_config_validated()
-            interval = max(10, int(cfg.get("pipeline", {}).get("receive_poll_interval_seconds", 30) or 30))
-            time.sleep(interval)
-            if not is_steam_background_allowed() or not _buff_background_request_is_safe():
-                continue
-            credentials = get_buff_credentials() or {}
-            if not credentials.get("cookies"):
-                continue
-            if buff_client is None:
-                buff_client = create_buff_client_from_config(credentials, cfg)
-            refresh_interval = max(60, int(cfg.get("pipeline", {}).get("listing_check_interval_seconds", 600) or 600))
-            result = run_receive_check_once(
-                buff_client, refresh_inventory=time.monotonic() - last_inventory_check >= refresh_interval,
-            )
-            if result.get("inventory_refreshed"):
-                last_inventory_check = time.monotonic()
-            if result.get("received", 0) > 0:
-                log(f"receive_worker: 本轮确认到账 {result['received']} 件", "info", category="receive")
-        except BuffRateLimited as e:
-            log(f"receive_worker: Buff 请求处于限流冷却: {e}", "warn", category="receive")
-            time.sleep(min(60, max(1, int(e.retry_after))))
-        except BuffVerificationRequired as e:
-            set_buff_verification_required(True, str(e))
-            log(f"receive_worker: Buff 需要安全验证: {e}", "warn", category="receive")
-            time.sleep(60)
-        except BuffAuthExpired:
-            set_buff_auth_expired(True)
-            log("receive_worker: Buff 登录已失效，暂停待收货查询", "warn", category="receive")
-            time.sleep(60)
-        except BuffRequestBlocked as e:
-            log(f"receive_worker: Buff 请求策略已阻止后台查询: {e}", "warn", category="receive")
-            time.sleep(60)
-        except Exception as e:
-            log(f"receive_worker 异常 {type(e).__name__}: {e}", "error", category="receive")
-            _worker_alert("receive_worker", e)
-            time.sleep(60)
+    try:
+        while not is_shutting_down():
+            try:
+                cfg = load_app_config_validated()
+                interval = max(10, int(cfg.get("pipeline", {}).get("receive_poll_interval_seconds", 30) or 30))
+                if wait_for_shutdown(interval):
+                    return
+                if not is_steam_background_allowed() or not _buff_background_request_is_safe():
+                    continue
+                credentials = get_buff_credentials() or {}
+                if not credentials.get("cookies"):
+                    continue
+                if buff_client is None:
+                    buff_client = create_buff_client_from_config(credentials, cfg)
+                refresh_interval = max(60, int(cfg.get("pipeline", {}).get("listing_check_interval_seconds", 600) or 600))
+                result = run_receive_check_once(
+                    buff_client, refresh_inventory=time.monotonic() - last_inventory_check >= refresh_interval,
+                )
+                if result.get("inventory_refreshed"):
+                    last_inventory_check = time.monotonic()
+                if result.get("received", 0) > 0:
+                    log(f"receive_worker: 本轮确认到账 {result['received']} 件", "info", category="receive")
+            except BuffRateLimited as e:
+                log(f"receive_worker: Buff 请求处于限流冷却: {e}", "warn", category="receive")
+                if wait_for_shutdown(min(60, max(1, int(e.retry_after)))):
+                    return
+            except BuffVerificationRequired as e:
+                set_buff_verification_required(True, str(e))
+                log(f"receive_worker: Buff 需要安全验证: {e}", "warn", category="receive")
+                if wait_for_shutdown(60):
+                    return
+            except BuffAuthExpired:
+                set_buff_auth_expired(True)
+                log("receive_worker: Buff 登录已失效，暂停待收货查询", "warn", category="receive")
+                if wait_for_shutdown(60):
+                    return
+            except BuffRequestBlocked as e:
+                log(f"receive_worker: Buff 请求策略已阻止后台查询: {e}", "warn", category="receive")
+                if wait_for_shutdown(60):
+                    return
+            except Exception as e:
+                if is_shutdown_error(e):
+                    return
+                log(f"receive_worker 异常 {type(e).__name__}: {e}", "error", category="receive")
+                _worker_alert("receive_worker", e)
+                if wait_for_shutdown(60):
+                    return
+
+    finally:
+        if buff_client is not None:
+            buff_client.close()
 def listing_check_worker() -> None:
     from app.steam_listings import fetch_my_history_sold
     from app.services.listing_confirmation import sync_listing_confirmations
     from app.pipeline_context import PipelineContext
     from app.state import get_state
-    while True:
+    while not is_shutting_down():
         try:
             cfg = load_app_config_validated()
             interval = max(60, int(cfg.get("pipeline", {}).get("listing_check_interval_seconds", 600) or 600))
-            time.sleep(interval)
+            if wait_for_shutdown(interval):
+                return
             if not is_steam_background_allowed():
                 continue
             purchases = get_purchases()
@@ -408,9 +435,12 @@ def listing_check_worker() -> None:
                 else:
                     log(f"[listing_check] 售出后刷新库存失败，暂不补挂: {inv_err}", "warn", category="steam")
         except Exception as e:
+            if is_shutdown_error(e):
+                return
             log(f"listing_check_worker 异常 {type(e).__name__}: {e}", "error", category="steam")
             _worker_alert("listing_check_worker", e)
-            time.sleep(60)
+            if wait_for_shutdown(60):
+                return
 def _sync_account_profile_and_region(acc: dict) -> None:
     from app.services.steam_auth import fetch_steam_profile_via_api
     account_id = acc.get("id")
@@ -438,6 +468,8 @@ def _sync_account_profile_and_region(acc: dict) -> None:
             log("account_sync: 未能获取 Steam 资料（网络异常或 Cookie 失效）", "debug", category="account")
 
 def sync_account_region_worker() -> None:
+    if is_shutting_down():
+        return
     try:
         acc = get_current_account()
         if not acc:
@@ -473,6 +505,8 @@ def sync_account_region_worker() -> None:
             category="account",
         )
     except Exception as e:
+        if is_shutdown_error(e):
+            return
         log(f"account_region: 同步异常 {str(e)[:120]}", "error", category="account")
         return
 def _session_keepalive_enabled(cfg: dict) -> bool:
@@ -498,12 +532,13 @@ def _session_keepalive_is_safe() -> bool:
 def session_keepalive_worker() -> None:
     from app.services.buff_auth import try_buff_auto_relogin
 
-    while True:
+    while not is_shutting_down():
         try:
             cfg = load_app_config_validated()
             if not _session_keepalive_enabled(cfg):
                 # Poll the opt-in switch without touching either remote service.
-                time.sleep(60)
+                if wait_for_shutdown(60):
+                    return
                 continue
 
             sys_cfg = cfg.get("system") or {}
@@ -514,19 +549,22 @@ def session_keepalive_worker() -> None:
                     "debug",
                     category="keepalive",
                 )
-                time.sleep(60)
+                if wait_for_shutdown(60):
+                    return
                 continue
 
             # The first request waits the complete configured interval; startup
             # no longer forces a browser visit after five minutes.
-            time.sleep(interval_h * 3600)
+            if wait_for_shutdown(interval_h * 3600):
+                return
 
             cfg = load_app_config_validated()
             if not _session_keepalive_enabled(cfg):
                 continue
             while not _session_keepalive_is_safe():
                 log("keepalive: 流水线或结账正在进行，延后会话保活", "debug", category="keepalive")
-                time.sleep(60)
+                if wait_for_shutdown(60):
+                    return
                 cfg = load_app_config_validated()
                 if not _session_keepalive_enabled(cfg):
                     break
@@ -545,8 +583,11 @@ def session_keepalive_worker() -> None:
                 log(f"keepalive: Buff 保活成功: {buff_msg}", "info", category="keepalive")
             log("keepalive: 本轮 Buff 后台会话保活已完成", "info", category="keepalive")
         except Exception as e:
+            if is_shutdown_error(e):
+                return
             log(f"keepalive: worker 异常 {e}, 15 分钟后重试", "error", category="keepalive")
-            time.sleep(900)
+            if wait_for_shutdown(900):
+                return
 
 
 def steam_session_worker() -> None:
@@ -563,25 +604,28 @@ def steam_session_worker() -> None:
 
     refresh_window_seconds = 3600.0
     failure_backoff_seconds = 7200.0
-    while True:
+    while not is_shutting_down():
         try:
             cfg = load_app_config_validated()
             minutes = float((cfg.get("system") or {}).get("steam_session_keepalive_minutes", 30) or 0)
             if minutes <= 0:
-                time.sleep(300)
+                if wait_for_shutdown(300):
+                    return
                 continue
             interval = max(60.0, minutes * 60.0)
             acc = get_current_account()
             cookies = (get_steam_credentials() or {}).get("cookies") or ""
             if not acc or not cookies.strip():
                 set_steam_auth_expired(False)
-                time.sleep(interval)
+                if wait_for_shutdown(interval):
+                    return
                 continue
             exp = steam_cookie_expiry(cookies)
             now = time.time()
             if exp is not None and exp - now > refresh_window_seconds:
                 set_steam_auth_expired(False)
-                time.sleep(interval)
+                if wait_for_shutdown(interval):
+                    return
                 continue
             force = exp is not None
             if force and exp > now:
@@ -595,15 +639,21 @@ def steam_session_worker() -> None:
                 set_steam_auth_expired(False)
                 if status != "session_valid":
                     log(f"steam_keepalive: Steam 会话已刷新（{msg}）", "info", category="steam")
-                time.sleep(interval)
+                if wait_for_shutdown(interval):
+                    return
                 continue
             if status == "network_error":
                 log(f"steam_keepalive: 暂无法确认会话状态，下轮重试（{msg}）", "debug", category="steam")
-                time.sleep(interval)
+                if wait_for_shutdown(interval):
+                    return
                 continue
             set_steam_auth_expired(True)
             log(f"steam_keepalive: 自动重新登录失败（{status}）：{msg}，已标记 Steam 登录失效", "warn", category="steam")
-            time.sleep(failure_backoff_seconds)
+            if wait_for_shutdown(failure_backoff_seconds):
+                return
         except Exception as e:
+            if is_shutdown_error(e):
+                return
             log(f"steam_keepalive: worker 异常 {e}，15 分钟后重试", "error", category="steam")
-            time.sleep(900)
+            if wait_for_shutdown(900):
+                return

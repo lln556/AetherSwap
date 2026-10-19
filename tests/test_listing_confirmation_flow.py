@@ -332,7 +332,7 @@ def test_worker_retries_owned_confirmations_before_checking_for_sales(monkeypatc
         except StopIteration:
             raise StopWorker()
 
-    monkeypatch.setattr(workers.time, "sleep", sleep)
+    monkeypatch.setattr(workers, "wait_for_shutdown", sleep)
     monkeypatch.setattr(workers, "load_app_config_validated", lambda: {})
     monkeypatch.setattr(workers, "is_steam_background_allowed", lambda: True)
     initial = [

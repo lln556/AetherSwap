@@ -79,8 +79,8 @@ def test_region_sync_worker_does_not_sleep_before_missing_account_skip(monkeypat
     monkeypatch.setattr(workers, "get_current_account", lambda: None)
     monkeypatch.setattr(workers, "log", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        workers.time,
-        "sleep",
+        workers,
+        "wait_for_shutdown",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("startup sync should not pre-sleep")),
     )
 

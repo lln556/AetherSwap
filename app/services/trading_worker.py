@@ -3,6 +3,7 @@ import threading
 import time
 from sqlmodel import select
 from app.trading_models import TradingPolicy, RepriceJob, MarketListing
+from app.services.lifecycle import is_shutting_down, is_shutdown_error, wait_for_shutdown
 
 _cycle_lock = threading.Lock()
 
@@ -93,17 +94,20 @@ def next_cycle_delay(policy, jobs, result, now=None):
 def trading_worker():
     from app.database import get_session
     from app.state import log
-    while True:
+    while not is_shutting_down():
         try:
             with get_session() as s:
                 policy = s.get(TradingPolicy, 1) or TradingPolicy()
                 due = not policy.next_check_at or policy.next_check_at <= time.time()
             if not due:
-                time.sleep(10)
+                if wait_for_shutdown(10):
+                    return
                 continue
             try:
                 result = run_trading_cycle()
             except Exception as exc:
+                if is_shutdown_error(exc):
+                    return
                 result = {"ok": False, "error": f"市场核实异常（{type(exc).__name__}）"}
             with get_session() as s:
                 policy = s.get(TradingPolicy, 1) or TradingPolicy()
@@ -118,8 +122,12 @@ def trading_worker():
             elif result.get("sold"):
                 log(f"已同步 {result['sold']} 条真实成交记录", "info", category="market_reconcile")
         except Exception as exc:
+            if is_shutdown_error(exc):
+                return
             # Includes database reads/scheduling writes: keep the worker alive after outages.
             log(f"市场核实暂不可用（{type(exc).__name__}），60 秒后重试", "warn", category="market_reconcile")
-            time.sleep(60)
+            if wait_for_shutdown(60):
+                return
             continue
-        time.sleep(10)
+        if wait_for_shutdown(10):
+            return

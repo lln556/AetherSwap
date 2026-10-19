@@ -741,10 +741,15 @@ def _run_sell_phase_impl(cfg: dict, state, flow_id: str, items: Optional[list] =
 
 
 def _run_sell_phase(cfg: dict, state, flow_id: str, items: Optional[list] = None) -> None:
+    from app.services.lifecycle import is_shutting_down
+    if is_shutting_down():
+        return
     if not _sell_phase_lock.acquire(blocking=False):
         state.log("[出售] 已有出售任务在执行，本次跳过", "info", category="steam", flow_id=flow_id)
         return
     try:
+        if is_shutting_down():
+            return
         _run_sell_phase_impl(cfg, state, flow_id, items)
     finally:
         _sell_phase_lock.release()
@@ -755,6 +760,9 @@ def _run_sell_phase(cfg: dict, state, flow_id: str, items: Optional[list] = None
 # ---------------------------------------------------------------------------
 
 def run_sell_phase_on_inventory_update(items: list) -> None:
+    from app.services.lifecycle import is_shutting_down
+    if is_shutting_down():
+        return
     cfg = merge(DEFAULTS, load_app_config_validated())
     state = get_state()
     t = threading.Thread(

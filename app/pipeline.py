@@ -554,6 +554,13 @@ def mark_shutdown_pending() -> None:
     _shutdown_pending = True
 
 
+def wait_for_pipeline_exit() -> None:
+    with _pipeline_start_lock:
+        thread = _pipeline_thread
+    if thread is not None and thread is not threading.current_thread():
+        thread.join()
+
+
 @contextmanager
 def exclusive_pipeline_maintenance(reason: str):
     """Exclude pipeline starts, checkout writes and credential changes.
@@ -631,7 +638,7 @@ def get_pipeline_start_blocker() -> dict:
     if _shutdown_pending:
         return {
             "code": "APP_SHUTDOWN_PENDING",
-            "message": "应用正在重置数据并等待退出，不能启动流水线",
+            "message": "应用正在退出，不能启动流水线",
         }
     if _pipeline_maintenance_reason:
         return {

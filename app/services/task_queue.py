@@ -12,12 +12,14 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
+from app.services.lifecycle import is_shutdown_error
 class TaskStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
     RETRYING = "retrying"
+    CANCELLED = "cancelled"
 @dataclass
 class TaskInfo:
     task_id: str
@@ -44,6 +46,7 @@ class TaskQueue:
         self._tasks: Dict[str, TaskInfo] = {}
         self._lock = threading.Lock()
         self._max_history = max_history
+        self._shutdown = threading.Event()
     def submit(
         self,
         fn: Callable,
@@ -73,16 +76,17 @@ class TaskQueue:
             max_retries=max_retries,
         )
         with self._lock:
+            if self._shutdown.is_set():
+                raise RuntimeError("task queue is shutting down")
             self._trim_history()
             self._tasks[task_id] = info
-        self._executor.submit(
-            self._run_with_retries,
-            info,
-            fn,
-            args,
-            kwargs,
-            retry_base_delay,
-        )
+            try:
+                self._executor.submit(
+                    self._run_with_retries, info, fn, args, kwargs, retry_base_delay,
+                )
+            except Exception:
+                del self._tasks[task_id]
+                raise
         return task_id
     def get_task(self, task_id: str) -> Optional[dict]:
         with self._lock:
@@ -98,7 +102,14 @@ class TaskQueue:
         with self._lock:
             return sum(1 for t in self._tasks.values() if t.status in (TaskStatus.PENDING, TaskStatus.RUNNING, TaskStatus.RETRYING))
     def shutdown(self, wait: bool = True) -> None:
-        self._executor.shutdown(wait=wait)
+        with self._lock:
+            self._shutdown.set()
+        self._executor.shutdown(wait=wait, cancel_futures=True)
+        with self._lock:
+            for info in self._tasks.values():
+                if info.status == TaskStatus.PENDING:
+                    info.status = TaskStatus.CANCELLED
+                    info.finished_at = time.time()
     def _run_with_retries(
         self,
         info: TaskInfo,
@@ -108,6 +119,10 @@ class TaskQueue:
         retry_base_delay: float,
     ) -> None:
         while True:
+            if self._shutdown.is_set():
+                info.status = TaskStatus.CANCELLED
+                info.finished_at = time.time()
+                return
             info.attempts += 1
             info.status = TaskStatus.RUNNING
             info.started_at = time.time()
@@ -118,13 +133,17 @@ class TaskQueue:
                 info.finished_at = time.time()
                 return
             except Exception as exc:
+                if self._shutdown.is_set() or is_shutdown_error(exc):
+                    info.status = TaskStatus.CANCELLED
+                    info.finished_at = time.time()
+                    return
                 tb = traceback.format_exc()
                 info.error = f"{exc}\n{tb}"
                 if info.attempts <= info.max_retries:
                     info.status = TaskStatus.RETRYING
                     delay = retry_base_delay * (2 ** (info.attempts - 1))
                     delay = min(delay, 300)  
-                    time.sleep(delay)
+                    self._shutdown.wait(delay)
                 else:
                     info.status = TaskStatus.FAILED
                     info.finished_at = time.time()
@@ -134,7 +153,7 @@ class TaskQueue:
             return
         finished = [
             (tid, t) for tid, t in self._tasks.items()
-            if t.status in (TaskStatus.SUCCESS, TaskStatus.FAILED)
+            if t.status in (TaskStatus.SUCCESS, TaskStatus.FAILED, TaskStatus.CANCELLED)
         ]
         finished.sort(key=lambda x: x[1].finished_at or 0)
         to_remove = len(self._tasks) - self._max_history + 20
