@@ -608,13 +608,23 @@ function renderPolicySummary() {
   renderPolicyRuntime();
 }
 
+function strategyCostExplanation(value, detailed = false) {
+  const cost = Number(value);
+  if (value == null || value === "" || !Number.isFinite(cost) || cost <= 0 || cost > 1) {
+    return "请输入大于 0、不超过 1 的成本率。";
+  }
+  const example = `按输入值 ${cost}，预计每 ¥100 Steam 钱包余额，买入成本需低于 ¥${(cost * 100).toFixed(2)}。`;
+  return detailed
+    ? `成本率 = BUFF 买价 ÷ Steam 参考售价 × 1.15。${example}调高会放宽筛选，调低会更严格；手续费按 1.15 近似计算。`
+    : `${example}调高更容易通过；修改后需保存。`;
+}
+
 function updateCostExample(value) {
   const node = el("strategy-cost-example");
-  if (!node) return;
-  const cost = Number(value);
-  node.textContent = value !== "" && Number.isFinite(cost) && cost > 0 && cost <= 1
-    ? `预计换得 ¥100 Steam 钱包余额，买入成本需低于 ¥${(cost * 100).toFixed(2)}。手续费按 1.15 近似计算。`
-    : "请输入大于 0、不超过 1 的成本率。";
+  if (node) node.textContent = strategyCostExplanation(value);
+  document.querySelectorAll("[data-cost-explanation]").forEach((node) => {
+    node.textContent = strategyCostExplanation(value, node.dataset.costExplanation === "detail");
+  });
 }
 
 function renderPolicyRuntime() {
@@ -1026,6 +1036,10 @@ function bindStrategyStepDrag(stepsEl, readonly) {
 function renderStepParamEditor(step, mod, idx, readonly) {
   const schema = mod.params_schema || {};
   const fields = Object.keys(schema);
+  const isCost = step.module_id === "guard.max_discount";
+  const explanation = isCost
+    ? strategyCostExplanation(step.params?.max_discount ?? schema.max_discount?.default, true)
+    : (mod.explanation || mod.description || "此模块暂无详细说明。");
   return `
     <div class="strategy-step-params" id="strategy-step-detail-${idx}">
       <div class="strategy-step-param-head">
@@ -1035,7 +1049,7 @@ function renderStepParamEditor(step, mod, idx, readonly) {
         </div>
         <span class="strategy-pill">${escapeHtml(mod.group_label || "自定义规则")}</span>
       </div>
-      <div class="strategy-step-param-desc">${escapeHtml(mod.explanation || mod.description || "此模块暂无详细说明。")}</div>
+      <div class="strategy-step-param-desc" ${isCost ? 'data-cost-explanation="detail"' : ""}>${escapeHtml(explanation)}</div>
       ${fields.length ? `
         <div class="strategy-step-param-grid">
           ${fields.filter((key) => !schema[key].advanced).map((key) => renderParamField(key, schema[key], step.params || {}, readonly, idx)).join("")}
@@ -1052,7 +1066,9 @@ function renderParamField(key, meta, params, readonly, stepIndex) {
   const value = params[key] ?? fallback ?? "";
   const type = meta?.type || "string";
   const label = meta?.label || key.replace(/_/g, " ");
-  const help = meta?.help ? `<small class="strategy-param-help">${escapeHtml(meta.help)}</small>` : "";
+  const help = key === "max_discount"
+    ? `<small class="strategy-param-help" data-cost-explanation="short">${escapeHtml(strategyCostExplanation(value))}</small>`
+    : (meta?.help ? `<small class="strategy-param-help">${escapeHtml(meta.help)}</small>` : "");
   const attrs = [
     `data-step-index="${stepIndex}"`,
     `data-param-key="${escapeHtml(key)}"`,
@@ -1081,7 +1097,10 @@ function updateParam(input) {
   step.params = step.params || {};
   const key = input.dataset.paramKey;
   const type = input.dataset.paramType;
-  if (type !== "boolean" && input.value.trim() === "") return;
+  if (type !== "boolean" && input.value.trim() === "") {
+    if (key === "max_discount") updateCostExample("");
+    return;
+  }
   if (type === "array") {
     step.params[key] = input.value.split(/\n/).map((s) => s.trim()).filter(Boolean);
   } else if (type === "integer") {
