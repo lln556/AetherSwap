@@ -97,3 +97,24 @@ def test_forced_relogin_skips_valid_cookie_and_renews_credentials(monkeypatch, a
     assert ok is True and status == "auto_ok"
     auth_env.login.assert_called_once()
     auth_env.writes.assert_called_once()
+
+
+@pytest.mark.parametrize('valid,expected,delay', [(True, [False], 150), (False, [True], 7200), (None, [], 1800)])
+def test_failed_renewal_checks_existing_session(monkeypatch, valid, expected, delay):
+    from app.services import workers
+    account = {'id': 'test-account', 'steam_id': 'test-id'}
+    flags, waits = [], []
+    monkeypatch.setattr(workers, 'is_shutting_down', lambda: False)
+    monkeypatch.setattr(workers, 'load_app_config_validated', lambda: {})
+    monkeypatch.setattr(workers, 'get_current_account', lambda: account)
+    monkeypatch.setattr(workers, 'get_steam_credentials', lambda: {'cookies': 'test-cookie'})
+    monkeypatch.setattr(workers, 'set_steam_auth_expired', flags.append)
+    monkeypatch.setattr(workers, 'log', lambda *a, **kw: None)
+    monkeypatch.setattr(workers.time, 'time', lambda: 1000)
+    monkeypatch.setattr(workers, 'wait_for_shutdown', lambda seconds: waits.append(seconds) or True)
+    monkeypatch.setattr(steam_auth, 'steam_cookie_expiry', lambda _: 1300)
+    monkeypatch.setattr(steam_auth, 'try_steam_auto_relogin', lambda **kw: (False, 'error', 'failed'))
+    monkeypatch.setattr(steam_auth, '_verify_steam_cookies_valid', lambda *a: valid)
+    workers.steam_session_worker()
+    assert flags == expected
+    assert waits == [delay]

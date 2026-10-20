@@ -600,7 +600,7 @@ def steam_session_worker() -> None:
     heals an already-expired session).  Failures are surfaced through
     ``steam_auth_expired`` so the UI can ask for manual intervention.
     """
-    from app.services.steam_auth import steam_cookie_expiry, try_steam_auto_relogin
+    from app.services.steam_auth import steam_cookie_expiry, try_steam_auto_relogin, _verify_steam_cookies_valid
 
     refresh_window_seconds = 3600.0
     failure_backoff_seconds = 7200.0
@@ -642,14 +642,28 @@ def steam_session_worker() -> None:
                 if wait_for_shutdown(interval):
                     return
                 continue
-            if status == "network_error":
-                log(f"steam_keepalive: 暂无法确认会话状态，下轮重试（{msg}）", "debug", category="steam")
-                if wait_for_shutdown(interval):
-                    return
+            # A failed renewal says nothing about the existing web session.
+            current = get_current_account()
+            if not current or current.get("id") != acc.get("id"):
                 continue
-            set_steam_auth_expired(True)
-            log(f"steam_keepalive: 自动重新登录失败（{status}）：{msg}，已标记 Steam 登录失效", "warn", category="steam")
-            if wait_for_shutdown(failure_backoff_seconds):
+            current_cookies = (get_steam_credentials() or {}).get("cookies") or ""
+            valid = _verify_steam_cookies_valid(current_cookies, current.get("steam_id") or "")
+            if get_current_account() != current or (get_steam_credentials() or {}).get("cookies", "") != current_cookies:
+                continue
+            if valid is not None:
+                set_steam_auth_expired(not valid)
+            if valid is False:
+                detail = "接口已确认当前登录失效"
+                delay = failure_backoff_seconds
+            elif valid is True:
+                detail = "当前登录仍有效，稍后重试续期"
+                remaining = (steam_cookie_expiry(current_cookies) or (time.time() + interval)) - time.time()
+                delay = max(60.0, min(interval, remaining / 2))
+            else:
+                detail = "暂无法确认当前登录状态，保留原状态"
+                delay = interval
+            log(f"steam_keepalive: 自动重新登录失败（{status}）：{msg}；{detail}", "warn", category="steam")
+            if wait_for_shutdown(delay):
                 return
         except Exception as e:
             if is_shutdown_error(e):

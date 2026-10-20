@@ -353,3 +353,30 @@ def test_server_cookie_deletion_during_redirect_does_not_restore_request_overrid
         client.get('https://steamcommunity.com/next')
         assert 'steamLoginSecure' not in client.cookies
     assert all('cookie' not in r.headers for r in seen[1:])
+
+
+def test_real_steampy_login_extracts_httpx_cookie_token(monkeypatch, capsys):
+    from steampy.client import SteamClient
+    from steampy.login import LoginExecutor
+    from app.services.steam_auth import _do_steampy_login_once
+
+    def handshake(executor):
+        for domain in ('steamcommunity.com', 'store.steampowered.com'):
+            executor.session.cookies.set('steamLoginSecure', 'test-account%7C%7Ctest-token', domain=domain)
+            executor.session.cookies.set('sessionid', 'test-session', domain=domain)
+        executor.session.cookies.set('steamRefresh_steam', 'test-refresh')
+        executor.session.cookies.set('steamCountry', 'test-country')
+        executor.set_sessionid_cookies()
+        return executor.session
+
+    def alive(client):
+        assert client._access_token == 'test-token'
+        assert client._get_session_id() == 'test-session'
+        return True
+
+    monkeypatch.setattr(LoginExecutor, 'login', handshake)
+    monkeypatch.setattr(SteamClient, 'is_session_alive', alive)
+    ok, error, cookies = _do_steampy_login_once('test-user', 'unused', {'shared_secret': 'unused'})
+    assert ok, error
+    assert cookies['sessionid'] == 'test-session'
+    assert 'test-token' not in capsys.readouterr().out

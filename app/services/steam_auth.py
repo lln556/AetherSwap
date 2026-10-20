@@ -415,8 +415,20 @@ def _do_steampy_login_once(
         _old_pool_sessions = getattr(LoginExecutor, "_pool_sessions_steam", None)
         if _old_pool_sessions is not None:
             LoginExecutor._pool_sessions_steam = _steampy_pool_sessions_with_retry
+        class HttpxSteamClient(SteamClient):
+            def _set_access_token(self):
+                # HTTPX iterates cookie names; steampy expects Cookie objects.
+                # Keep HTTPX mapping semantics intact and scope token selection.
+                cookies = self._session.cookies.get_dict(domain='steamcommunity.com')
+                value = unquote(cookies.get('steamLoginSecure', ''))
+                _, separator, token = value.partition('||')
+                if not separator or not token:
+                    # Upstream prints the credential on this error path.
+                    raise ValueError('Steam access token missing from login cookie')
+                return token
+
         sg_str = json.dumps(steam_guard_dict) if steam_guard_dict else None
-        client = SteamClient(api_key="", username=username, password=password,
+        client = HttpxSteamClient(api_key="", username=username, password=password,
                              steam_guard=sg_str)
         # steampy constructs a requests session internally. Replace it before
         # login makes any request; its LoginExecutor then uses HTTPX as well.
