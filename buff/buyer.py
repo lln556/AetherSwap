@@ -921,6 +921,7 @@ class BuffBuyer:
         *,
         on_created: Optional[Callable[[str], None]] = None,
         preview: Optional[dict] = None,
+        can_create: Optional[Callable[[], bool]] = None,
     ) -> dict:
         if preview is None:
             preview = self.preview_buy(game, goods_id, sell_order_id, price)
@@ -956,6 +957,9 @@ class BuffBuyer:
                 "msg": preview_error,
                 "created": False,
             }
+        if can_create is not None and not can_create():
+            return {"success": False, "created": False, "code": "BUY_CANCELLED",
+                    "msg": "购买条件已更新或任务已停止，未创建订单"}
         payload = {
             "game": game,
             "goods_id": str(goods_id),

@@ -6,6 +6,7 @@ class PipelineContext:
         self.state = state
         self.flow_id = flow_id
         self.verbose = verbose
+        self.is_policy_current = lambda: True
 
     def log(self, msg: str, level: str = "info", category: str = "pipeline") -> None:
         self.state.log(msg, level, category=category, flow_id=self.flow_id)
@@ -29,5 +30,7 @@ class PipelineContext:
             if self.is_stop_requested():
                 self.set_status("stopped", "已停止")
                 return True
+            if not self.is_policy_current():
+                return False
             time.sleep(1)
         return False

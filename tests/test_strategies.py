@@ -124,7 +124,7 @@ def test_validation_rejects_duplicate_conflict_dependency_and_step_limit():
             {"module_id": "action.buff_lock_pay", "enabled": True, "params": {}},
         ],
     }
-    assert any("需要同时启用" in e and "Steam 卖单深度" in e for e in se.validate_strategy(dependency))
+    assert any("需要同时启用" in e and se.BUILTIN_MODULES["buy.steam_sell_depth"]["name"] in e for e in se.validate_strategy(dependency))
 
     conflict = {
         "name": "互斥",

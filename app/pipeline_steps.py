@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from app.services.iflow_client import fetch_iflow_rows as _fetch_iflow_rows
+from app.services.buy_policy import POLICY_CHANGED
 from app.state import get_purchases, get_state, set_status
 from app.strategy_engine import evaluate_strategy_runtime_modules, is_strategy_module_enabled
 from app.services.steam_client import SteamClient
@@ -69,6 +70,7 @@ def _affordable_quantity(
 
 
 class _PurchaseAttemptStatus(Enum):
+    POLICY_CHANGED = "policy_changed"
     SUCCESS = "success"
     SAFE_TO_FALLBACK = "safe_to_fallback"
     CREATED_NOT_PAID = "created_not_paid"
@@ -774,6 +776,7 @@ def pick_stable_item(
     log_fn: Optional[Callable[[str, str], None]] = None,
     exclude_goods_ids: Optional[set] = None,
     buff_client: Optional[Any] = None,
+    is_policy_current: Optional[Callable[[], bool]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Set[int]]:
     # 遍历候选饰品，返回第一个通过所有检测的
     # 检测顺序: Buff价格预检 → Steam卖单 → 卖压 → 最高折扣 → 历史稳定性
@@ -800,6 +803,8 @@ def pick_stable_item(
         price_position_enabled,
     ))
     for i, item in enumerate(filtered):
+        if is_policy_current is not None and not is_policy_current():
+            return None, stability_failed
         if is_stop_requested():
             return None, stability_failed
         gid = item.get("goods_id")
@@ -1594,7 +1599,13 @@ def lock_and_confirm_payment(
     on_entering_payment: Optional[Callable[[], None]] = None,
     is_time_allowed: Optional[Callable[[], bool]] = None,
     begin_payment_wait: Optional[Callable[[], int]] = None,
+    is_policy_current: Optional[Callable[[], bool]] = None,
 ) -> Optional[float]:
+    def policy_current():
+        return is_policy_current is None or bool(is_policy_current())
+
+    if not policy_current():
+        return POLICY_CHANGED
     buff_cfg = config.get("buff", {})
     game_buff = buff_cfg.get("game", "csgo")
     tolerance = float(buff_cfg.get("price_tolerance", 0.5))
@@ -1893,6 +1904,8 @@ def lock_and_confirm_payment(
             return False
 
     def _try_single_buy() -> _PurchaseAttempt:
+        if not policy_current():
+            return _PurchaseAttempt(_PurchaseAttemptStatus.POLICY_CHANGED)
         plan_failure = _prepare_purchase_plan()
         if plan_failure is not None:
             return plan_failure
@@ -1940,6 +1953,8 @@ def lock_and_confirm_payment(
                             ),
                         )
                     prepared_preview = preparation.get("preview")
+                if not policy_current():
+                    return _PurchaseAttempt(_PurchaseAttemptStatus.POLICY_CHANGED)
                 identity = _checkout_credential_identity(buff_client)
                 intent = begin_checkout(
                     "single",
@@ -1978,8 +1993,13 @@ def lock_and_confirm_payment(
                     supports_preview = _supports_keyword_argument(
                         lock_order, "preview"
                     )
-                    if supports_created or supports_preview:
+                    supports_can_create = _supports_keyword_argument(lock_order, "can_create")
+                    if supports_created or supports_preview or supports_can_create:
                         optional_kwargs = {}
+                        if supports_can_create:
+                            optional_kwargs["can_create"] = lambda: (
+                                policy_current() and not is_stop_requested() and _time_window_is_open()
+                            )
                         if supports_created:
                             optional_kwargs["on_created"] = _on_order_created
                         if supports_preview:
@@ -2220,6 +2240,8 @@ def lock_and_confirm_payment(
                         reason="等待请求锁期间购买时间窗已关闭",
                     )
                 _verify_checkout_session(buff_client, game_buff)
+                if not policy_current():
+                    return _PurchaseAttempt(_PurchaseAttemptStatus.POLICY_CHANGED)
                 identity = _checkout_credential_identity(buff_client)
                 intent = begin_checkout(
                     "batch",
@@ -2250,7 +2272,7 @@ def lock_and_confirm_payment(
                         batch_kwargs = {"on_created": _on_batch_created}
                         if _supports_keyword_argument(create_batch, "can_create"):
                             batch_kwargs["can_create"] = lambda: (
-                                not is_stop_requested() and _time_window_is_open()
+                                not is_stop_requested() and _time_window_is_open() and policy_current()
                             )
                         batch_result = create_batch(
                             goods_id,
@@ -2447,6 +2469,8 @@ def lock_and_confirm_payment(
         )
 
     def _finish_attempt(attempt: _PurchaseAttempt) -> Optional[float]:
+        if attempt.status is _PurchaseAttemptStatus.POLICY_CHANGED:
+            return POLICY_CHANGED
         if attempt.status is _PurchaseAttemptStatus.SUCCESS:
             return attempt.amount
         if attempt.status is _PurchaseAttemptStatus.UNKNOWN_AFTER_SEND:
@@ -2469,6 +2493,8 @@ def lock_and_confirm_payment(
             raise BuffVerificationRequired(
                 attempt.reason or "Buff 返回风控/验证状态，已停止后续购买请求"
             )
+        if not policy_current():
+            return POLICY_CHANGED
         if attempt.status is _PurchaseAttemptStatus.TIME_WINDOW_CLOSED:
             return TIME_WINDOW_CLOSED
         if attempt.status is _PurchaseAttemptStatus.TARGET_REACHED:

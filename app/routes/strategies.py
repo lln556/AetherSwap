@@ -44,7 +44,13 @@ def _error(exc: Exception):
 
 @router.get("/api/strategies")
 def api_strategies():
-    return {"ok": True, **get_strategy_payload()}
+    return {"ok": True, **get_strategy_payload(), "runtime": api_strategy_runtime()}
+
+
+@router.get("/api/strategies/runtime")
+def api_strategy_runtime():
+    from app.pipeline import get_buy_policy_status, is_pipeline_running
+    return {"pipeline_active": is_pipeline_running(), "buy": get_buy_policy_status()}
 
 
 @router.post("/api/strategies")

@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.config_loader import get_buff_credentials, load_app_config_validated
+from app.config_loader import get_buff_credentials, load_app_config_validated, _config_update_lock
 from app.config_schema import DEFAULTS, _validate_ranges, merge, validate_and_fill
 from app.pipeline_context import PipelineContext
 from app.pipeline_steps import (
@@ -37,6 +37,7 @@ from app.services.buff_checkout_guard import (
 from app.services.steam_client import SteamClient
 from app.state import get_state, append_sale
 from app.strategy_engine import apply_strategy_to_config
+from app.services.buy_policy import BuyPolicyMonitor, POLICY_CHANGED
 from buff import (
     BuffAuthExpired,
     BuffRateLimited,
@@ -153,7 +154,10 @@ def _process_deals_for_target(
         except Exception:
             return False
 
+    policy_current = getattr(ctx, "is_policy_current", lambda: True)
     while acc < target:
+        if not policy_current():
+            return acc, bought, POLICY_CHANGED
         if ctx.is_stop_requested():
             ctx.log("用户请求停止", "warn", category="buff")
             ctx.set_status("stopped", "已停止")
@@ -168,8 +172,11 @@ def _process_deals_for_target(
             log_fn=ctx.log,
             exclude_goods_ids=failed_goods_ids | skipped_this_round | stability_failed_this_round,
             buff_client=buyer,
+            **({"is_policy_current": policy_current} if getattr(ctx, "buy_policy", None) else {}),
         )
         stability_failed_this_round |= new_stability_failed
+        if not policy_current():
+            return acc, bought, POLICY_CHANGED
 
         if ctx.is_stop_requested():
             ctx.set_status("stopped", "已停止")
@@ -193,6 +200,8 @@ def _process_deals_for_target(
                 "on_entering_payment": on_entering_payment,
                 "begin_payment_wait": ctx.state.begin_payment_wait,
             }
+            if getattr(ctx, "buy_policy", None):
+                checkout_kwargs["is_policy_current"] = policy_current
             if is_time_allowed is not None:
                 checkout_kwargs["is_time_allowed"] = time_window_is_open
             paid = lock_and_confirm_payment(
@@ -243,6 +252,8 @@ def _process_deals_for_target(
         if ctx.is_stop_requested():
             ctx.set_status("stopped", "已停止")
             return acc, bought, True
+        if paid is POLICY_CHANGED:
+            return acc, bought, POLICY_CHANGED
         if paid is TIME_WINDOW_CLOSED:
             ctx.log("发送购买请求前时间窗已关闭，本件未下单", "info", category="pipeline")
             return acc, bought, TIME_WINDOW_CLOSED
@@ -284,16 +295,22 @@ def _process_deals_for_target(
 
 
 def _run_pipeline(config: dict) -> None:
+    global _active_buy_policy
     state = get_state()
     state.clear_stop()
     supplied_config = config if isinstance(config, dict) else {}
-    cfg = apply_strategy_to_config(
-        _validate_ranges(validate_and_fill(merge(DEFAULTS, supplied_config))),
-        "buy",
-    )
+    with _config_update_lock:
+        cfg = apply_strategy_to_config(
+            _validate_ranges(validate_and_fill(merge(DEFAULTS, supplied_config))),
+            "buy",
+        )
+        monitor = BuyPolicyMonitor(cfg)
     pipeline_cfg = cfg.get("pipeline", {})
     verbose = bool(pipeline_cfg.get("verbose_debug", False))
     ctx = PipelineContext(state, str(uuid.uuid4())[:8], verbose=verbose)
+    ctx.buy_policy = monitor
+    ctx.is_policy_current = ctx.buy_policy.is_current
+    _active_buy_policy = ctx.buy_policy
 
     target = float(pipeline_cfg.get("target_balance", 100))
     exclude = pipeline_cfg.get("exclude_keywords", [])
@@ -311,7 +328,7 @@ def _run_pipeline(config: dict) -> None:
     sort_desc = sort_labels.get(sort_by, sort_by)
     retry_interval = int(pipeline_cfg.get("retry_interval_seconds", DEFAULT_RETRY_INTERVAL_SECONDS))
     ctx.log(
-        f"配置: 目标余额={target}, 排除关键词={exclude}, 最高折扣={max_discount}, "
+        f"配置: 本次买入预算={target}, 排除关键词={exclude}, 成本率上限={max_discount}, "
         f"排序={sort_desc}({sort_by}), 无符合时{retry_interval}秒后重试",
         "info",
     )
@@ -366,6 +383,14 @@ def _run_pipeline(config: dict) -> None:
             ctx.log("用户请求停止", "warn")
             ctx.set_status("stopped", "已停止")
             return
+
+        cfg, policy_updated = ctx.buy_policy.refresh(cfg)
+        if policy_updated:
+            pipeline_cfg = cfg.get("pipeline", {})
+            target = float(pipeline_cfg.get("target_balance", 100))
+            ctx.log(f"买入策略已实时更新：成本率上限={pipeline_cfg.get('max_discount')}；重新筛选候选，已购金额 {acc:.2f} 保留", "info")
+        if acc >= target:
+            break
 
         schedule_now = _now_in_schedule_timezone(schedule_timezone)
         if time_limit_enabled and not _is_in_time_window(
@@ -437,6 +462,8 @@ def _run_pipeline(config: dict) -> None:
                 set(),
                 is_time_allowed=time_window_is_open,
             )
+            if stopped is POLICY_CHANGED:
+                continue
             if stopped is TIME_WINDOW_CLOSED:
                 continue
             if stopped:
@@ -536,6 +563,13 @@ def _run_pipeline(config: dict) -> None:
 
 
 _pipeline_thread = None
+_active_buy_policy = None
+
+def get_buy_policy_status():
+    monitor = _active_buy_policy
+    return monitor.status() if monitor is not None and is_pipeline_running() else None
+
+
 _pipeline_start_lock = threading.RLock()
 _pipeline_maintenance_reason = ""
 _shutdown_pending = False

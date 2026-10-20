@@ -227,6 +227,7 @@ class BuffClient:
         *,
         on_created: Optional[Callable[[str], None]] = None,
         preview: Optional[dict] = None,
+        can_create: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         return self._run(
             lambda buyer: buyer.lock_and_get_pay_url(
@@ -236,6 +237,7 @@ class BuffClient:
                 price,
                 on_created=on_created,
                 preview=preview,
+                **({"can_create": can_create} if can_create is not None else {}),
             )
         )
 

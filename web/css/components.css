@@ -5078,3 +5078,55 @@ textarea.app-modal-input {
 .text-muted {
   color: var(--text-muted);
 }
+
+/* Strategy explanations and live application status. */
+.strategy-policy-summary { border: 1px solid var(--border-color); border-radius: 12px; padding: 18px; background: var(--bg-surface); display: grid; gap: 12px; }
+.strategy-policy-top { display: flex; justify-content: space-between; align-items: center; color: var(--text-muted); font-size: 12px; }
+.strategy-policy-tag { color: var(--primary); font-weight: 700; }
+.strategy-policy-summary h4 { margin: 0; font-size: 16px; line-height: 1.5; color: var(--text-main); }
+.strategy-cost-row { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.strategy-cost-row p, .strategy-policy-timing, .strategy-reading-guide p { margin: 6px 0 0; font-size: 12px; color: var(--text-secondary); line-height: 1.8; }
+.strategy-cost-input { flex: 0 0 110px; display: grid; gap: 5px; font-size: 12px; color: var(--text-secondary); }
+.strategy-cost-input input { width: 100%; min-width: 0; padding: 10px 12px; font-size: 22px; font-weight: 700; color: var(--primary); background: var(--bg-body, var(--bg-surface)); border: 1px solid var(--border-color); border-radius: 8px; font-variant-numeric: tabular-nums; }
+.strategy-cost-example { margin: 0; font-size: 13px; line-height: 1.7; color: var(--text-secondary); }
+.strategy-policy-status { padding: 9px 12px; background: rgba(16, 185, 129, .08); color: var(--text-main); border-left: 3px solid var(--success); border-radius: 4px; font-size: 12px; line-height: 1.7; }
+.strategy-policy-status.pending { border-color: var(--warning, #d99c32); background: rgba(217, 156, 50, .08); }
+.strategy-reading-guide { padding-top: 12px; border-top: 1px solid var(--border-color); }
+.strategy-reading-guide summary, .strategy-advanced summary { color: var(--text-secondary); font-size: 12px; cursor: pointer; }
+.strategy-reading-guide summary:focus-visible, .strategy-guide-card summary:focus-visible { outline: 2px solid var(--primary); outline-offset: 4px; }
+.strategy-param-help { display: block; color: var(--text-muted); font-size: 12px; line-height: 1.65; font-weight: 400; }
+.strategy-param--check { flex-wrap: wrap; align-content: start; }
+.strategy-param--check .strategy-param-help { flex-basis: 100%; }
+.strategy-step-main span { white-space: normal; line-height: 1.6; margin-top: 3px; }
+.strategy-step-main strong { white-space: normal; line-height: 1.5; }
+.strategy-step-param-desc { line-height: 1.85; font-size: 13px; }
+.strategy-no-params { font-size: 12px; color: var(--text-muted); }
+.strategy-advanced .strategy-step-param-grid { margin-top: 12px; }
+.strategy-library-search { display: flex; align-items: center; gap: 14px; margin: 16px 0; color: var(--text-secondary); font-size: 13px; }
+.strategy-library-search input { flex: 1; min-width: 0; max-width: 460px; padding: 10px 12px; color: var(--text-main); background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 8px; }
+.strategy-guide-card { border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-surface); padding: 16px 18px; }
+.strategy-guide-card summary { cursor: pointer; color: var(--text-main); }
+.strategy-guide-card summary strong { font-size: 14px; margin: 0 10px; }
+.strategy-guide-card summary > span:last-child { display: block; margin-top: 8px; font-size: 12px; color: var(--text-secondary); line-height: 1.7; }
+.strategy-guide-kind { font-size: 11px; color: var(--primary); }
+.strategy-guide-body { padding-top: 12px; color: var(--text-secondary); font-size: 13px; line-height: 1.8; }
+.strategy-guide-body p { margin: 0 0 14px; }
+.strategy-guide-param { display: grid; grid-template-columns: minmax(130px, 1fr) 3fr; gap: 16px; border-top: 1px solid var(--border-color); padding: 10px 0; font-size: 12px; }
+.strategy-guide-param strong { color: var(--text-main); font-weight: 500; }
+@media (max-width: 640px) {
+  .strategy-policy-summary { padding: 14px; }
+  .strategy-cost-row { align-items: start; gap: 12px; }
+  .strategy-cost-row h4 { font-size: 14px; }
+  .strategy-cost-input { flex-basis: 92px; }
+  .strategy-cost-input input { font-size: 20px; }
+  .strategy-step-param-grid { grid-template-columns: minmax(0, 1fr); }
+  .strategy-guide-param { grid-template-columns: 1fr; gap: 4px; }
+  .strategy-guide-card summary strong { display: block; margin: 8px 0 0; }
+  .strategy-library-search { flex-direction: column; align-items: stretch; gap: 8px; }
+}
+
+@media (max-width: 900px) {
+  .strategy-step.system-step { grid-template-columns: 24px minmax(0, 1fr) 28px; gap: 9px; padding: 10px; }
+  .strategy-step.system-step > .strategy-step-actions { grid-column: 3; grid-row: 1; }
+  .strategy-step.system-step .strategy-step-index { width: 24px; height: 26px; }
+}

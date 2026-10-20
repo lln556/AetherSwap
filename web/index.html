@@ -748,7 +748,7 @@
             <div>
               <div class="strategy-kicker">Strategy Center</div>
               <h2>策略中心</h2>
-              <p>管理购入与出售策略，组装内置模块，登记自定义模块，并在启用前完成风险确认。</p>
+              <p>先设定买入成本，再选择行情与数量保护。保存已启用的购入策略，可在运行中生效。</p>
             </div>
             <div class="strategy-hero-actions">
               <button type="button" class="btn btn-secondary" id="strategy-btn-refresh">刷新</button>
@@ -798,6 +798,7 @@
                   </details>
                 </div>
               </div>
+              <div id="strategy-policy-summary" class="strategy-policy-summary"></div>
               <div id="strategy-steps" class="strategy-steps"></div>
               <div id="strategy-sim-results" class="strategy-sim-results hidden"></div>
               <div class="strategy-editor-foot">
@@ -810,7 +811,7 @@
             <div class="strategy-panel">
               <div class="strategy-panel-head">
                 <div>
-                  <span class="strategy-label">Module Library</span>
+                  <span class="strategy-label">模块说明书</span>
                   <strong>模块管理</strong>
                 </div>
                 <div class="strategy-editor-actions">
@@ -818,6 +819,7 @@
                   <input id="strategy-module-import-file" type="file" accept=".json" hidden />
                 </div>
               </div>
+              <label class="strategy-library-search"><span>查找模块</span><input type="search" id="strategy-library-search" placeholder="搜索成本、波动、数量、定价…" /></label>
               <div id="strategy-modules-list" class="strategy-modules-list"></div>
             </div>
           </div>

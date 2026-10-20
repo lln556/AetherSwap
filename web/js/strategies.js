@@ -1,5 +1,7 @@
 let strategiesState = {
   loaded: false,
+  runtime: null,
+  saving: false,
   view: "buy",
   strategies: [],
   modules: [],
@@ -445,6 +447,7 @@ async function loadStrategies(force = false) {
   }
   try {
     const data = await fetchJson(API + "/strategies");
+    strategiesState.runtime = data.runtime || null;
     strategiesState.strategies = data.strategies || [];
     strategiesState.modules = data.modules || [];
     strategiesState.active = data.active || { buy: "", sell: "" };
@@ -581,6 +584,81 @@ function renderStrategyListItem(strategy) {
   `;
 }
 
+function renderPolicySummary() {
+  const box = el("strategy-policy-summary");
+  const draft = strategiesState.draft;
+  if (!box || !draft) return;
+  const isBuy = draft.strategy_type === "buy";
+  const active = strategiesState.active[draft.strategy_type] === draft.id;
+  const idx = (draft.steps || []).findIndex((step) => step.module_id === "guard.max_discount" && step.enabled !== false);
+  const cost = idx >= 0 ? (draft.steps[idx].params?.max_discount ?? defaultParamsForModule("guard.max_discount").max_discount) : null;
+  box.innerHTML = `
+    <div class="strategy-policy-top"><span class="strategy-policy-tag">${isBuy ? "购入设置" : "出售设置"}</span><span>${active ? "当前启用" : "正在编辑"}</span></div>
+    ${isBuy && cost !== null ? `
+      <div class="strategy-cost-row"><div><h4>每 100 元钱包余额，愿意花多少成本？</h4><p>成本率越低，买入条件越严格。</p></div>
+      <label class="strategy-cost-input"><span>成本率上限</span><input type="number" min="0.001" max="1" step="any" required value="${escapeHtml(cost)}" data-param-key="max_discount" data-param-type="number" data-step-index="${idx}" /></label></div>
+      <p class="strategy-cost-example" id="strategy-cost-example"></p>
+    ` : `<h4>${isBuy ? "此策略未启用成本率限制" : "按策略处理后续上架"}</h4>`}
+    <div class="strategy-policy-status" id="strategy-policy-status" role="status" aria-live="polite"></div>
+    <p class="strategy-policy-timing">${isBuy ? "保存已启用策略后，下一检查点重新筛选；等待扫描会提前唤醒。已经创建的订单先完成核实，再应用新规则。" : "保存当前策略用于后续上架。已在售商品不会立即改价，长时间未售出的调整由自动调价设置控制。"}</p>
+    <details class="strategy-reading-guide"><summary>如何阅读这些模块</summary><p>${isBuy ? "先寻找候选并核对价格，再检查行情、控制购买数量，最后创建订单。任意一项检查不通过，就跳过该商品；启用的数量限制取更严格的结果。" : "先检查库存和在售数量，再计算售价、判断是否出售，最后提交并核实上架状态。"} 点击模块右侧箭头可查看说明、例子和参数。</p></details>
+  `;
+  box.querySelectorAll("[data-param-key]").forEach((input) => input.addEventListener("input", () => updateParam(input)));
+  updateCostExample(cost);
+  renderPolicyRuntime();
+}
+
+function updateCostExample(value) {
+  const node = el("strategy-cost-example");
+  if (!node) return;
+  const cost = Number(value);
+  node.textContent = value !== "" && Number.isFinite(cost) && cost > 0 && cost <= 1
+    ? `预计换得 ¥100 Steam 钱包余额，买入成本需低于 ¥${(cost * 100).toFixed(2)}。手续费按 1.15 近似计算。`
+    : "请输入大于 0、不超过 1 的成本率。";
+}
+
+function renderPolicyRuntime() {
+  const node = el("strategy-policy-status");
+  const draft = strategiesState.draft;
+  if (!node || !draft) return;
+  const active = strategiesState.active[draft.strategy_type] === draft.id;
+  const dirty = strategyHasUnsavedChanges();
+  if (draft.strategy_type !== "buy") {
+    node.textContent = dirty ? "有未保存修改" : (active ? "已保存 · 当前启用" : "已保存 · 启用后用于后续上架");
+    return;
+  }
+  const runtime = strategiesState.runtime;
+  const buy = runtime?.buy;
+  const limitText = (v) => v == null ? "未限制" : Number(v).toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+  const pieces = [];
+  if (runtime?.unavailable) pieces.push("暂时无法读取运行状态");
+  else if (buy) {
+    pieces.push(`任务当前成本率：${limitText(buy.max_discount)}`);
+    if (buy.pending) pieces.push("新设置已保存，等待当前检查或订单结束");
+    else if (active && buy.strategy_id === draft.id) pieces.push("已生效");
+    else pieces.push("任务正在使用其他策略");
+  } else if (runtime?.pipeline_active) pieces.push("任务正在启动，等待确认生效状态");
+  else if (runtime) pieces.push("买入任务未运行，启动后使用已保存设置");
+  else pieces.push("正在读取运行状态…");
+  if (dirty) pieces.push("有未保存修改");
+  else if (!active) pieces.push("编辑后需启用此策略");
+  node.textContent = pieces.join(" · ");
+  node.classList.toggle("pending", dirty || !!buy?.pending || !!runtime?.unavailable);
+}
+
+let strategyRuntimeLoading = false;
+async function refreshStrategyRuntime() {
+  if (strategyRuntimeLoading || document.hidden || !el("panel-strategies")?.classList.contains("active")) return;
+  strategyRuntimeLoading = true;
+  try {
+    strategiesState.runtime = await fetchJson(API + "/strategies/runtime");
+    renderPolicyRuntime();
+  } catch (_) {
+    strategiesState.runtime = { unavailable: true };
+    renderPolicyRuntime();
+  } finally { strategyRuntimeLoading = false; }
+}
+
 function renderStrategyEditor() {
   const draft = strategiesState.draft;
   const nameEl = el("strategy-editor-name");
@@ -594,6 +672,7 @@ function renderStrategyEditor() {
     if (originEl) originEl.textContent = "—";
     if (descEl) descEl.textContent = "";
     if (stepsEl) stepsEl.innerHTML = "";
+    if (el("strategy-policy-summary")) el("strategy-policy-summary").innerHTML = "";
     if (addFoot) addFoot.classList.add("hidden");
     return;
   }
@@ -607,6 +686,7 @@ function renderStrategyEditor() {
   if (descEl) descEl.textContent = draft.description || draft.id;
   if (addFoot) addFoot.classList.toggle("hidden", draft.origin === "system");
   if (addBtn) addBtn.disabled = draft.origin === "system" || stepCount >= stepLimit;
+  renderPolicySummary();
   renderStepList();
   renderSimulationResultsPanel();
   renderEditorButtons();
@@ -621,7 +701,10 @@ function renderEditorButtons() {
   const reset = el("strategy-btn-reset-defaults");
   const del = el("strategy-btn-delete");
   const act = el("strategy-btn-activate");
-  if (save) save.disabled = readonly;
+  if (save) {
+    save.disabled = readonly || strategiesState.saving;
+    save.textContent = strategiesState.saving ? "保存中…" : (active && draft.strategy_type === "buy" ? "保存并生效" : "保存");
+  }
   if (reset) reset.disabled = readonly || !systemDraft;
   if (del) del.disabled = readonly || systemDraft;
   if (act) act.disabled = !draft || active;
@@ -646,18 +729,20 @@ function renderStepList() {
     const canMoveUp = !structureReadonly && !fixed && idx > 0 && strategyCanMoveStep(idx, idx - 1);
     const canMoveDown = !structureReadonly && !fixed && idx < draft.steps.length - 1 && strategyCanMoveStep(idx, idx + 2);
     return `
-      <div class="strategy-step ${selected ? "selected" : ""} ${fixed ? "fixed" : ""} ${step.enabled === false ? "disabled" : ""}" data-step="${idx}">
+      <div class="strategy-step ${structureReadonly ? "system-step" : ""} ${selected ? "selected" : ""} ${fixed ? "fixed" : ""} ${step.enabled === false ? "disabled" : ""}" data-step="${idx}">
         <div class="strategy-step-index">${idx + 1}</div>
         <div class="strategy-step-main">
           <strong>${escapeHtml(mod.name || step.module_id)}${fixed ? `<em class="strategy-step-fixed">固定</em>` : ""}</strong>
           <span>${escapeHtml(mod.description || step.module_id)}</span>
         </div>
         <div class="strategy-step-actions">
+          <button type="button" class="icon-btn strategy-step-open" aria-label="${escapeHtml(mod.name || step.module_id)}：说明与参数" aria-expanded="${selected}" aria-controls="strategy-step-detail-${idx}" title="说明与参数">${selected ? "⌃" : "⌄"}</button>
+          ${structureReadonly ? "" : `
           <button type="button" class="icon-btn strategy-step-toggle" title="${step.enabled === false ? "启用" : "禁用"}" ${structureReadonly || fixed ? "disabled" : ""}>${step.enabled === false ? "○" : "✓"}</button>
           <button type="button" class="icon-btn strategy-step-up" title="上移" ${!canMoveUp ? "disabled" : ""}>↑</button>
           <button type="button" class="icon-btn strategy-step-down" title="下移" ${!canMoveDown ? "disabled" : ""}>↓</button>
           <button type="button" class="icon-btn strategy-step-copy" title="复制" ${structureReadonly || fixed ? "disabled" : ""}>⧉</button>
-          <button type="button" class="icon-btn strategy-step-delete" title="删除" ${structureReadonly || fixed ? "disabled" : ""}>×</button>
+          <button type="button" class="icon-btn strategy-step-delete" title="删除" ${structureReadonly || fixed ? "disabled" : ""}>×</button>`}
         </div>
         ${selected ? renderStepParamEditor(step, mod, idx, paramsReadonly) : ""}
       </div>
@@ -674,7 +759,7 @@ function renderStepList() {
       if (target.closest(".strategy-step-copy")) return copyStep(idx);
       if (target.closest(".strategy-step-delete")) return deleteStep(idx);
       if (target.closest(".strategy-step-params")) return;
-      strategiesState.selectedStep = idx;
+      strategiesState.selectedStep = strategiesState.selectedStep === idx ? -1 : idx;
       renderStrategies();
     });
   });
@@ -942,29 +1027,32 @@ function renderStepParamEditor(step, mod, idx, readonly) {
   const schema = mod.params_schema || {};
   const fields = Object.keys(schema);
   return `
-    <div class="strategy-step-params">
+    <div class="strategy-step-params" id="strategy-step-detail-${idx}">
       <div class="strategy-step-param-head">
         <div>
           <span class="strategy-label">参数</span>
           <strong>${escapeHtml(mod.name || step.module_id)}</strong>
         </div>
-        <div class="strategy-module-id">${escapeHtml(step.module_id)}</div>
+        <span class="strategy-pill">${escapeHtml(mod.group_label || "自定义规则")}</span>
       </div>
-      <div class="strategy-step-param-desc">${escapeHtml(mod.description || "无说明")}</div>
+      <div class="strategy-step-param-desc">${escapeHtml(mod.explanation || mod.description || "此模块暂无详细说明。")}</div>
       ${fields.length ? `
         <div class="strategy-step-param-grid">
-          ${fields.map((key) => renderParamField(key, schema[key], step.params || {}, readonly, idx)).join("")}
+          ${fields.filter((key) => !schema[key].advanced).map((key) => renderParamField(key, schema[key], step.params || {}, readonly, idx)).join("")}
         </div>
-      ` : `<div class="strategy-empty">此模块无需参数。</div>`}
+      ` : `<div class="strategy-no-params">自动执行，无需填写参数。</div>`}
+      ${fields.some((key) => schema[key].advanced) ? `<details class="strategy-advanced"><summary>兼容参数 · 通常无需调整</summary><div class="strategy-step-param-grid">${fields.filter((key) => schema[key].advanced).map((key) => renderParamField(key, schema[key], step.params || {}, readonly, idx)).join("")}</div></details>` : ""}
     </div>
   `;
 }
 
 function renderParamField(key, meta, params, readonly, stepIndex) {
+  readonly = readonly || !!meta?.read_only;
   const fallback = meta && Object.prototype.hasOwnProperty.call(meta, "default") ? meta.default : "";
   const value = params[key] ?? fallback ?? "";
   const type = meta?.type || "string";
   const label = meta?.label || key.replace(/_/g, " ");
+  const help = meta?.help ? `<small class="strategy-param-help">${escapeHtml(meta.help)}</small>` : "";
   const attrs = [
     `data-step-index="${stepIndex}"`,
     `data-param-key="${escapeHtml(key)}"`,
@@ -976,14 +1064,14 @@ function renderParamField(key, meta, params, readonly, stepIndex) {
   if (fallback !== "") attrs.push(`placeholder="${escapeHtml(fallback)}"`);
   if (type === "array") {
     const text = Array.isArray(value) ? value.join("\n") : "";
-    return `<label class="strategy-param"><span>${escapeHtml(label)}</span><textarea ${attrs.join(" ")}>${escapeHtml(text)}</textarea></label>`;
+    return `<label class="strategy-param"><span>${escapeHtml(label)}</span><textarea ${attrs.join(" ")}>${escapeHtml(text)}</textarea>${help}</label>`;
   }
   if (type === "boolean") {
-    return `<label class="strategy-param strategy-param--check"><input type="checkbox" ${attrs.join(" ")} ${value ? "checked" : ""} /><span>${escapeHtml(label)}</span></label>`;
+    return `<label class="strategy-param strategy-param--check"><input type="checkbox" ${attrs.join(" ")} ${value ? "checked" : ""} /><span>${escapeHtml(label)}</span>${help}</label>`;
   }
   const inputType = type === "integer" || type === "number" ? "number" : "text";
-  const step = type === "integer" ? "1" : "0.01";
-  return `<label class="strategy-param"><span>${escapeHtml(label)}</span><input type="${inputType}" step="${step}" ${attrs.join(" ")} value="${escapeHtml(value)}" /></label>`;
+  const step = type === "integer" ? "1" : "any";
+  return `<label class="strategy-param"><span>${escapeHtml(label)}</span><input type="${inputType}" step="${step}" ${attrs.join(" ")} value="${escapeHtml(value)}" ${inputType === "number" ? "required" : ""} />${help}</label>`;
 }
 
 function updateParam(input) {
@@ -993,10 +1081,7 @@ function updateParam(input) {
   step.params = step.params || {};
   const key = input.dataset.paramKey;
   const type = input.dataset.paramType;
-  if (type !== "boolean" && input.value.trim() === "") {
-    delete step.params[key];
-    return;
-  }
+  if (type !== "boolean" && input.value.trim() === "") return;
   if (type === "array") {
     step.params[key] = input.value.split(/\n/).map((s) => s.trim()).filter(Boolean);
   } else if (type === "integer") {
@@ -1010,6 +1095,12 @@ function updateParam(input) {
   } else {
     step.params[key] = input.value;
   }
+  if (key === "max_discount") {
+    document.querySelectorAll(`[data-param-key="max_discount"][data-step-index="${idx}"]`).forEach((other) => { if (other !== input) other.value = input.value; });
+    updateCostExample(input.value);
+  }
+  renderEditorButtons();
+  renderPolicyRuntime();
 }
 
 function defaultParamsForModule(moduleId) {
@@ -1183,18 +1274,16 @@ function strategyAvailableDataSummary() {
 function renderModulesView() {
   const box = el("strategy-modules-list");
   if (!box) return;
-  const rows = (strategiesState.modules || []).filter((m) => !m.hidden).map((m) => `
-    <div class="strategy-module-row ${m.origin === "user" ? "user" : "builtin"}">
-      <div>
-        <strong>${escapeHtml(m.name || m.id)}</strong>
-        <span>${escapeHtml(m.id)}</span>
-        <small>${escapeHtml(strategyModuleMetaLine(m))}</small>
-        ${strategyModuleDataSummary(m)}
+  const keyword = (el("strategy-library-search")?.value || "").trim().toLowerCase();
+  const modules = (strategiesState.modules || []).filter((m) => !m.hidden && (!keyword || `${m.name} ${m.description} ${m.explanation || ""} ${m.group_label || ""} ${m.id}`.toLowerCase().includes(keyword)));
+  box.innerHTML = modules.map((m) => `
+    <details class="strategy-guide-card">
+      <summary><span class="strategy-guide-kind">${(m.strategy_types || []).includes("buy") ? "购入" : "出售"} · ${escapeHtml(m.group_label || "自定义")}</span><strong>${escapeHtml(m.name || m.id)}</strong><span>${escapeHtml(m.description || "")}</span></summary>
+      <div class="strategy-guide-body"><p>${escapeHtml(m.explanation || m.description || "")}</p>
+        ${Object.entries(m.params_schema || {}).map(([key, meta]) => `<div class="strategy-guide-param"><strong>${escapeHtml(meta.label || key)}</strong><span>${escapeHtml(meta.help || "由模块定义此参数的含义。")}</span></div>`).join("")}
+        ${m.origin === "user" ? strategyModuleDataSummary(m) : ""}
       </div>
-      <em>${escapeHtml(strategyModuleKindLabel(m))}</em>
-    </div>
-  `).join("");
-  box.innerHTML = strategyAvailableDataSummary() + rows;
+    </details>`).join("") || '<div class="strategy-empty">没有匹配的模块，试试“成本”或“价格”。</div>';
 }
 
 function strategyTemplateLabel(strategy) {
@@ -1292,14 +1381,18 @@ async function createStrategyDraft() {
 
 async function saveStrategyDraft() {
   const draft = strategiesState.draft;
-  if (!draft) return false;
+  if (!draft || strategiesState.saving) return false;
+  const invalid = Array.from(document.querySelectorAll("#strategy-policy-summary input, #strategy-steps input")).find((input) => !input.checkValidity());
+  if (invalid) { invalid.reportValidity(); return false; }
+  strategiesState.saving = true;
+  renderEditorButtons();
   try {
     strategyEnsureRequiredSteps(draft);
     const payload = strategyClone(draft);
     delete payload._local_id;
     const res = await fetchJson(API + "/strategies", { method: "POST", body: JSON.stringify({ strategy: payload }) });
     if (!res.ok) throw new Error(res.error || "保存失败");
-    toast(draft.origin === "system" ? "默认策略参数已保存" : "策略已保存");
+    toast("策略已保存", draft.strategy_type === "buy" && strategiesState.active.buy === draft.id ? "运行中的任务将在下一检查点采用新设置。" : (draft.strategy_type === "buy" ? "启用此策略后，任务会采用已保存设置。" : "出售策略用于后续上架；现有挂单由自动调价设置管理。"));
     strategiesState.loaded = false;
     strategiesState.selectedId = res.strategy.id;
     await loadStrategies(true);
@@ -1307,6 +1400,9 @@ async function saveStrategyDraft() {
   } catch (e) {
     toast("保存失败", e.message || "");
     return false;
+  } finally {
+    strategiesState.saving = false;
+    renderEditorButtons();
   }
 }
 
@@ -1488,7 +1584,7 @@ async function activateCurrentStrategy() {
       body: JSON.stringify({ risk_confirmed: true }),
     });
     if (!res.ok) throw new Error(res.error || "启用失败");
-    toast("策略已启用");
+    toast("策略已启用", draft.strategy_type === "buy" ? "运行中的任务将在下一检查点重新筛选，无需重启。" : "后续上架使用此策略；现有挂单由自动调价设置管理。");
     strategiesState.loaded = false;
     strategiesState.selectedId = id;
     await loadStrategies(true);
@@ -1643,4 +1739,8 @@ window.addEventListener("beforeunload", (e) => {
   e.returnValue = "";
 });
 
-document.addEventListener("DOMContentLoaded", bindStrategyEvents);
+document.addEventListener("DOMContentLoaded", () => {
+  bindStrategyEvents();
+  el("strategy-library-search")?.addEventListener("input", renderModulesView);
+  setInterval(refreshStrategyRuntime, 3000);
+});

@@ -1,11 +1,15 @@
 import copy
+import math
+import os
+import tempfile
+from functools import wraps
 import json
 import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.config_loader import load_app_config_validated, save_app_config_validated
+from app.config_loader import load_app_config_validated, save_app_config_validated, _config_update_lock
 from config import get_app_config_path
 
 
@@ -329,6 +333,10 @@ BUILTIN_MODULES: Dict[str, Dict[str, Any]] = {
 }
 
 
+from app.strategy_help import enrich_modules
+enrich_modules(BUILTIN_MODULES)
+
+
 SYSTEM_STRATEGIES: List[Dict[str, Any]] = [
     {
         "id": "system.buy.default",
@@ -621,8 +629,14 @@ def _read_json(path: Path, fallback: dict) -> dict:
 
 def _write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, allow_nan=False)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _strategy_store() -> dict:
@@ -931,6 +945,8 @@ def _validate_step_params(module_id: str, mod: dict, params: dict) -> List[str]:
                 if isinstance(value, bool):
                     raise ValueError
                 numeric = float(value)
+                if not math.isfinite(numeric):
+                    raise ValueError
                 if "min" in meta and numeric < float(meta["min"]):
                     errors.append(f"{label} must be >= {meta['min']}")
                 if "max" in meta and numeric > float(meta["max"]):
@@ -1133,6 +1149,15 @@ def _save_system_strategy_params(raw_strategy: dict) -> Dict[str, Any]:
     return _hydrate_strategy_params(get_strategy(strategy["id"]) or strategy, fresh_cfg)
 
 
+def _serialized_strategy_write(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with _config_update_lock:
+            return fn(*args, **kwargs)
+    return wrapped
+
+
+@_serialized_strategy_write
 def save_strategy(raw_strategy: dict) -> Dict[str, Any]:
     if str((raw_strategy or {}).get("id") or "").startswith("system."):
         return _save_system_strategy_params(raw_strategy)
@@ -1148,6 +1173,7 @@ def save_strategy(raw_strategy: dict) -> Dict[str, Any]:
     return copy.deepcopy(strategy)
 
 
+@_serialized_strategy_write
 def delete_strategy(strategy_id: str) -> None:
     if strategy_id.startswith("system."):
         raise StrategyError("系统策略不可删除")
@@ -1172,6 +1198,7 @@ def delete_strategy(strategy_id: str) -> None:
         save_app_config_validated(cfg)
 
 
+@_serialized_strategy_write
 def activate_strategy(strategy_id: str, *, risk_confirmed: bool) -> Dict[str, Any]:
     if not risk_confirmed:
         raise StrategyError("启用策略前必须确认风险")
@@ -1215,6 +1242,7 @@ def export_strategy(strategy_id: str) -> Dict[str, Any]:
 
 
 
+@_serialized_strategy_write
 def import_user_module(raw_manifest: dict) -> Dict[str, Any]:
     data = _sanitize_value(raw_manifest or {})
     mid = str(data.get("id") or "").strip()
