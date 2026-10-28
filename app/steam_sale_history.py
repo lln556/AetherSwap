@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 from app.steam_listings import _get_with_retry, _cookies_to_dict, _HOVER_PATTERN, MYHISTORY_RENDER_URL
 from app.trading_ledger import minor
+from app.services.lifecycle import is_shutting_down
 from utils.money import parse_price_text, currency_code_from_price_text
 
 
@@ -71,8 +72,13 @@ def fetch_sale_history(cookies, owned):
         return True, [], ""
     headers = {"User-Agent": "Mozilla/5.0", "Accept": "application/json", "Accept-Language": "en-US,en;q=0.9", "X-Requested-With": "XMLHttpRequest"}
     found, seen, start = [], set(), 0
+    total = None
     try:
-        for _ in range(40):
+        # Pin the advertised size. Unique, nonempty pages must advance towards
+        # that finite boundary; a fixed page cap permanently blocks old accounts.
+        while total is None or start < total:
+            if is_shutting_down():
+                return False, [], "成交历史读取已停止，等待下次完整核实"
             r = _get_with_retry(MYHISTORY_RENDER_URL, {"query": "", "start": start, "count": 100, "appid": 730, "contextid": 2},
                                 headers, _cookies_to_dict(cookies), None)
             if r.status_code != 200:
@@ -80,17 +86,25 @@ def fetch_sale_history(cookies, owned):
             data = r.json()
             if not data.get("success") or "results_html" not in data:
                 return False, [], "成交历史响应不完整"
+            raw_total = data.get("total_count")
+            if isinstance(raw_total, str) and re.fullmatch(r"[0-9]+", raw_total):
+                raw_total = int(raw_total)
+            if type(raw_total) is not int or raw_total < 0:
+                return False, [], "成交历史总数无效，无法确认分页完整性"
+            if total is None:
+                total = raw_total
+            elif raw_total != total:
+                return False, [], "成交历史总数发生变化，稍后重新核实"
             records, ids = parse_history(data, owned)
-            if any(i in seen for i in ids):
+            if len(ids) != len(set(ids)) or any(i in seen for i in ids):
                 return False, [], "成交历史分页重复，稍后重试"
+            if start + len(ids) > total:
+                return False, [], "成交历史条数超出总数，稍后重新核实"
+            if not ids and start < total:
+                return False, [], "成交历史分页缺失"
             seen.update(ids)
             found.extend(records)
             start += len(ids)
-            total = int(data.get("total_count", start))
-            if start >= total:
-                return True, found, ""
-            if not ids:
-                return False, [], "成交历史分页缺失"
-        return False, [], "成交历史超出分页上限"
+        return True, found, ""
     except Exception as exc:
         return False, [], f"成交历史暂时无法读取（{type(exc).__name__}）"
