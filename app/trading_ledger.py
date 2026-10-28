@@ -297,6 +297,77 @@ def sync_manual_sale(session, row, data):
               details={"proceeds_minor": amount, "currency": "CNY"})
 
 
+def purchase_state(purchase, settlement, listing=None, job=None):
+    """Shared sale/holding classification; compatibility prices are not evidence."""
+    if settlement is not None:
+        return "sold"
+    if purchase.archived_at:
+        return "archived"
+    if job:
+        return "attention" if job.status == "needs_review" else "repricing"
+    if purchase.pending_receipt:
+        return "pending_receipt"
+    if listing and listing.status in OPEN_LISTINGS:
+        return listing.status
+    return "unknown" if purchase.listing or purchase.listing_status == "error" else "holding"
+
+
+def dashboard_overview():
+    """Aggregate the same durable purchase/settlement facts as the trading center."""
+    from app.database import Purchase, get_session
+    with get_session() as s:
+        purchases = s.exec(select(Purchase).order_by(Purchase.at.desc(), Purchase.id.desc())).all()
+        settlements = {r.purchase_id: r for r in s.exec(select(TradeSettlement)).all()}
+        states = {p.id: purchase_state(p, settlements.get(p.id)) for p in purchases}
+        sold = [p for p in purchases if states[p.id] == "sold"]
+        holdings = [p for p in purchases if states[p.id] not in ("sold", "archived")]
+        recent = [p for p in purchases if p.archive_reason != "order_closed" or states[p.id] == "sold"]
+        by_currency = {}
+        profit_minor, cny_count, estimated_count, unknown_count = 0, 0, 0, 0
+        ratios = []
+        for p in sold:
+            settlement = settlements[p.id]
+            currency = settlement.currency or "UNKNOWN"
+            group = by_currency.setdefault(currency, {"count": 0, "proceeds_minor": None,
+                                                       "estimated_count": 0, "unknown_count": 0})
+            group["count"] += 1
+            if settlement.amount_source not in ("steam_history", "user_reported"):
+                group["estimated_count"] += 1
+                estimated_count += 1
+            amount = settlement.proceeds_minor
+            if amount is None:
+                group["unknown_count"] += 1
+                unknown_count += 1
+                continue
+            group["proceeds_minor"] = (group["proceeds_minor"] or 0) + amount
+            if currency == "CNY":
+                cny_count += 1
+                cost = minor(p.price)
+                profit_minor += amount - cost
+                if amount > 0 and cost > 0:
+                    ratios.append(Decimal(cost) / Decimal(amount))
+        return {
+            "holding_cost": sum(minor(p.price) for p in holdings) / 100,
+            "holding_count": len(holdings),
+            "sold_count": len(sold),
+            "total_purchased": sum(minor(p.price) for p in sold) / 100,
+            # Retain the old CNY gross field for API compatibility only. The UI
+            # uses proceeds_by_currency and never reverses fees on this value.
+            "total_sold": sum(minor(p.sale_price or 0) for p in sold
+                              if settlements[p.id].currency == "CNY") / 100,
+            "total_profit": profit_minor / 100 if cny_count or not sold else None,
+            "discount_ratio": float(round(sum(ratios) / len(ratios), 4)) if ratios else None,
+            "proceeds_by_currency": by_currency,
+            "cny_settled_count": cny_count,
+            "estimated_sold_count": estimated_count,
+            "unknown_proceeds_count": unknown_count,
+            "last_purchase_at": max((p.at for p in recent), default=None),
+            "recent_purchases": [{"name": p.name, "price": p.price, "at": p.at,
+                                  "sold": states[p.id] == "sold", "state": states[p.id],
+                                  "pending_receipt": bool(p.pending_receipt)} for p in recent[:5]],
+        }
+
+
 def trading_overview(days=0, status="", query="", page=1, page_size=50):
     from app.database import Purchase, get_session
     today = datetime.now(TZ).date()
@@ -313,10 +384,7 @@ def trading_overview(days=0, status="", query="", page=1, page_size=50):
         items, sold_rows, listed_rows = [], [], []
         for p in purchases:
             settlement, listing, job = settlements.get(p.id), latest.get(p.id), active_jobs.get(p.id)
-            state = ("sold" if settlement else "archived" if p.archived_at else "repricing" if job and job.status != "needs_review" else
-                     "attention" if job else "pending_receipt" if p.pending_receipt else
-                     listing.status if listing and listing.status in OPEN_LISTINGS else
-                     "unknown" if p.listing or p.listing_status == "error" else "holding")
+            state = purchase_state(p, settlement, listing, job)
             row = {"id": p.id, "name": p.name, "assetid": p.assetid, "icon_url": p.icon_url,
                    "cost_minor": minor(p.price), "purchased_at": p.at, "state": state,
                    "listing": listing.model_dump() if listing else None,

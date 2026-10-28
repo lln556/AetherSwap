@@ -82,9 +82,22 @@ const Dashboard = {
   },
   renderStats(s) {
     this.setText("stat-holding-cost", this.money(s.holding_cost));
-    this.setText("stat-holding-count", `持有 ${s.holding_count || 0} 件 · 按购入价统计`);
+    this.setText("stat-holding-count", `未售 ${s.holding_count || 0} 件 · 含待收货，按购入价统计`);
     this.setText("stat-total-purchased", this.money(s.total_purchased));
-    this.setText("stat-sold-count", `已售 ${s.sold_count || 0} 件 · 售出总额 ${this.money(s.total_sold)}`);
+    this.setText("stat-sold-count", `已售 ${s.sold_count || 0} 件 · 含已归档成交`);
+    const amounts = Object.entries(s.proceeds_by_currency || {}).sort(([a], [b]) => a.localeCompare(b));
+    this.setText("stat-proceeds", amounts.map(([currency, group]) => {
+      const notes = [];
+      if (group.estimated_count) notes.push(`${group.estimated_count} 笔历史估算`);
+      if (group.unknown_count) notes.push(`${group.unknown_count} 笔金额未知`);
+      return `${currency} ${group.unknown_count ? "已知到账" : "到账"} ${this.money(group.proceeds_minor == null ? null : group.proceeds_minor / 100)}${notes.length ? "（" + notes.join("，") + "）" : ""}`;
+    }).join(" · ") || "暂无成交到账");
+    const cny = s.proceeds_by_currency?.CNY;
+    const profitNotes = ["仅 CNY 成交：到账 − 对应成本"];
+    if (cny?.estimated_count) profitNotes.push(`含 ${cny.estimated_count} 笔历史估算`);
+    if (cny?.unknown_count) profitNotes.push(`${cny.unknown_count} 笔到账未知未计入`);
+    if (amounts.some(([currency]) => currency !== "CNY")) profitNotes.push("其他币种未折算");
+    this.setText("stat-profit-note", profitNotes.join(" · "));
     this.setText("stat-diff", this.money(s.total_profit));
     el("stat-diff")?.classList.toggle("text-ok", s.total_profit > 0);
     el("stat-diff")?.classList.toggle("text-bad", s.total_profit < 0);
@@ -100,7 +113,7 @@ const Dashboard = {
         const time = document.createElement("span"); time.className = "dashboard-meta"; time.textContent = this.date(p.at);
         detail.append(name, time);
         const price = document.createElement("strong"); price.className = "dashboard-money"; price.textContent = this.money(p.price);
-        const state = document.createElement("span"); state.className = "dashboard-tag"; state.textContent = p.sold ? "已售出" : p.pending_receipt ? "待收货" : "持有中";
+        const state = document.createElement("span"); state.className = "dashboard-tag"; state.textContent = p.sold ? "已售出" : p.state === "archived" ? "已归档" : p.pending_receipt ? "待收货" : "持有中";
         row.append(detail, price, state); list.append(row);
       }
       if (!list.children.length) {

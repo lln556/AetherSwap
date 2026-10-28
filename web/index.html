@@ -437,24 +437,25 @@
         <div id="dashboard-connection" class="dashboard-notice hidden" role="status">连接已中断，正在重试。以下保留上次数据。</div>
         <div class="stats-grid">
           <div class="stat-card primary">
-            <div class="stat-label">持仓成本</div>
+            <div class="stat-label">持仓成本（人民币）</div>
             <div class="stat-value" id="stat-holding-cost">—</div>
             <div class="dashboard-stat-note" id="stat-holding-count">正在加载持仓</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">已售成本</div>
+            <div class="stat-label">已售成本（人民币）</div>
             <div class="stat-value" id="stat-total-purchased">—</div>
             <div class="dashboard-stat-note" id="stat-sold-count">仅统计已售出物品</div>
+            <div class="dashboard-stat-note" id="stat-proceeds">到账按币种分别统计</div>
           </div>
           <div class="stat-card">
-            <div class="stat-label">已实现收益</div>
+            <div class="stat-label">已售钱包收益（人民币）</div>
             <div class="stat-value" id="stat-diff">—</div>
-            <div class="dashboard-stat-note">税后出售收入 − 已售成本</div>
+            <div class="dashboard-stat-note" id="stat-profit-note">仅 CNY 成交：到账 − 对应成本</div>
           </div>
           <div class="stat-card">
             <div class="stat-label">已售折扣比率</div>
             <div class="stat-value" id="stat-ratio">—</div>
-            <div class="dashboard-stat-note">已售物品成本 / 税后收入的均值</div>
+            <div class="dashboard-stat-note">仅 CNY：成本 / 到账的均值（含标注的历史估算）</div>
           </div>
         </div>
 
@@ -1837,7 +1838,7 @@
   <script src="/js/settings.js?v=2"></script>
   <script src="/js/proxy.js"></script>
   <script src="/js/strategies.js"></script>
-  <script src="/js/dashboard.js?v=1"></script>
+  <script src="/js/dashboard.js?v=2"></script>
   <script src="/js/main.js?v=6"></script>
   <script src="/js/gift.js"></script>
   <script src="/js/steamDeals.js"></script>

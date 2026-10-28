@@ -237,52 +237,10 @@ def api_update_transaction(body: TransactionUpdateBody):
     return {"ok": ok, "error": None if ok else "更新失败（记录不存在或无效）"} if ok else {"ok": False, "error": "更新失败"}
 @router.get("/api/stats")
 def api_stats():
-    purchases = get_purchases()
-    holdings = [p for p in purchases if float(p.get("sale_price") or 0) <= 0]
-    total_purchased = sum(
-        float(p.get("price", 0))
-        for p in purchases
-        if p.get("sale_price") is not None and float(p.get("sale_price", 0) or 0) > 0
-    )
-    total_sold = sum(
-        float(p.get("sale_price", 0))
-        for p in purchases
-        if p.get("sale_price") is not None and float(p.get("sale_price", 0) or 0) > 0
-    )
-    ratio_sum = 0.0
-    ratio_count = 0
-    total_profit = 0.0
-    for p in purchases:
-        sp = p.get("sale_price")
-        if sp is None or float(sp or 0) <= 0:
-            continue
-        after_tax = float(sp) / 1.15
-        cost = float(p.get("price", 0))
-        total_profit += after_tax - cost
-        if after_tax > 0 and cost > 0:
-            ratio_sum += cost / after_tax
-            ratio_count += 1
-    discount_ratio = (ratio_sum / ratio_count) if ratio_count > 0 else None
-    return {
-        "holding_cost": round(sum(float(p.get("price") or 0) for p in holdings), 2),
-        "holding_count": len(holdings),
-        "sold_count": len(purchases) - len(holdings),
-        "last_purchase_at": max((p.get("at") or 0 for p in purchases), default=None),
-        "recent_purchases": [
-            {
-                "name": p.get("name", ""),
-                "price": p.get("price"),
-                "at": p.get("at"),
-                "sold": float(p.get("sale_price") or 0) > 0,
-                "pending_receipt": bool(p.get("pending_receipt")),
-            }
-            for p in sorted(purchases, key=lambda p: p.get("at") or 0, reverse=True)[:5]
-        ],
-        "total_purchased": round(total_purchased, 2),
-        "total_sold": round(total_sold, 2),
-        "total_profit": round(total_profit, 2),
-        "discount_ratio": round(discount_ratio, 4) if discount_ratio is not None else None,
-    }
+    from app.trading_ledger import dashboard_overview
+    return dashboard_overview()
+
+
 @router.post("/api/purchase/{idx}/confirm_listing")
 def api_confirm_purchase_listing(idx: int, db_id: int = 0):
     from app.pipeline_context import PipelineContext
