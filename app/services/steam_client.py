@@ -32,8 +32,10 @@ class SteamClient:
         market_hash_name: str,
         app_id: int = 730,
         return_currency: bool = False,
+        *,
+        credentials: Optional[Dict] = None,
     ) -> Union[Optional[List], Optional[Dict]]:
-        cred = get_steam_credentials()
+        cred = credentials if credentials is not None else get_steam_credentials()
         cookies = (cred.get("cookies") or "").strip() or None
         identity = f"{cred.get('steam_id') or ''}\0{cookies or ''}"
         account_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()

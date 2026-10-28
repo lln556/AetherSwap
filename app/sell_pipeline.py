@@ -10,6 +10,7 @@ from typing import Optional
 from app.accounts import get_current_account
 from app.config_loader import get_steam_credentials, load_app_config_validated
 from app.config_schema import DEFAULTS, merge
+from app.decision_sell import _evaluate as evaluate_sell_decision
 from app.inventory_cs2 import scan_cs2_inventory
 from app.pipeline_context import PipelineContext
 from app.services.account_region import refresh_account_region_currency
@@ -33,9 +34,18 @@ _listing_cooldown = MarketCooldown()
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _steam_latest_price_and_trend(market_hash_name: str, trend_days: int = 7):
+def _steam_latest_price_and_trend(
+    market_hash_name: str, trend_days: int = 7, *, with_points: bool = False
+):
+    """Return the formal trend, optionally with dated points for decision evidence.
+
+    The default three-value contract remains for existing callers. With
+    ``with_points=True`` the third value is a snapshot containing every parsed
+    observation, its source currency, and volumes, so preview can recompute the
+    trend for any temporary window without losing the original samples.
+    """
     from app.services.steam_client import SteamClient
-    from utils.money import apply_currency
+    from utils.money import apply_currency, load_exchange_rates
     client = SteamClient()
     raw = client.fetch_history(market_hash_name, app_id=730, return_currency=True)
     if not raw or not isinstance(raw, dict):
@@ -55,22 +65,209 @@ def _steam_latest_price_and_trend(market_hash_name: str, trend_days: int = 7):
             p = float(entry[1])
         except (ValueError, TypeError):
             continue
-        parsed.append((dt, p))
+        try:
+            volume = int(entry[2]) if len(entry) >= 3 else 0
+        except (TypeError, ValueError, OverflowError):
+            volume = 0
+        parsed.append((dt, p, max(0, volume)))
     if not parsed:
         return None, None, None
-    prices = [p for (_, p) in parsed]
-    prices_cny, _ = apply_currency(prices, currency, USD_TO_CNY_DEFAULT)
+    prices = [p for (_, p, _) in parsed]
+    source_currency = str(currency or "CNY").strip().upper()
+    currency_source = "history" if currency else "default"
+    rate_map = load_exchange_rates()
+    prices_cny, _ = apply_currency(
+        prices, source_currency, USD_TO_CNY_DEFAULT, rate_map=rate_map
+    )
     if not prices_cny:
         return None, None, None
-    parsed_cny = list(zip([x[0] for x in parsed], prices_cny))
-    parsed_cny.sort(key=lambda x: x[0])
-    latest_price = parsed_cny[-1][1]
-    newest_dt = parsed_cny[-1][0]
+    if source_currency in {"CNY", "RMB"}:
+        cny_per_currency = 1.0
+        exchange_rate_source = "identity"
+    elif source_currency == "USD" and not rate_map.get("USD"):
+        cny_per_currency = float(USD_TO_CNY_DEFAULT)
+        exchange_rate_source = "usd_default"
+    else:
+        cny_per_currency = rate_map.get(source_currency)
+        exchange_rate_source = "exchange_rate_file" if cny_per_currency else "unavailable"
+    parsed_prices = [
+        (dt, price, volume)
+        for (dt, _, volume), price in zip(parsed, prices_cny)
+    ]
+    parsed_prices.sort(key=lambda x: x[0])
+    latest_price = parsed_prices[-1][1]
+    newest_dt = parsed_prices[-1][0]
     cutoff = newest_dt - timedelta(days=trend_days)
-    in_range = [(dt, p) for dt, p in parsed_cny if dt >= cutoff]
-    prices_in_range = [p for (_, p) in in_range]
+    in_range = [(dt, p, volume) for dt, p, volume in parsed_prices if dt >= cutoff]
+    prices_in_range = [p for (_, p, _) in in_range]
     trend = calculate_trend_robust(prices_in_range, use_dynamic_sensitivity=True) if len(prices_in_range) >= 3 else 0
+    if with_points:
+        snapshot = {
+            "source": "steam_history",
+            "available": True,
+            "currency": source_currency,
+            "source_currency": source_currency,
+            "currency_source": currency_source,
+            "cny_per_currency": cny_per_currency,
+            "exchange_rate_source": exchange_rate_source,
+            "points": [
+                {
+                    "captured_at": dt.timestamp(),
+                    "price": round(float(source_price), 6),
+                    "volume": volume,
+                }
+                for dt, source_price, volume in parsed
+            ],
+            "window_days": trend_days,
+        }
+        return latest_price, trend, snapshot
     return latest_price, trend, prices_in_range
+
+
+def _decision_config(cfg: dict) -> dict:
+    """Keep the strategy snapshot contract without persisting credentials."""
+    allowed = ("_strategy_runtime", "_decision_account_id", "pipeline", "strategies")
+    return {key: cfg[key] for key in allowed if key in cfg}
+
+
+def _fallback_sell_strategy(sell_strategy: int, pipeline_cfg: dict) -> dict:
+    """Hydrated strategy approximation for callers without a runtime snapshot."""
+    steps = [
+        {"module_id": "sell.sellable_inventory_filter", "enabled": True, "params": {}},
+        {"module_id": "guard.max_listings_per_item", "enabled": True, "params": {
+            "max_listings_per_item": pipeline_cfg.get("max_listings_per_item", 5),
+        }},
+        {"module_id": "pricing.steam_wall_price", "enabled": True, "params": {
+            "sell_price_wall_volume": pipeline_cfg.get("sell_price_wall_volume", 20),
+            "sell_price_max_ignore_volume": pipeline_cfg.get("sell_price_max_ignore_volume", 4),
+        }},
+        {"module_id": "pricing.price_offset", "enabled": True, "params": {
+            "sell_price_offset": pipeline_cfg.get("sell_price_offset", 0),
+        }},
+    ]
+    if sell_strategy in (2, 3):
+        steps.append({"module_id": "guard.rising_trend_wait", "enabled": True, "params": {
+            "sell_trend_days": pipeline_cfg.get("sell_trend_days", 7),
+        }})
+    if sell_strategy == 3:
+        steps.append({"module_id": "guard.profit_ratio", "enabled": True, "params": {
+            "profit_ratio_multiplier": pipeline_cfg.get("profit_ratio_multiplier", 1.05),
+        }})
+    if sell_strategy == 4:
+        steps.append({"module_id": "action.pause_auto_sell", "enabled": True, "params": {}})
+    else:
+        steps.append({"module_id": "action.steam_list", "enabled": True, "params": {}})
+    return {
+        "id": f"legacy.sell.{sell_strategy}",
+        "strategy_type": "sell",
+        "pipeline": dict(pipeline_cfg),
+        "steps": steps,
+    }
+
+
+def _sell_strategy_snapshot(cfg: dict, sell_strategy: int, pipeline_cfg: dict):
+    safe_cfg = _decision_config(cfg)
+    try:
+        from app.decision_records import snapshot_strategy
+        strategy, modules = snapshot_strategy(safe_cfg, "sell")
+        return safe_cfg, strategy, modules or {}
+    except Exception:
+        # Evidence capture must never change the listing decision.
+        return safe_cfg, _fallback_sell_strategy(sell_strategy, pipeline_cfg), {}
+
+
+def _capture_sell_decision(cfg: dict, item: dict, inputs: dict, result: dict,
+                           evaluated_at: float, ctx=None) -> None:
+    try:
+        from app.decision_records import capture_decision
+        capture_decision(cfg, "sell", item, inputs, result, evaluated_at=evaluated_at)
+    except Exception as exc:
+        # Recording is advisory and cannot authorize or abort a transaction.
+        if ctx is not None:
+            ctx.log(
+                f"[出售] 检查记录写入异常，不影响正式判断（{type(exc).__name__}）",
+                "warn", category="steam",
+            )
+        return
+
+
+def _listing_inputs(*, item: dict, inventory: dict, ownership: dict, listing: dict,
+                    market: dict, trend: dict, currency: dict) -> dict:
+    return {
+        "item": item,
+        "inventory": inventory,
+        "ownership": ownership,
+        "listing": listing,
+        "market": market,
+        "trend": trend,
+        "currency": currency,
+    }
+
+
+def _blocking_step(result: dict) -> dict:
+    """Return the first step that blocked the decision, ignoring trailing not_run steps."""
+    for step in result.get("steps") or []:
+        if step.get("status") in {"reject", "wait", "unavailable", "unsupported"}:
+            return step
+    return {}
+
+
+def _evaluate_listing(inputs: dict, strategy: dict, evaluated_at: float, modules: dict) -> dict:
+    """Evaluate through the shared rules while preserving the live pricing seam."""
+    return evaluate_sell_decision(
+        inputs,
+        strategy,
+        evaluated_at,
+        modules=modules,
+        pricing_fn=compute_smart_list_price,
+    )
+
+
+def _evaluate_listing_safe(inputs: dict, strategy: dict, evaluated_at: float,
+                           modules: dict) -> dict:
+    """Fail closed if the shared evaluator cannot complete.
+
+    A shared-rule exception is decision evidence, not a reason to bypass the
+    strategy. Keep the complete configured step order so the preview can show
+    the failed check followed by explicit ``not_run`` steps.
+    """
+    try:
+        return _evaluate_listing(inputs, strategy, evaluated_at, modules)
+    except Exception as exc:
+        runtime = ((strategy or {}).get("_strategy_runtime") or {}).get("sell") or {}
+        definitions = runtime.get("steps") or (strategy or {}).get("steps") or []
+        steps = []
+        failed = False
+        for definition in definitions:
+            if not isinstance(definition, dict):
+                continue
+            module_id = definition.get("module_id") or "unknown"
+            if definition.get("enabled") is False:
+                steps.append({
+                    "module_id": module_id,
+                    "status": "disabled",
+                    "reason": "模块未启用，本次未执行",
+                })
+            elif not failed:
+                failed = True
+                steps.append({
+                    "module_id": module_id,
+                    "status": "unavailable",
+                    "reason": f"共享规则执行异常，无法判断（{type(exc).__name__}）",
+                })
+            else:
+                steps.append({
+                    "module_id": module_id,
+                    "status": "not_run",
+                    "reason": "前置检查已阻断，未执行（阻断步骤：共享规则执行异常）",
+                })
+        if not steps:
+            steps = [{
+                "module_id": "sell.shared_rule_evaluator",
+                "status": "unavailable",
+                "reason": f"共享规则执行异常，无法判断（{type(exc).__name__}）",
+            }]
+        return {"status": "unavailable", "steps": steps}
 
 
 def _load_rate_map() -> dict:
@@ -169,21 +366,32 @@ def _build_listing_plan(
     assetid_to_name_map: dict,
     account_currency: str,
     rate_map: dict,
+    *,
+    capture_decision: bool = True,
+    decision_sink: list | None = None,
 ) -> list:
-    """Decide which sellable items to actually list and at what price.
-
-    Returns a list of dicts ready for ``_submit_listings``.
-    """
-    wall_volume = int(pipeline_cfg.get("sell_price_wall_volume", 20))
-    max_ignore = int(pipeline_cfg.get("sell_price_max_ignore_volume", 4))
-    max_per_item = max(1, int(pipeline_cfg.get("max_listings_per_item", 5) or 5))
-    sell_offset = float(pipeline_cfg.get("sell_price_offset", 0))
-    trend_days = int(pipeline_cfg.get("sell_trend_days", 7))
+    """Build live listing decisions through the same pure evaluator used by preview."""
+    account_currency = str(account_currency or "").strip().upper()
+    if account_currency != "CNY":
+        try:
+            safe_rate = float(rate_map.get(account_currency))
+        except (TypeError, ValueError, AttributeError):
+            safe_rate = 0.0
+        if safe_rate <= 0:
+            ctx.log(
+                f"[出售] 账号币种={account_currency or '未知'}，但汇率文件缺少该币种数据，"
+                "无法安全定价，终止本次出售以防价格错误（可等汇率更新后重试）",
+                "error", category="steam",
+            )
+            return []
 
     to_list_by_name: dict = defaultdict(int)
     skip_same_name_cap: dict = defaultdict(int)
     to_list = []
     seen_assetids: set = set()
+    evaluated_at = time.time()
+    decision_cfg, strategy, modules = _sell_strategy_snapshot(cfg, sell_strategy, pipeline_cfg)
+    explicit_account_id = decision_cfg.get("_decision_account_id")
     listing_name_counts = Counter(
         (listing_assetid_to_name.get(lid) or "").strip() for lid in active_listing_ids
     )
@@ -211,150 +419,179 @@ def _build_listing_plan(
         if not market_hash_name:
             ctx.log(f"[出售] 跳过无名物品 assetid={aid}", "info", category="steam")
             continue
-        
-        buy_record = _find_buy_record(purchases_snapshot, aid, market_hash_name)
-        if not buy_record:
-            ctx.log(f"[出售] {name} assetid={aid} 不在本地购买记录中（非倒余额库>存），为保护个人物品跳过出售", "info", category="steam")
-            continue
 
-        # Same-name in-steam cap check (precomputed counts, O(1) per item)
+        buy_record = _find_buy_record(purchases_snapshot, aid, market_hash_name)
         if ok_listings and listing_assetid_to_name:
             steam_same_name = listing_name_counts.get(market_hash_name, 0)
         elif ok_listings:
             steam_same_name = listing_name_map_counts.get(market_hash_name, 0)
         else:
             steam_same_name = held_listing_name_counts.get(market_hash_name, 0)
-
         already_in_this_round = to_list_by_name.get(market_hash_name, 0)
-        if steam_same_name + already_in_this_round >= max_per_item:
-            skip_same_name_cap[market_hash_name] += 1
-            continue
 
-        try:
-            orders_result = get_sell_orders_cny(
-                session,
-                market_hash_name,
-                app_id=int(it.get("appid", 730)),
-                return_error=True,
-            )
-            if isinstance(orders_result, tuple) and len(orders_result) == 2:
-                orders_data, orders_error = orders_result
-            else:
-                orders_data, orders_error = orders_result, None
-        except Exception as e:
-            ctx.log(f"[出售] {name} assetid={aid} 拉取卖单异常: {type(e).__name__} - {e}", "error", category="steam")
-            continue
-        if not orders_data or not orders_data.get("sell_orders"):
-            ctx.log(f"[出售] {name} assetid={aid} 无法获取 Steam 卖单：{orders_error or '未知原因'}，跳过", "warn", category="steam")
-            continue
+        # Bind before this item's first network check. A batch can span an
+        # account switch, so an old item's market data must never be recorded
+        # against whichever account happens to be current at capture time.
+        decision_cfg["_decision_account_id"] = explicit_account_id
+        if not decision_cfg["_decision_account_id"]:
+            account = get_current_account() or {}
+            if account.get("id") is not None:
+                decision_cfg["_decision_account_id"] = str(account["id"])
 
-        list_price, reason = compute_smart_list_price(
-            orders_data["sell_orders"],
-            wall_volume_threshold=wall_volume,
-            max_ignore_volume=max_ignore,
-            offset=sell_offset,
+        safe_item = {
+            "name": name,
+            "market_hash_name": market_hash_name,
+            "goods_id": it.get("goods_id", buy_record.get("goods_id") if buy_record else None),
+            "assetid": aid,
+        }
+        inputs = _listing_inputs(
+            item=safe_item,
+            inventory={"can_sell": it.get("can_sell") is True, "appid": int(it.get("appid", 730) or 730)},
+            ownership={
+                "eligible": buy_record is not None,
+                "purchase_id": buy_record.get("_db_id") if buy_record else None,
+                "purchase_price_cny": buy_record.get("price") if buy_record else None,
+                "market_price_cny_at_purchase": buy_record.get("market_price") if buy_record else None,
+            },
+            listing={
+                "same_name_count": steam_same_name,
+                "round_same_name_count": already_in_this_round,
+                "source": "steam" if ok_listings else "purchase_records",
+            },
+            market={
+                "source": "steam_market",
+                "captured_at": evaluated_at,
+                "currency": "CNY",
+                "available": False,
+                "sell_orders": [],
+                "error": None,
+            },
+            trend={
+                "source": "steam_history",
+                "captured_at": evaluated_at,
+                "window_days": int(pipeline_cfg.get("sell_trend_days", 7) or 7),
+                "available": False,
+                "change": None,
+                "points": [],
+            },
+            currency={
+                "code": account_currency,
+                "account_per_cny": 1.0 if account_currency == "CNY" else rate_map.get(account_currency),
+            },
         )
-        if list_price is None or list_price <= 0:
-            ctx.log(f"[出售] {name} assetid={aid} 无法计算定价({reason})，跳过", "warn", category="steam")
-            continue
-        list_price = round(float(list_price), 2)
-        trend = None
-        profit_output = {}
 
-        # Currency conversion for display
-        display_price = list_price
-        if account_currency != "CNY":
-            rate = rate_map.get(account_currency)
-            if not rate:
-                # 汇率缺失时直接终止整批上架，避免以CNY数值直接提交非人民币账号造成大额亏损
-                ctx.log(
-                    f"[出售] 账号币种={account_currency}，但汇率文件缺少该币种数据，"
-                    "无法安全定价，终止本次出售以防价格错误（可等汇率更新后重试）",
-                    "error", category="steam",
+        result = _evaluate_listing_safe(inputs, strategy, evaluated_at, modules)
+
+        # Fetch only after the shared rules have reached the pricing stage. This
+        # preserves ownership and same-name early stops without extra requests.
+        blocker = _blocking_step(result)
+        if result.get("status") == "unavailable" and str(blocker.get("module_id") or "").startswith("pricing.steam_wall"):
+            try:
+                orders_result = get_sell_orders_cny(
+                    session,
+                    market_hash_name,
+                    app_id=int(it.get("appid", 730)),
+                    return_error=True,
                 )
-                return []
-            display_price = round(list_price / rate, 2)
-            ctx.debug(
-                f"[出售] 账号币种={account_currency}, CNY={list_price:.2f} -> {account_currency}={display_price:.2f}",
-                category="steam",
+                if isinstance(orders_result, tuple) and len(orders_result) == 2:
+                    orders_data, orders_error = orders_result
+                else:
+                    orders_data, orders_error = orders_result, None
+            except Exception as e:
+                orders_data, orders_error = None, f"请求异常（{type(e).__name__}）"
+                ctx.log(f"[出售] {name} assetid={aid} 拉取卖单异常: {type(e).__name__} - {e}", "error", category="steam")
+
+            orders = (orders_data or {}).get("sell_orders") if isinstance(orders_data, dict) else None
+            inputs["market"] = {
+                "source": "steam_market",
+                "captured_at": evaluated_at,
+                "currency": "CNY",
+                "available": bool(orders),
+                "sell_orders": orders if isinstance(orders, list) else [],
+                "error": orders_error if orders_data else (orders_error or "Steam 未返回卖单"),
+            }
+            result = _evaluate_listing_safe(inputs, strategy, evaluated_at, modules)
+
+        # Trend is likewise fetched only when the original strategy would reach
+        # that guard. Strategy 1 must never issue a history request here.
+        blocker = _blocking_step(result)
+        if result.get("status") == "unavailable" and blocker.get("module_id") == "guard.rising_trend_wait":
+            trend_days = int(pipeline_cfg.get("sell_trend_days", 7) or 7)
+            _, trend_change, trend_snapshot = _steam_latest_price_and_trend(
+                market_hash_name, trend_days=trend_days, with_points=True
             )
+            if isinstance(trend_snapshot, dict):
+                points = trend_snapshot.get("points") or []
+                trend_inputs = {
+                    "source": "steam_history",
+                    "captured_at": evaluated_at,
+                    "window_days": trend_days,
+                    "available": bool(points),
+                    "currency": trend_snapshot.get("currency"),
+                    "source_currency": trend_snapshot.get("source_currency"),
+                    "points": points,
+                }
+                for key in (
+                    "currency_source",
+                    "cny_per_currency",
+                    "exchange_rate_source",
+                ):
+                    if key in trend_snapshot:
+                        trend_inputs[key] = trend_snapshot[key]
+                inputs["trend"] = trend_inputs
+            else:
+                # Compatibility with callers/tests that still provide the old
+                # (latest_price, trend, prices_in_window) tuple. Dated points are
+                # unavailable here, so evaluator may use the computed trend.
+                points = list(trend_snapshot or [])
+                inputs["trend"] = {
+                    "source": "steam_history",
+                    "captured_at": evaluated_at,
+                    "window_days": trend_days,
+                    "available": trend_change is not None,
+                    "change": trend_change,
+                    "points": [{"price": price} for price in points],
+                }
+            result = _evaluate_listing_safe(inputs, strategy, evaluated_at, modules)
 
-        # Sell strategy 2/3: skip if rising trend
-        if sell_strategy in (2, 3):
-            _, trend, _ = _steam_latest_price_and_trend(market_hash_name, trend_days=trend_days)
-            if trend is not None and trend > 0:
-                ctx.log(f"[出售] {name} assetid={aid} 近{trend_days}天上升趋势，等待", "info", category="steam")
-                continue
+        # Re-evaluate the blocker from the final pass. Earlier passes may have
+        # stopped at a missing market/history placeholder that was then filled.
+        blocker = _blocking_step(result)
+        if capture_decision:
+            _capture_sell_decision(
+                decision_cfg, safe_item, inputs, result, evaluated_at, ctx=ctx
+            )
+        # Consumers such as repricing need the shared explanation for every
+        # final status, not only when a listing plan was produced.
+        if decision_sink is not None:
+            decision_sink.append(result)
 
-        # Sell strategy 3: ratio guard
-        if sell_strategy == 3:
-            if buy_record:
-                buy_price = float(buy_record.get("price") or 0)
-                market_price_at_buy = float(buy_record.get("market_price") or 0)
-                if buy_price > 0 and market_price_at_buy > 0 and list_price > 0:
-                    current_ratio = buy_price / (list_price / 1.15)
-                    original_ratio = buy_price / (market_price_at_buy / 1.15)
-                    ratio_multiplier = float(pipeline_cfg.get("profit_ratio_multiplier", 1.05) or 1.05)
-                    ratio_limit = original_ratio * ratio_multiplier
-                    profit_output = {
-                        "current_ratio": current_ratio,
-                        "original_ratio": original_ratio,
-                        "ratio_limit": ratio_limit,
-                    }
-                    if current_ratio > ratio_limit:
-                        ctx.log(
-                            f"[出售] 策略3不满足: {name} 当前买入/挂刀价比例({current_ratio:.4f}) "
-                            f"高于 购入时买入/市场底价比例的{ratio_multiplier:.2f}倍({ratio_limit:.4f})，避免过低价格售出，跳过",
-                            "info", category="steam",
-                        )
-                        continue
-                    ctx.log(
-                        f"[出售] 策略3满足: {name} 当前买入/挂刀价比例({current_ratio:.4f}) <= {ratio_limit:.4f}，允许出售",
-                        "info", category="steam",
-                    )
+        if result.get("status") != "pass":
+            last_id = blocker.get("module_id", "")
+            if last_id == "guard.max_listings_per_item":
+                skip_same_name_cap[market_hash_name] += 1
+            reason = blocker.get("reason") or "无法完成上架判断"
+            level = "warn" if result.get("status") == "unavailable" else "info"
+            ctx.log(f"[出售] {name} assetid={aid} 跳过：{reason}", level, category="steam")
+            continue
 
-        custom_outputs = {
-            "guard.max_listings_per_item": {
-                "steam_same_name": steam_same_name,
-                "round_same_name": already_in_this_round,
-                "max_per_item": max_per_item,
-            },
-            "pricing.steam_wall_price": {
-                "list_price": list_price,
-                "reason": reason,
-                "order_count": len(orders_data.get("sell_orders") or []),
-            },
-            "pricing.steam_wall_gap": {
-                "list_price": list_price,
-                "reason": reason,
-                "order_count": len(orders_data.get("sell_orders") or []),
-            },
-            "pricing.price_offset": {"sell_price_offset": sell_offset},
-            "guard.rising_trend_wait": {"trend": trend, "trend_days": trend_days},
-            "guard.profit_ratio": profit_output,
-        }
-        custom_context = {
-            "item": it,
-            "buy_record": buy_record or {},
-            "listing": {"list_price": list_price, "display_price": display_price},
-            "config": cfg,
-        }
-        custom_results, blocking = evaluate_strategy_runtime_modules(
-            cfg,
-            "sell",
-            "sell.listing_guard",
-            context=custom_context,
-            outputs=custom_outputs,
+        pricing_step = next(
+            (s for s in result.get("steps") or [] if str(s.get("module_id", "")).startswith("pricing.steam_wall")),
+            {},
         )
-        for result in custom_results:
-            level = "warn" if result.get("status") in {"reject", "error"} else "info"
-            ctx.log(
-                f"[策略模块] {name} assetid={aid} {result.get('module_name')}: "
-                f"{result.get('reason')} ({result.get('status')})",
-                level,
-                category="steam",
-            )
-        if blocking:
+        action_step = next(
+            (s for s in reversed(result.get("steps") or []) if s.get("module_id") == "action.steam_list"),
+            {},
+        )
+        action_output = action_step.get("output") or {}
+        list_price = action_output.get("list_price", (pricing_step.get("output") or {}).get("list_price"))
+        display_price = action_output.get("display_price", list_price)
+        reason = (pricing_step.get("output") or {}).get("reason") or pricing_step.get("reason") or ""
+        try:
+            list_price = round(float(list_price), 2)
+            display_price = round(float(display_price), 2)
+        except (TypeError, ValueError):
+            ctx.log(f"[出售] {name} assetid={aid} 规则未给出有效建议价，跳过", "warn", category="steam")
             continue
 
         price_cents = list_price_display_to_cents(display_price, account_currency)
@@ -362,7 +599,8 @@ def _build_listing_plan(
         n_this_name = to_list_by_name[market_hash_name]
         ctx.log(
             f"[出售] 列入待上架 assetid={aid} {name} 价格={list_price:.2f}"
-            f"（该同名 Steam 在售 {steam_same_name}，本轮回第 {n_this_name} 件，上限 {max_per_item}）",
+            f"（该同名 Steam 在售 {steam_same_name}，本轮回第 {n_this_name} 件，"
+            f"上限 {int(pipeline_cfg.get('max_listings_per_item', 5) or 5)}）",
             "info", category="steam",
         )
         to_list.append({
@@ -381,7 +619,6 @@ def _build_listing_plan(
         ctx.log(f"[出售] 同名在售已达上限跳过 共 {total_skip} 件（{', '.join(parts)}）", "info", category="steam")
 
     return to_list
-
 
 def _find_buy_record(purchases_snapshot: list, aid: str, market_hash_name: str) -> Optional[dict]:
     """Return the current purchase record that owns *aid*.

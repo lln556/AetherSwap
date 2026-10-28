@@ -21,6 +21,8 @@ class StabilityAnalyzer:
         slope_stable_floor: float = -0.005,
         price_percentile_ceil_rising: float = 0.5,
         use_vwap: bool = True,
+        evaluated_at: Any = None,
+        rate_map: Optional[Dict[str, float]] = None,
     ) -> Dict[str, Any]:
         return _analyze_by_time(
             history,
@@ -39,4 +41,6 @@ class StabilityAnalyzer:
             slope_stable_floor=slope_stable_floor,
             price_percentile_ceil_rising=price_percentile_ceil_rising,
             use_vwap=use_vwap,
+            evaluated_at=evaluated_at,
+            rate_map=rate_map,
         )

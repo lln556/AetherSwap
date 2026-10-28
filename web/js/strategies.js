@@ -12,7 +12,6 @@ let strategiesState = {
   draft: null,
   draftSnapshot: "",
   selectedStep: 0,
-  simulateResults: [],
 };
 
 let strategyDragState = null;
@@ -472,22 +471,23 @@ async function loadStrategies(force = false) {
   }
 }
 
+function syncStrategyView(view = strategiesState.view) {
+  const workbench = el("strategy-workbench");
+  const modulesView = el("strategy-modules-view");
+  const previewView = el("strategy-preview-view");
+  const isModules = view === "modules";
+  const isPreview = view === "preview";
+  if (workbench) workbench.classList.toggle("hidden", isModules || isPreview);
+  if (modulesView) modulesView.classList.toggle("hidden", !isModules);
+  if (previewView) previewView.classList.toggle("hidden", !isPreview);
+}
+
 async function switchStrategyView(view) {
   if (view !== strategiesState.view && !(await strategyConfirmLeave())) return false;
   strategiesState.view = view;
   strategiesState.selectedStep = 0;
-  strategiesState.simulateResults = [];
-  document.querySelectorAll(".strategy-tab").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.strategyView === view);
-  });
-  const workbench = el("strategy-workbench");
-  const modulesView = el("strategy-modules-view");
-  if (view === "modules") {
-    if (workbench) workbench.classList.add("hidden");
-    if (modulesView) modulesView.classList.remove("hidden");
-  } else {
-    if (workbench) workbench.classList.remove("hidden");
-    if (modulesView) modulesView.classList.add("hidden");
+  syncStrategyView(view);
+  if (view !== "modules" && view !== "preview") {
     const activeId = strategiesState.active[view] || "";
     const current = strategyById(strategiesState.selectedId);
     if (!current || current.strategy_type !== view) {
@@ -504,7 +504,6 @@ function selectStrategyDraft(id, rerender = true) {
     strategiesState.selectedId = id;
     strategyEnsureRequiredSteps(localDraft);
     strategiesState.selectedStep = 0;
-    strategiesState.simulateResults = [];
     if (rerender) renderStrategies();
     return;
   }
@@ -517,12 +516,16 @@ function selectStrategyDraft(id, rerender = true) {
   strategyEnsureRequiredSteps(strategiesState.draft);
   strategiesState.draftSnapshot = savedSnapshot;
   strategiesState.selectedStep = 0;
-  strategiesState.simulateResults = [];
   if (rerender) renderStrategies();
 }
 
 function renderStrategies() {
   renderStrategyTabs();
+  syncStrategyView();
+  if (strategiesState.view === "preview") {
+    window.DecisionPreview?.open();
+    return;
+  }
   renderStrategyList();
   renderStrategyEditor();
   renderModulesView();
@@ -698,7 +701,6 @@ function renderStrategyEditor() {
   if (addBtn) addBtn.disabled = draft.origin === "system" || stepCount >= stepLimit;
   renderPolicySummary();
   renderStepList();
-  renderSimulationResultsPanel();
   renderEditorButtons();
 }
 
@@ -1135,30 +1137,6 @@ function defaultParamsForModule(moduleId) {
   return params;
 }
 
-function renderSimulationResultsPanel() {
-  const box = el("strategy-sim-results");
-  if (!box) return;
-  if (!strategiesState.simulateResults.length) {
-    box.innerHTML = "";
-    box.classList.add("hidden");
-    return;
-  }
-  box.classList.remove("hidden");
-  box.innerHTML = `
-    <div class="strategy-sim-title">
-      <span class="strategy-label">模拟结果</span>
-      <strong>真实交易动作已跳过</strong>
-    </div>
-    ${strategiesState.simulateResults.map((r) => `
-      <div class="strategy-sim-row ${escapeHtml(r.status)}">
-        <span>${escapeHtml(r.module_name || r.module_id)}</span>
-        <em>${escapeHtml(r.status)}</em>
-        <small>${escapeHtml(r.reason || "")}</small>
-      </div>
-    `).join("")}
-  `;
-}
-
 function addStep(moduleId) {
   if (!strategiesState.draft || strategiesState.draft.origin === "system") return false;
   const mod = strategyModulesById().get(moduleId);
@@ -1394,7 +1372,6 @@ async function createStrategyDraft() {
   strategiesState.selectedId = draft._local_id;
   strategiesState.draftSnapshot = "";
   strategiesState.selectedStep = 0;
-  strategiesState.simulateResults = [];
   renderStrategies();
 }
 
@@ -1428,7 +1405,7 @@ async function saveStrategyDraft() {
 async function copyCurrentStrategy() {
   const draft = strategiesState.draft;
   if (!draft) return;
-  if (!(await strategyConfirm("复制策略后会生成一份可编辑的自定义策略。自定义策略可能影响自动交易，请先模拟运行。"))) return;
+  if (!(await strategyConfirm("复制策略后会生成一份可编辑的自定义策略。自定义策略可能影响自动交易，请先核对参数与风险。"))) return;
   const copy = strategyClone(draft);
   delete copy.id;
   copy.origin = "custom";
@@ -1578,7 +1555,7 @@ function confirmStrategyActivation(draft) {
   return appModal({
     title: custom ? "启用自定义策略" : "启用系统策略",
     message: custom
-      ? "自定义策略会直接影响自动买入或出售，可能造成亏损、误买、误卖或错过交易机会。请确认你已理解风险并完成模拟运行。"
+      ? "自定义策略会直接影响自动买入或出售，可能造成亏损、误买、误卖或错过交易机会。请确认你已理解风险，并从真实检查记录完成策略预演。"
       : "启用系统策略会切换当前自动交易行为。请确认下方差异。",
     content: strategyActivationDiffContent(draft),
     variant: "warning",
@@ -1633,24 +1610,6 @@ async function deleteCurrentStrategy() {
     await loadStrategies(true);
   } catch (e) {
     toast("删除失败", e.message || "");
-  }
-}
-
-async function simulateCurrentStrategy() {
-  const draft = strategiesState.draft;
-  if (!draft) return;
-  try {
-    strategyEnsureRequiredSteps(draft);
-    const res = await fetchJson(API + "/strategies/simulate", {
-      method: "POST",
-      body: JSON.stringify({ strategy: draft }),
-    });
-    if (!res.ok) throw new Error((res.errors || [res.error || "模拟失败"]).join("；"));
-    strategiesState.simulateResults = res.results || [];
-    renderSimulationResultsPanel();
-    toast("模拟完成", "真实交易动作已跳过");
-  } catch (e) {
-    toast("模拟失败", e.message || "");
   }
 }
 
@@ -1740,7 +1699,6 @@ function bindStrategyEvents() {
   el("strategy-btn-save")?.addEventListener("click", saveStrategyDraft);
   el("strategy-btn-activate")?.addEventListener("click", activateCurrentStrategy);
   el("strategy-btn-delete")?.addEventListener("click", deleteCurrentStrategy);
-  el("strategy-btn-simulate")?.addEventListener("click", simulateCurrentStrategy);
   el("strategy-btn-export")?.addEventListener("click", exportCurrentStrategy);
   el("strategy-btn-add-step")?.addEventListener("click", openModulePicker);
   el("strategy-btn-import")?.addEventListener("click", async () => {

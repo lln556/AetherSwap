@@ -1,7 +1,8 @@
+import math
 import statistics
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from utils.time import parse_steam_history_date
 
 CV_STABLE = 0.15
@@ -65,9 +66,32 @@ def _vwap_iqr(prices: List[float], volumes: List[int]) -> Optional[float]:
     if sum_v <= 0:
         return None
     return sum_pv / sum_v
-def _apply_currency(prices: list, currency: Optional[str], usd_to_cny: float) -> tuple:
+def _apply_currency(
+    prices: list,
+    currency: Optional[str],
+    usd_to_cny: float,
+    rate_map: Optional[Dict[str, float]] = None,
+) -> tuple:
     from utils.money import apply_currency
-    return apply_currency(prices, currency, usd_to_cny)
+    if rate_map is not None:
+        if not isinstance(currency, str) or not currency.strip():
+            return prices, ""
+        code = currency.strip().upper()
+        if code == "CNY":
+            return prices, "CNY"
+        rate = rate_map.get(code) if isinstance(rate_map, dict) else None
+        if isinstance(rate, bool):
+            rate = None
+        try:
+            rate = float(rate)
+        except (TypeError, ValueError):
+            return prices, code
+        if not math.isfinite(rate) or rate <= 0:
+            return prices, code
+        # An explicit snapshot is authoritative: pass a zero default so the
+        # money helper cannot silently substitute its built-in USD rate.
+        return apply_currency(prices, code, 0.0, rate_map=rate_map)
+    return apply_currency(prices, currency, usd_to_cny, rate_map=rate_map)
 def _parse_item_date(date_str: str) -> Optional[datetime]:
     return parse_steam_history_date(date_str)
 def _safe_volume(item: list) -> int:
@@ -136,6 +160,21 @@ def _daily_avg_prices_last_n(
     if len(daily) <= n:
         return [p for _, p in daily]
     return [p for _, p in daily[-n:]]
+def _evaluation_now(value: Any = None) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, bool):
+        raise ValueError("evaluated_at must be a UNIX timestamp or timezone-aware datetime")
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError("evaluated_at datetime must be timezone-aware")
+        return value.astimezone(timezone.utc)
+    try:
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError) as exc:
+        raise ValueError("evaluated_at must be a UNIX timestamp or timezone-aware datetime") from exc
+
+
 def analyze_by_time(
     history: Optional[list],
     days: int = 30,
@@ -157,10 +196,13 @@ def analyze_by_time(
     slope_stable_floor: float = -0.005,
     price_percentile_ceil_rising: float = 0.5,
     use_vwap: bool = True,
+    evaluated_at: Any = None,
+    rate_map: Optional[Dict[str, float]] = None,
 ) -> dict:
     if not history:
         return {"valid": False, "msg": "无历史数据"}
-    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    evaluation_now = _evaluation_now(evaluated_at)
+    cutoff = evaluation_now - timedelta(days=days)
     dt_prices: List[Tuple[datetime, float]] = []
     volumes = []
     for item in history:
@@ -178,7 +220,14 @@ def analyze_by_time(
     if not dt_prices:
         return {"valid": False, "msg": "无有效价格数据"}
     raw_prices = [p for _, p in dt_prices]
-    prices, out_currency = _apply_currency(raw_prices, currency, usd_to_cny)
+    prices, out_currency = _apply_currency(
+        raw_prices, currency, usd_to_cny, rate_map=rate_map
+    )
+    out_code = str(out_currency or "").strip().upper()
+    if not out_code:
+        return {"valid": False, "msg": "缺少历史行情币种"}
+    if out_code != "CNY":
+        return {"valid": False, "msg": f"缺少 {out_code} 到 CNY 的记录汇率"}
     dt_prices_cny = [(dt, prices[i]) for i, (dt, _) in enumerate(dt_prices)]
     count = len(prices)
     if count < MIN_TRADES:
@@ -267,7 +316,7 @@ def analyze_by_time(
         price_percentile = 0.5
 
     recent_percentile: Optional[float] = None
-    cutoff_14 = datetime.now(timezone.utc) - timedelta(days=14)
+    cutoff_14 = evaluation_now - timedelta(days=14)
     recent_prices_cny = [p for dt, p in dt_prices_cny if dt >= cutoff_14]
     if recent_prices_cny:
         recent_clean = clean_prices_iqr(recent_prices_cny)

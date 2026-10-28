@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/css/base.css" />
   <link rel="stylesheet" href="/css/layout.css?v=2" />
   <link rel="stylesheet" href="/css/components.css?v=market-coverage-1" />
+  <link rel="stylesheet" href="/css/decision-preview.css?v=1" />
   <link rel="stylesheet" href="/css/animations.css" />
   <link rel="stylesheet" href="/css/dashboard.css?v=1" />
   <style>
@@ -759,9 +760,10 @@
             </div>
           </div>
 
-          <div class="strategy-tabs" role="tablist">
+          <div class="strategy-tabs" role="tablist" aria-label="策略中心视图">
             <button type="button" class="strategy-tab active" data-strategy-view="buy">购入策略</button>
             <button type="button" class="strategy-tab" data-strategy-view="sell">出售策略</button>
+            <button type="button" class="strategy-tab" data-strategy-view="preview">检查记录</button>
             <button type="button" class="strategy-tab" data-strategy-view="modules">模块管理</button>
           </div>
 
@@ -785,7 +787,6 @@
                   <p id="strategy-editor-desc">策略步骤会在这里显示。</p>
                 </div>
                 <div class="strategy-editor-actions">
-                  <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-simulate">模拟</button>
                   <button type="button" class="btn btn-sm btn-secondary" id="strategy-btn-save">保存</button>
                   <button type="button" class="btn btn-sm btn-primary" id="strategy-btn-activate">启用</button>
                   <details class="strategy-more-actions">
@@ -801,11 +802,73 @@
               </div>
               <div id="strategy-policy-summary" class="strategy-policy-summary"></div>
               <div id="strategy-steps" class="strategy-steps"></div>
-              <div id="strategy-sim-results" class="strategy-sim-results hidden"></div>
               <div class="strategy-editor-foot">
                 <button type="button" class="btn btn-secondary" id="strategy-btn-add-step">添加模块</button>
               </div>
             </main>
+          </div>
+
+          <div class="strategy-preview-view hidden" id="strategy-preview-view">
+            <section class="strategy-panel decision-browse-panel">
+              <div class="decision-browse-head">
+                <div>
+                  <span class="strategy-label">Decision ledger · 决策解释</span>
+                  <h3>检查记录与预演</h3>
+                  <p>从程序真实执行过的逐件检查进入，查看当时依据，再用固定数据比较既有参数。这里不会提交交易，也不会把预演说成回测。</p>
+                </div>
+                <div class="decision-browse-mark" aria-hidden="true">
+                  <span></span><strong>只读记录</strong><small>固定输入</small>
+                </div>
+              </div>
+
+              <form class="decision-filters" id="decision-filters">
+                <label class="decision-filter-field">
+                  <span>检查类型</span>
+                  <select id="decision-filter-kind">
+                    <option value="buy">买入检查</option>
+                    <option value="sell">普通上架</option>
+                    <option value="reprice">自动调价</option>
+                  </select>
+                </label>
+                <label class="decision-filter-field decision-filter-field--name">
+                  <span>商品名称</span>
+                  <input type="search" id="decision-filter-name" placeholder="输入饰品名称或市场名称" autocomplete="off" />
+                </label>
+                <label class="decision-filter-field">
+                  <span>结果</span>
+                  <select id="decision-filter-status">
+                    <option value="">全部结果</option>
+                    <option value="pass">通过</option>
+                    <option value="reject">拒绝</option>
+                    <option value="wait">等待</option>
+                    <option value="unavailable">数据不可用</option>
+                    <option value="unsupported">不支持</option>
+                  </select>
+                </label>
+                <button type="submit" class="btn btn-primary" id="decision-filter-submit">筛选记录</button>
+              </form>
+
+              <div class="decision-ledger-bar">
+                <div>
+                  <strong id="decision-list-summary">共 0 条检查记录</strong>
+                  <span id="decision-retention">检查记录保留最近 7 天，最多 10,000 条。</span>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" id="decision-reload">刷新列表</button>
+              </div>
+
+              <div class="decision-list-error hidden" id="decision-list-error" role="alert"></div>
+              <div class="decision-list-warning hidden" id="decision-recording-warning" role="status"></div>
+              <div class="decision-empty hidden" id="decision-empty"></div>
+              <div class="decision-record-list" id="decision-list" aria-live="polite"></div>
+
+              <div class="decision-pagination">
+                <button type="button" class="btn btn-secondary btn-sm" id="decision-page-prev">上一页</button>
+                <span id="decision-page-label">第 1 / 1 页</span>
+                <button type="button" class="btn btn-secondary btn-sm" id="decision-page-next">下一页</button>
+              </div>
+            </section>
+
+            <section class="decision-detail hidden" id="decision-detail" aria-live="polite"></section>
           </div>
 
           <div class="strategy-modules-view hidden" id="strategy-modules-view">
@@ -1837,6 +1900,7 @@
   <script src="/js/trading.js?v=4"></script>
   <script src="/js/settings.js?v=2"></script>
   <script src="/js/proxy.js"></script>
+  <script src="/js/decision-preview.js?v=1"></script>
   <script src="/js/strategies.js"></script>
   <script src="/js/dashboard.js?v=2"></script>
   <script src="/js/main.js?v=6"></script>

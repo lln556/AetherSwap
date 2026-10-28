@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 from typing import List, Optional
 from sqlmodel import Field, Session, SQLModel, create_engine, select
-from app import trading_models
+from app import trading_models, decision_models
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 _DB_PATH = _CONFIG_DIR / "app.db"
 _TRANSACTIONS_JSON = _CONFIG_DIR / "transactions.json"

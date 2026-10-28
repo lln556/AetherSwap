@@ -82,7 +82,7 @@ def test_import_sanitizes_sensitive_fields_and_does_not_override_system_id():
     assert imported["steps"][0]["params"] == {"note": "ok"}
 
 
-def test_simulate_marks_trade_actions_as_dry_run():
+def test_simulate_requires_a_real_check_instead_of_sample_actions():
     result = se.simulate_strategy({
         "strategy": {
             "name": "模拟",
@@ -96,10 +96,9 @@ def test_simulate_marks_trade_actions_as_dry_run():
         }
     })
 
-    assert result["ok"] is True
-    action = [r for r in result["results"] if r["module_id"] == "action.steam_list"][0]
-    assert action["status"] == "action"
-    assert "跳过真实交易" in action["reason"]
+    assert result["ok"] is False
+    assert "检查记录" in result["error"]
+    assert result["results"] == []
 
 
 def test_validation_rejects_duplicate_conflict_dependency_and_step_limit():
@@ -221,7 +220,7 @@ def test_one_piece_sell_pricing_core_can_replace_split_pricing(tmp_path, monkeyp
     assert cfg["pipeline"]["sell_price_offset"] == 0.23
 
 
-def test_declarative_user_module_can_activate_and_simulate(tmp_path, monkeypatch):
+def test_declarative_user_module_can_activate_and_evaluate_recorded_outputs(tmp_path, monkeypatch):
     monkeypatch.setattr(se, "USER_MODULE_STORE_PATH", tmp_path / "modules.json")
     module = se.import_user_module({
         "id": "custom.sell.price_floor",
@@ -251,8 +250,11 @@ def test_declarative_user_module_can_activate_and_simulate(tmp_path, monkeypatch
     }
 
     assert se.validate_strategy(strategy, for_activation=True) == []
-    result = se.simulate_strategy({"strategy": strategy})
-    custom = [r for r in result["results"] if r["module_id"] == "custom.sell.price_floor"][0]
+    cfg = se.apply_strategy_to_config({}, "sell", strategy_override=strategy)
+    results, _ = se.evaluate_strategy_runtime_modules(
+        cfg, "sell", "sell.listing_guard", outputs={"pricing.steam_wall_price": {"list_price": 12.5}},
+    )
+    custom = [r for r in results if r["module_id"] == "custom.sell.price_floor"][0]
     assert custom["status"] == "reject"
     assert custom["output"]["total_conditions"] == 1
 
@@ -284,8 +286,11 @@ def test_declarative_user_module_can_depend_on_one_piece_pricing(tmp_path, monke
     }
 
     assert se.validate_strategy(strategy, for_activation=True) == []
-    result = se.simulate_strategy({"strategy": strategy})
-    custom = [r for r in result["results"] if r["module_id"] == "custom.sell.gap_price_floor"][0]
+    cfg = se.apply_strategy_to_config({}, "sell", strategy_override=strategy)
+    results, _ = se.evaluate_strategy_runtime_modules(
+        cfg, "sell", "sell.listing_guard", outputs={"pricing.steam_wall_gap": {"list_price": 12.5}},
+    )
+    custom = [r for r in results if r["module_id"] == "custom.sell.gap_price_floor"][0]
     assert custom["status"] == "reject"
 
 

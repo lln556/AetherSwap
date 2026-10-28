@@ -1,16 +1,16 @@
 import re
 import inspect
-import statistics
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from app.services.iflow_client import fetch_iflow_rows as _fetch_iflow_rows
 from app.services.buy_policy import POLICY_CHANGED
+from app.decision_buy import compute_purchase_limit
 from app.state import get_purchases, get_state, set_status
 from app.strategy_engine import evaluate_strategy_runtime_modules, is_strategy_module_enabled
 from app.services.steam_client import SteamClient
@@ -350,12 +350,14 @@ def _check_buff_price(
             reason = "接口返回 None，可能是网络/鉴权/风控问题" if orders is None else "Buff 当前无在售卖单"
             log_fn(f"[Buff]   → 预检未通过: 无法获取 Buff 卖单信息：{reason} (goods_id={gid})", "warn")
         return False, None
+    item["_decision_buff_orders"] = orders
     lowest_price, _ = count_lowest_price_orders(orders)
     if lowest_price <= 0:
         if log_fn:
             log_fn(f"[Buff]   → 预检未通过: Buff 最低价无效 (goods_id={gid})", "warn")
         return False, None
-    if plan_price is not None and lowest_price - plan_price > tolerance:
+    from app.decision_buy import buff_price_within_tolerance
+    if not buff_price_within_tolerance(lowest_price, plan_price, tolerance):
         if log_fn:
             log_fn(f"[Buff]   → 预检未通过: Buff 最低价 {lowest_price:.2f} 较 iflow 参考价 {plan_price:.2f} 超出容忍 (差{lowest_price - plan_price:.2f})", "warn")
         return False, None
@@ -369,94 +371,37 @@ def _adjust_ref_price_for_daily_high(
     config: dict,
     log_fn: Optional[Callable[[str, str], None]],
     app_id: int = 730,
+    *,
+    evidence=None,
 ) -> float:
-    from utils.time import parse_steam_history_date
-    from utils.money import apply_currency, USD_TO_CNY_DEFAULT
+    from app.decision_buy import adjust_reference_price
+    from utils.money import _load_exchange_rates
     name = (market_hash_name or "").strip()
     if not name or current_ref_price <= 0:
         return current_ref_price
-    steam_client = SteamClient()
-    raw = steam_client.fetch_history(name, app_id=app_id, return_currency=True)
+    raw = SteamClient().fetch_history(name, app_id=app_id, return_currency=True)
+    if evidence is not None:
+        evidence.history(raw, adjustment=True)
     if not raw:
         return current_ref_price
     history = raw.get("history") if isinstance(raw, dict) else raw
-    if not isinstance(history, list) or not history:
-        return current_ref_price
     currency = raw.get("currency") if isinstance(raw, dict) else None
-    usd_cny = float(config.get("pipeline", {}).get("usd_to_cny", USD_TO_CNY_DEFAULT))
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    prices_cny: List[float] = []
-    for item in history:
-        if len(item) < 2:
-            continue
-        dt = parse_steam_history_date(str(item[0]))
-        if dt is None or dt < cutoff:
-            continue
-        try:
-            p = float(item[1])
-            converted, _ = apply_currency([p], currency, usd_cny)
-            prices_cny.append(converted[0])
-        except (ValueError, TypeError):
-            continue
-    if len(prices_cny) < 2:
-        return current_ref_price
-    sorted_prices = sorted(prices_cny)
-    trimmed_prices = sorted_prices[1:-1] if len(sorted_prices) >= 3 else sorted_prices
-    if not trimmed_prices:
-        return current_ref_price
-    trimmed_low = trimmed_prices[0]
-    trimmed_high = trimmed_prices[-1]
-    daily_avg = statistics.mean(trimmed_prices)
-    if trimmed_high <= trimmed_low:
-        return current_ref_price
-    daily_position = (current_ref_price - trimmed_low) / (trimmed_high - trimmed_low)
-    if daily_position <= 0.6:
-        return current_ref_price
-    candidate_price = (current_ref_price + daily_avg) / 2
-    conservative_price = min(current_ref_price, candidate_price)
-    if log_fn:
-        log_fn(f"[Buff]   → 检测到 Steam 价格处于日内高位 (位置: {daily_position:.2f})，存在虚高风险", "warn")
-        if conservative_price < current_ref_price:
-            log_fn(f"[Buff]   → 降级参考价: {current_ref_price:.2f} -> {conservative_price:.2f} (当前价与去极值均价折中)", "info")
-        else:
-            log_fn(f"[Buff]   → 降级参考价保持: {current_ref_price:.2f} (去极值均价不低于当前价，避免降级抬价)", "info")
-    return conservative_price
+    rates = evidence.rates if evidence is not None else _load_exchange_rates()
+    usd = rates.get("USD") or float((config.get("pipeline") or {}).get("usd_to_cny", 7.2))
+    evaluated_at = datetime.fromtimestamp(evidence.evaluated_at, timezone.utc) if evidence is not None else datetime.now(timezone.utc)
+    adjusted = adjust_reference_price(current_ref_price, history, currency=currency,
+        evaluated_at=evaluated_at, valuation={"usd_to_cny": usd, "rates": rates})
+    if log_fn and adjusted < current_ref_price:
+        log_fn(f"[Buff]   → 日内高位降级参考价: {current_ref_price:.2f} -> {adjusted:.2f}", "info")
+    return adjusted
+
 def _compute_sell_pressure_from_orders(
     sell_orders: list,
     daily_volume: int,
     n_orders: int = 5,
 ) -> Optional[float]:
-    if daily_volume <= 0 or not sell_orders:
-        return None
-    target_orders = sorted(sell_orders, key=lambda x: x[0])[:n_orders]
-    total_vol = sum(vol for _, vol in target_orders)
-    base_pressure = total_vol / daily_volume
-    if len(target_orders) < 2:
-        return base_pressure
-    current_vol = 0
-    wall_vol = 0
-    for i in range(len(target_orders) - 1):
-        p_curr, c_curr = target_orders[i]
-        p_next, _ = target_orders[i + 1]
-        current_vol += c_curr
-        if p_curr < 5.0:
-            gap_abs, gap_rel = 0.10, 0.08
-        elif p_curr < 20.0:
-            gap_abs, gap_rel = 0.30, 0.05
-        elif p_curr < 100.0:
-            gap_abs, gap_rel = 1.0, 0.03
-        elif p_curr < 500.0:
-            gap_abs, gap_rel = 5.0, 0.02
-        else:
-            gap_abs, gap_rel = 10.0, 0.015
-        threshold = max(gap_abs, p_curr * gap_rel)
-        if (p_next - p_curr) > threshold:
-            wall_vol = current_vol
-            break
-    if wall_vol > 0 and (wall_vol <= max(3, daily_volume * 0.15)):
-        return base_pressure * 0.4
-    return base_pressure
-
+    from app.decision_buy import compute_sell_pressure
+    return compute_sell_pressure(sell_orders, daily_volume, n_orders)
 
 def _compute_sell_pressure(
     market_hash_name: str,
@@ -527,12 +472,17 @@ def filter_iflow_rows(
     config: dict,
     log_fn: Optional[Callable[[str, str], None]] = None,
 ) -> List[Dict[str, Any]]:
+    from app.decision_buy import (
+        candidate_basic_filter_decision,
+        candidate_keyword_match,
+        candidate_top_n_decision,
+    )
+
     pipeline_cfg = config.get("pipeline", {})
     iflow_cfg = config.get("steamdt") or config.get("iflow", {})
     exclude = pipeline_cfg.get("exclude_keywords", [])
     top_n = int(pipeline_cfg.get("iflow_top_n", 0) or 0)
-    if top_n > 0:
-        rows = rows[:top_n]
+    source_total = len(rows)
     sort_by = (iflow_cfg.get("sort_by") or "sell").strip()
     ratio_attr = _RATIO_ATTR.get(sort_by, "sell_ratio")
     steam_client = SteamClient()
@@ -540,10 +490,16 @@ def filter_iflow_rows(
     skipped_keyword = 0
     skipped_price = 0
     skipped_no_buff = 0
-    for r in rows:
-        name = (getattr(r, "name", None) or "").lower()
-        name_cn = (getattr(r, "name_cn", None) or "").lower()
-        if any(kw in name or kw in name_cn for kw in exclude):
+    skipped_top_n = 0
+    for rank, r in enumerate(rows, 1):
+        top_status, _, _, _ = candidate_top_n_decision(rank, source_total, top_n)
+        if top_status != "pass":
+            skipped_top_n += 1
+            continue
+        raw_name = getattr(r, "name", None) or ""
+        raw_name_cn = getattr(r, "name_cn", None) or ""
+        keyword_status, _, _ = candidate_keyword_match(raw_name, raw_name_cn, exclude)
+        if keyword_status != "pass":
             skipped_keyword += 1
             continue
         try:
@@ -551,27 +507,35 @@ def filter_iflow_rows(
         except (ValueError, TypeError):
             skipped_price += 1
             continue
-        if price <= 0:
-            skipped_price += 1
+        gid = _goods_id_from_buff_url(getattr(r, "platform", "") or "")
+        basic_status, _, _ = candidate_basic_filter_decision(
+            {
+                "name": raw_name,
+                "min_price": price,
+                "goods_id": gid,
+            },
+            {"has_buff_link": gid > 0},
+        )
+        if basic_status != "pass":
+            if price <= 0:
+                skipped_price += 1
+            else:
+                skipped_no_buff += 1
             continue
         try:
             ratio_val = float(getattr(r, ratio_attr, 0) or 0)
         except (ValueError, TypeError):
             ratio_val = 0
-        gid = _goods_id_from_buff_url(getattr(r, "platform", "") or "")
-        if gid <= 0:
-            skipped_no_buff += 1
-            continue
         steam_link = getattr(r, "steam_link", None) or ""
         steam_market_name = steam_client.market_hash_name_from_listing_url(
             steam_link
-        ) or name
+        ) or raw_name
         try:
             vol = int(getattr(r, "volume", "0") or 0)
         except (ValueError, TypeError):
             vol = 0
         filtered.append({
-            "name": getattr(r, "name", ""),
+            "name": raw_name,
             "min_price": price,
             "goods_id": gid,
             "platform": getattr(r, "platform", ""),
@@ -579,11 +543,17 @@ def filter_iflow_rows(
             "steam_link": steam_link,
             "ratio": ratio_val,
             "daily_volume": vol,
+            "_candidate_rank": rank,
+            "_candidate_source_total": source_total,
+            "_candidate_name_cn": raw_name_cn,
+            "_candidate_has_buff_link": gid > 0,
         })
     if log_fn:
         parts = [f"排除关键词={skipped_keyword}", f"价格无效={skipped_price}"]
         if top_n > 0:
             parts.append(f"取前{top_n}条")
+            if skipped_top_n:
+                parts.append(f"超出上限={skipped_top_n}")
         parts.extend([f"非Buff链接={skipped_no_buff}", f"→ 通过 {len(filtered)} 条"])
         log_fn(f"[筛选] {' '.join(parts)}", "info")
     return filtered
@@ -699,13 +669,8 @@ def _build_buy_strategy_outputs(
         daily_volume = int(item.get("daily_volume", 0) or 0)
         sell_pressure = None
         if daily_volume > 0 and orders:
-            try:
-                n = int((pipeline_cfg or {}).get("sell_pressure_orders_n", 5) or 5)
-                top_orders = orders[:max(1, n)]
-                volume = sum(int(o.get("quantity", 0) or 0) for o in top_orders if isinstance(o, dict))
-                sell_pressure = volume / daily_volume
-            except Exception:
-                sell_pressure = None
+            n = int((pipeline_cfg or {}).get("sell_pressure_orders_n", 5) or 5)
+            sell_pressure = _compute_sell_pressure_from_orders(orders, daily_volume, n)
         outputs["buy.steam_sell_depth"] = {
             "smart_price": smart_price if smart_price is not None else steam_sell_data.get("smart_price"),
             "sell_orders_count": len(orders),
@@ -814,8 +779,13 @@ def pick_stable_item(
             jittered_sleep(request_interval)
         name = item.get("name", "")
         market_hash_name = item.get("steam_market_name") or name
+        from app.decision_capture_buy import begin as begin_decision
+        evidence = begin_decision(config, item, get_purchases)
+        steam_sell_data = None
         def record_result(outcome):
             get_state().record_scan_result(str(gid or market_hash_name), outcome)
+            if evidence is not None:
+                evidence.finish(steam_sell_data)
         # 带饰品名称前缀的日志包装，方便追踪每条日志对应哪个饰品
         _short = (name[:30] + "…") if len(name) > 30 else name
         item_log = (lambda msg, level, _n=_short: log_fn(f"[{_n}] {msg}", level)) if log_fn else None
@@ -910,7 +880,7 @@ def pick_stable_item(
             # 3B. 仅对可能符合折扣要求的商品获取历史价格
             if smart_price is not None and smart_price > 0 and plan_price and plan_price > 0:
                 ref_price_est = _adjust_ref_price_for_daily_high(
-                    market_hash_name, smart_price, config, log_fn, app_id=730
+                    market_hash_name, smart_price, config, log_fn, app_id=730, evidence=evidence
                 )
                 est_ratio = (plan_price / ref_price_est) * STEAM_FEE_FACTOR
 
@@ -968,6 +938,8 @@ def pick_stable_item(
         if item_log:
             item_log("[稳定性] 拉取历史价格…", "info")
         raw = steam_client.fetch_history(market_hash_name, return_currency=True)
+        if evidence is not None:
+            evidence.history(raw)
         if raw and isinstance(raw, dict):
             history = raw.get("history")
             currency = raw.get("currency")
@@ -1000,6 +972,12 @@ def pick_stable_item(
                 if item_log:
                     item_log(f"[稳定性] 检测到极高预期利润 (比例={est_ratio:.4f} < {high_ratio:.4f})，放宽价格分位点限制至 {dyn_price_percentile_ceil}", "info")
 
+        analysis_evidence = {}
+        if evidence is not None:
+            if _supports_keyword_argument(analyzer.analyze, "evaluated_at"):
+                analysis_evidence["evaluated_at"] = evidence.evaluated_at
+            if _supports_keyword_argument(analyzer.analyze, "rate_map"):
+                analysis_evidence["rate_map"] = evidence.rates
         report = analyzer.analyze(
             history,
             days=stability_days,
@@ -1016,6 +994,7 @@ def pick_stable_item(
             slope_stable_floor=float(stability_cfg.get("slope_stable_floor", -0.005)) if trend_quality_enabled else -999.0,
             price_percentile_ceil_rising=float(stability_cfg.get("price_percentile_ceil_rising", 0.5)) if price_position_enabled else 999.0,
             use_vwap=bool(stability_cfg.get("use_vwap", True)),
+            **analysis_evidence,
         )
         if smart_price is not None and not report.get("valid"):
             record_result("history_data")
@@ -1831,8 +1810,31 @@ def lock_and_confirm_payment(
                 _PurchaseAttemptStatus.FAILED,
                 reason="刷新后的卖单最低价无效",
             )
-        affordable_quantity = _affordable_quantity(target_balance, acc, lowest_price)
-        if affordable_quantity < 1:
+        purchase_plan = compute_purchase_limit(
+            lowest_price=lowest_price,
+            count_at_lowest=count_at_lowest,
+            daily_volume=item.get("daily_volume"),
+            target_balance=target_balance,
+            accumulated_spend=acc,
+            held_same_name=held_same,
+            hard_cap_enabled=hard_cap_enabled,
+            liquidity_cap_enabled=liquidity_cap_enabled,
+            low_price_guard_enabled=low_price_guard_enabled,
+            held_same_guard_enabled=held_same_guard_enabled,
+            hard_qty_cap=scfg.get("safe_purchase_hard_qty_cap", 50),
+            liquidity_ratio=scfg.get("safe_purchase_liquidity_ratio", 0.05),
+            low_price_threshold=scfg.get("safe_purchase_low_price_threshold", 5.0),
+            low_price_penalty=scfg.get("safe_purchase_low_price_penalty", 0.5),
+            low_price_hard_cap=scfg.get("safe_purchase_low_price_hard_cap", 30),
+        )
+        if purchase_plan["status"] == "unavailable":
+            if log_fn:
+                log_fn(f"[Buff]   → 采购数量规则输入不完整：{purchase_plan['reason']}，本次不发送锁单请求", "warn")
+            return _PurchaseAttempt(
+                _PurchaseAttemptStatus.SKIP_VERIFICATION_FAILED,
+                reason=str(purchase_plan["reason"]),
+            )
+        if purchase_plan["status"] == "wait":
             return _PurchaseAttempt(
                 _PurchaseAttemptStatus.TARGET_REACHED,
                 reason="刷新后价格超出剩余预算",
@@ -1863,35 +1865,28 @@ def lock_and_confirm_payment(
                 )
         if ref_price and lowest_price > 0:
             item["value_ratio"] = (lowest_price / ref_price) * STEAM_FEE_FACTOR
-        cap_candidates = []
-        daily_volume = int(item.get("daily_volume", 0) or 0)
-        is_low_price = lowest_price < float(scfg.get("safe_purchase_low_price_threshold", 5.0))
-        if hard_cap_enabled:
-            cap_candidates.append(int(scfg.get("safe_purchase_hard_qty_cap", 50)))
-        if liquidity_cap_enabled:
-            volume_cap = int(daily_volume * float(scfg.get("safe_purchase_liquidity_ratio", 0.05)))
-            if low_price_guard_enabled and is_low_price:
-                volume_cap = int(volume_cap * float(scfg.get("safe_purchase_low_price_penalty", 0.5)))
-            cap_candidates.append(volume_cap)
-        if low_price_guard_enabled and is_low_price:
-            cap_candidates.append(int(scfg.get("safe_purchase_low_price_hard_cap", 30)))
-        safe_limit = max(min(cap_candidates), 0) if cap_candidates else count_at_lowest
-        if held_same > 0:
-            previous_limit = safe_limit
-            safe_limit = max(0, safe_limit - held_same)
+        if purchase_plan.get("held_same_name"):
             if log_fn:
-                log_fn(f"[Buff]   → 已持有同名(英文) {held_same} 件，安全上限 {previous_limit} → {safe_limit}", "info")
-        if safe_limit <= 0:
+                log_fn(
+                    f"[Buff]   → 已持有同名(英文) {purchase_plan['held_same_name']} 件，"
+                    f"安全上限 {purchase_plan['limit_before_held']} → {purchase_plan['limit_after_held']}",
+                    "info",
+                )
+        if purchase_plan["status"] == "reject" or purchase_plan["limit_after_held"] <= 0:
             if log_fn:
                 log_fn("[Buff]   → 安全采购模块限制为0，跳过本件", "warn")
             return _PurchaseAttempt(
                 _PurchaseAttemptStatus.SKIP_NO_FAILED,
                 reason="安全采购模块限制为0",
             )
-        orig_num = min(count_at_lowest, affordable_quantity)
-        num_to_buy = min(orig_num, safe_limit)
+        orig_num = min(count_at_lowest, purchase_plan["affordable_quantity"])
+        num_to_buy = purchase_plan["planned_quantity"]
         if log_fn and orig_num > num_to_buy:
-            log_fn(f"[Buff]   → 安全采购上限={safe_limit}，原计划={orig_num} 实际购买={num_to_buy}", "info")
+            log_fn(
+                f"[Buff]   → 安全采购上限={purchase_plan['limit_after_held']}，"
+                f"原计划={orig_num} 实际购买={num_to_buy}",
+                "info",
+            )
         return None
 
     def _time_window_is_open() -> bool:

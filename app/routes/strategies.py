@@ -33,7 +33,15 @@ class ModuleImportBody(BaseModel):
     manifest: dict
 
 
+class PreviewCopyBody(BaseModel):
+    name: str
+    params: dict = Field(default_factory=dict)
+
+
 class SimulateBody(BaseModel):
+    record_id: str = ""
+    version_id: str = "original"
+    params: dict = Field(default_factory=dict)
     strategy_id: str = ""
     strategy: dict = Field(default_factory=dict)
 
@@ -105,7 +113,54 @@ def api_import_strategy_module(body: ModuleImportBody):
 @router.post("/api/strategies/simulate")
 def api_simulate_strategy(body: SimulateBody):
     try:
-        payload = {"strategy_id": body.strategy_id, "strategy": body.strategy}
+        payload = body.model_dump()
         return simulate_strategy(payload)
-    except StrategyError as exc:
+    except (StrategyError, ValueError) as exc:
         return _error(exc)
+    except Exception:
+        return _error(ValueError("预演不可用，请检查记录的数据和版本"))
+
+
+@router.get("/api/strategy-decisions")
+def api_decision_list(kind: str = "", name: str = "", status: str = "", page: int = 1, page_size: int = 20):
+    from app.decision_records import list_records
+    try:
+        return list_records(kind=kind, name=name, status=status, page=page, page_size=page_size)
+    except ValueError as exc:
+        return _error(exc)
+    except Exception:
+        return _error(ValueError("检查记录读取失败，请稍后重试"))
+
+
+@router.get("/api/strategy-decisions/{record_id}")
+def api_decision_detail(record_id: str):
+    from app.decision_records import get_record, list_versions
+    try:
+        from app.decision_refresh import refresh_status
+        return {"ok": True, "record": get_record(record_id), "versions": list_versions(record_id), "refresh": refresh_status(record_id)}
+    except ValueError as exc:
+        return _error(exc)
+    except Exception:
+        return _error(ValueError("检查记录读取失败，请稍后重试"))
+
+
+@router.post("/api/strategy-decisions/{record_id}/copy")
+def api_decision_copy(record_id: str, body: PreviewCopyBody):
+    from app.decision_preview import save_copy
+    try:
+        return save_copy(record_id, body.name, body.params)
+    except (StrategyError, ValueError) as exc:
+        return _error(exc)
+    except Exception:
+        return _error(ValueError("保存副本失败，正式策略未改变"))
+
+
+@router.post("/api/strategy-decisions/{record_id}/refresh")
+def api_decision_refresh(record_id: str):
+    from app.decision_refresh import start_refresh
+    try:
+        return {"ok": True, "refresh": start_refresh(record_id)}
+    except ValueError as exc:
+        return _error(exc)
+    except Exception:
+        return _error(ValueError("行情刷新不可用，请稍后重试"))

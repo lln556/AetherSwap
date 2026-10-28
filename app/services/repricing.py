@@ -7,6 +7,88 @@ from app.trading_models import MarketListing, RepriceJob, TradingPolicy, TradeSe
 from app.trading_ledger import OPEN_JOBS, add_event, minor
 
 
+def _decision_step(module_id, status, reason, *, actual=None, threshold=None, output=None):
+    step = {"module_id": module_id, "status": status, "reason": reason}
+    if actual is not None:
+        step["actual"] = actual
+    if threshold is not None:
+        step["threshold"] = threshold
+    if output is not None:
+        step["output"] = output
+    return step
+
+
+def _value(row, key, default=None):
+    return row.get(key, default) if isinstance(row, dict) else getattr(row, key, default)
+
+
+def _decision_item(listing, purchase):
+    return {
+        "name": _value(purchase, "name"),
+        "market_hash_name": _value(purchase, "name"),
+        "goods_id": _value(purchase, "goods_id"),
+        "assetid": _value(listing, "assetid"),
+    }
+
+
+def _repricing_inputs(listing, purchase, remote, policy):
+    remote = remote or {}
+    return {
+        "listed_at": _value(listing, "activated_at"),
+        "next_evaluation_at": _value(listing, "next_evaluation_at"),
+        "current_buyer_minor": remote.get("buyer_minor") or _value(listing, "buyer_minor"),
+        "current_seller_minor": remote.get("seller_minor") or _value(listing, "seller_minor"),
+        "currency": remote.get("currency") or _value(listing, "currency"),
+        "purchase_price_minor": minor(_value(purchase, "price")),
+        "max_loss_percent": _value(policy, "max_loss_percent"),
+        "min_change_minor": _value(policy, "min_change_minor"),
+        "min_change_percent": _value(policy, "min_change_percent"),
+        "reevaluate_minutes": _value(policy, "reevaluate_minutes"),
+    }
+
+
+def _quote_stop(reason):
+    """Classify a stopped quote without changing the live listing decision."""
+    text = str(reason or "")
+    if any(word in text for word in ("卖单", "趋势数据", "行情", "数据", "汇率", "定价")):
+        return "market.reprice_quote", "unavailable"
+    if any(word in text for word in ("暂缓", "等待", "上涨")):
+        return "strategy.sell_guard", "wait"
+    return "strategy.sell_guard", "reject"
+
+
+def _execution_evidence(job=None):
+    if not job:
+        return {
+            "status": "not_started",
+            "job_id": None,
+            "job_status": None,
+            "withdrawn": False,
+            "returned": False,
+            "relisted": False,
+        }
+    status = job.status
+    return {
+        "status": status,
+        "job_id": job.id,
+        "job_status": status,
+        "withdrawn": status in {"ready", "submitting", "confirming", "completed"},
+        "returned": status in {"ready", "submitting", "confirming", "completed"},
+        "relisted": status in {"submitting", "confirming", "completed"},
+    }
+
+
+def _capture_reprice_decision(config, item, inputs, result, evaluated_at):
+    """Decision evidence is advisory and cannot alter the repricing outcome."""
+    try:
+        from app.decision_records import capture_decision
+        capture_decision(
+            config, "reprice", item, inputs, result, evaluated_at=evaluated_at,
+        )
+    except Exception:
+        return
+
+
 def buyer_total(seller_minor):
     # CS2, CNY wallet: 5% Steam + 10% publisher, each with a 7-fen minimum.
     return seller_minor + max(7, seller_minor * 5 // 100) + max(7, seller_minor * 10 // 100)
@@ -184,9 +266,9 @@ def _refresh_job_quote(job, purchase, snapshot, cred, cfg, policy):
     return True
 
 
-def _strategy_quote(session, purchase, snapshot, cfg, pcfg):
+def _strategy_quote(session, purchase, snapshot, cfg, pcfg, decision_sink=None):
     """Reuse normal listing guards, excluding only the listing being replaced."""
-    from app.sell_pipeline import _build_listing_plan
+    from app.sell_pipeline import _build_listing_plan, evaluate_strategy_runtime_modules
     from app.pipeline_context import PipelineContext
     from app.state import get_state
 
@@ -206,11 +288,48 @@ def _strategy_quote(session, purchase, snapshot, cfg, pcfg):
     remaining = {k: v for k, v in snapshot.items() if k != aid}
     names = {k: v.get("market_hash_name") or v.get("name") or "" for k, v in remaining.items()}
     record = {**purchase, "listing": False, "reprice_reserved": False}
+    quote_cfg = cfg
+    has_runtime = bool((cfg or {}).get("_strategy_runtime"))
+    if not has_runtime:
+        # Older/direct callers may pass the strategy selector separately from
+        # the resolved config. Keep that boundary equivalent to the live sell
+        # pipeline without changing the normal resolved-config path.
+        quote_cfg = {**(cfg or {})}
+        quote_pipeline = dict(quote_cfg.get("pipeline") or {})
+        quote_pipeline.update(pcfg or {})
+        quote_cfg["pipeline"] = quote_pipeline
     plan = _build_listing_plan(
-        ctx, cfg, session,
-        [{"name": purchase["name"], "market_hash_name": purchase["name"], "assetid": aid, "appid": 730}],
+        ctx, quote_cfg, session,
+        [{"name": purchase["name"], "market_hash_name": purchase["name"], "assetid": aid,
+          "appid": 730, "can_sell": True}],
         int(pcfg.get("sell_strategy", 4)), pcfg, [record], True, set(remaining), names, names, "CNY", {},
+        capture_decision=False, decision_sink=decision_sink,
     )
+    if plan and not has_runtime:
+        shared_steps = (decision_sink[-1].get("steps") or []) if decision_sink else []
+        outputs = {
+            str(step.get("module_id")): (step.get("output") or {})
+            for step in shared_steps
+            if step.get("module_id")
+        }
+        custom_results, blocking = evaluate_strategy_runtime_modules(
+            quote_cfg,
+            "sell",
+            "sell.listing_guard",
+            context={
+                "item": plan[0].get("it") or {},
+                "buy_record": record,
+                "listing": {
+                    "list_price": plan[0].get("list_price"),
+                    "display_price": plan[0].get("list_price"),
+                },
+                "config": quote_cfg,
+            },
+            outputs=outputs,
+        )
+        if blocking:
+            reason = blocking.get("reason") if isinstance(blocking, dict) else ""
+            return None, reason or (custom_results[-1].get("reason") if custom_results else ctx.last_reason)
     return (minor(plan[0]["list_price"]), plan[0]["reason"]) if plan else (None, ctx.last_reason)
 
 
@@ -219,31 +338,130 @@ def plan_repricing(snapshot, cred, cfg):
     from steam.session import create_market_session
     from app.strategy_engine import apply_strategy_to_config
     account_id = str(cred.get("steam_id") or "")
+    deferred = []
     with get_session() as s:
         policy = s.get(TradingPolicy, 1) or TradingPolicy()
         if not policy.enabled or policy.mutation_retry_at > time.time():
             return
         policy_data = policy.model_dump()
-        due = [r.model_dump() for r in s.exec(select(MarketListing).where(MarketListing.status == "active", MarketListing.account_id == account_id)).all()
+        active = s.exec(select(MarketListing).where(MarketListing.status == "active", MarketListing.account_id == account_id)).all()
+        active_evidence = [(row, s.get(Purchase, row.purchase_id)) for row in active]
+        due = [r.model_dump() for r in active
                if r.activated_at and r.next_evaluation_at and r.next_evaluation_at <= time.time()]
+        for row in active:
+            if not row.activated_at or not row.next_evaluation_at or row.next_evaluation_at > time.time():
+                purchase = s.get(Purchase, row.purchase_id)
+                if purchase:
+                    deferred.append((row, purchase, policy))
     effective = apply_strategy_to_config(cfg, "sell")
+    effective["_decision_account_id"] = account_id
     pcfg = effective.get("pipeline", {})
     if int(pcfg.get("sell_strategy", 4)) == 4:
+        for listing, purchase in active_evidence:
+            if not purchase:
+                continue
+            evaluated_at = time.time()
+            reason = "当前出售策略为暂停自动出售，未进入自动调价检查"
+            result = {
+                "status": "wait",
+                "steps": [_decision_step(
+                    "action.pause_auto_sell", "wait", reason,
+                    output={"executed": False},
+                )],
+                "suggestion": {"action": "none"},
+                "execution": _execution_evidence(),
+            }
+            _capture_reprice_decision(
+                effective, _decision_item(listing, purchase),
+                _repricing_inputs(listing, purchase, snapshot.get(listing.assetid), policy_data),
+                result, evaluated_at,
+            )
         return
+    for listing, purchase, policy in deferred:
+        evaluated_at = time.time()
+        remote = snapshot.get(listing.assetid)
+        inputs = _repricing_inputs(listing, purchase, remote, policy)
+        reason = "尚未到评估时间，保留原挂单"
+        result = {
+            "status": "wait",
+            "steps": [_decision_step(
+                "schedule.reprice_due", "wait", reason,
+                actual={"evaluated_at": evaluated_at, "next_evaluation_at": listing.next_evaluation_at},
+                threshold={"next_evaluation_at": "<= evaluated_at"},
+            )],
+            "suggestion": {"action": "none"},
+            "execution": _execution_evidence(),
+        }
+        _capture_reprice_decision(
+            effective, _decision_item(listing, purchase), inputs, result, evaluated_at,
+        )
     session = create_market_session(cred["cookies"], account_id)
     try:
         for listing in due[:5]:
             remote = snapshot.get(listing["assetid"])
             if not remote or remote["status"] != "active" or remote["listing_id"] != listing["steam_listing_id"]:
+                with get_session() as s:
+                    purchase = s.get(Purchase, listing["purchase_id"])
+                if purchase:
+                    evaluated_at = time.time()
+                    reason = "缺少可核对的 Steam 在售行情快照，无法判断是否调价"
+                    result = {
+                        "status": "unavailable",
+                        "steps": [_decision_step(
+                            "market.reprice_snapshot", "unavailable", reason,
+                            actual={"matched_active_listing": False},
+                            threshold={"status": "active", "listing_id": listing["steam_listing_id"]},
+                        )],
+                        "suggestion": {"action": "none"},
+                        "execution": _execution_evidence(),
+                    }
+                    _capture_reprice_decision(
+                        effective, _decision_item(listing, purchase),
+                        _repricing_inputs(listing, purchase, remote, policy_data),
+                        result, evaluated_at,
+                    )
                 continue
             if remote.get("currency") != "CNY" or not remote.get("buyer_minor") or not remote.get("seller_minor"):
+                with get_session() as s:
+                    purchase = s.get(Purchase, listing["purchase_id"])
+                if purchase:
+                    evaluated_at = time.time()
+                    if remote.get("currency") != "CNY":
+                        module_id = "market.reprice_currency"
+                        reason = f"挂单币种为 {remote.get('currency') or '未知'}，自动调价仅支持 CNY"
+                    else:
+                        module_id = "market.reprice_amount"
+                        reason = "缺少买家价或卖家价，无法安全比较调价差额"
+                    result = {
+                        "status": "unavailable",
+                        "steps": [_decision_step(
+                            module_id, "unavailable", reason,
+                            actual={
+                                "currency": remote.get("currency"),
+                                "buyer_minor": remote.get("buyer_minor"),
+                                "seller_minor": remote.get("seller_minor"),
+                            },
+                            threshold={"currency": "CNY", "amounts": "> 0"},
+                        )],
+                        "suggestion": {"action": "none"},
+                        "execution": _execution_evidence(),
+                    }
+                    _capture_reprice_decision(
+                        effective, _decision_item(listing, purchase),
+                        _repricing_inputs(listing, purchase, remote, policy_data),
+                        result, evaluated_at,
+                    )
                 continue  # Explicit currency/amount evidence is required before withdrawing.
             with get_session() as s:
                 p = s.get(Purchase, listing["purchase_id"])
                 if not p or p.archived_at or p.sale_price or s.get(TradeSettlement, p.id) or item_has_job(p.id):
                     continue
                 purchase, cost = p.model_dump(), minor(p.price)
-            price, reason = _strategy_quote(session, purchase, snapshot, effective, pcfg)
+            quote_results = []
+            price, reason = _strategy_quote(
+                session, purchase, snapshot, effective, pcfg,
+                decision_sink=quote_results,
+            )
             if price is None:
                 decision = {"adjust": False, "reason": reason}
             else:
@@ -260,6 +478,7 @@ def plan_repricing(snapshot, cred, cfg):
                 s.add(current)
                 add_event(s, p.id, "reprice_evaluated", decision["reason"], at=time.time(), details=decision)
                 previous = s.exec(select(RepriceJob).where(RepriceJob.listing_id == current.id)).first()
+                evidence_job = None
                 if decision["adjust"] and (not previous or previous.status == "cancelled"):
                     fields = dict(listing_id=current.id, purchase_id=p.id, account_id=account_id, old_assetid=p.assetid,
                                   assetid=p.assetid, old_steam_listing_id=current.steam_listing_id,
@@ -270,10 +489,98 @@ def plan_repricing(snapshot, cred, cfg):
                         for key, value in fields.items():
                             setattr(previous, key, value)
                         s.add(previous)
+                        evidence_job = previous
                         add_event(s, p.id, "reprice_replanned", "行情变化，重新安排调价", at=time.time(), details=fields)
                     else:
-                        s.add(RepriceJob(**fields))
+                        job = RepriceJob(**fields)
+                        s.add(job)
+                        evidence_job = job
+                execution = _execution_evidence(evidence_job)
                 s.commit()
+            if decision.get("target_buyer_minor") is None:
+                evaluated_at = time.time()
+                quote_result = quote_results[-1] if quote_results else None
+                if quote_result and quote_result.get("steps"):
+                    stop_status = str(quote_result.get("status") or "unavailable")
+                    steps = list(quote_result["steps"])
+                    if stop_status == "pass":
+                        # A shared pass without a usable list price is still
+                        # missing market evidence for repricing.
+                        stop_status = "unavailable"
+                        steps.append(_decision_step(
+                            "market.reprice_quote", stop_status, reason,
+                            actual={"quote_available": False},
+                            output={"executed": False},
+                        ))
+                    elif stop_status not in {"reject", "wait", "unavailable", "unsupported"}:
+                        stop_status = "unavailable"
+                else:
+                    module_id, stop_status = _quote_stop(reason)
+                    steps = [_decision_step(
+                        module_id, stop_status, reason,
+                        actual={"quote_available": False},
+                        threshold={"sell_orders": "> 0"},
+                        output={"executed": False},
+                    )]
+                result = {
+                    "status": stop_status,
+                    "steps": steps,
+                    "suggestion": {"action": "none"},
+                    "execution": _execution_evidence(),
+                }
+                _capture_reprice_decision(
+                    effective, _decision_item(listing, purchase),
+                    _repricing_inputs(listing, purchase, remote, policy_data),
+                    result, evaluated_at,
+                )
+                continue
+            evaluated_at = time.time()
+            steps = list((quote_results[0] if quote_results else {}).get("steps") or [])
+            old_buyer = remote["buyer_minor"]
+            target_buyer = decision["target_buyer_minor"]
+            delta = old_buyer - target_buyer
+            step_status = "pass" if decision["adjust"] else "wait"
+            step_reason = decision["reason"]
+            if decision.get("market_reason"):
+                step_reason += f"（{decision['market_reason']}）"
+            steps.append(_decision_step(
+                "pricing.auto_reprice", step_status, step_reason,
+                actual={
+                    "old_buyer_minor": old_buyer,
+                    "market_price_minor": price,
+                    "target_buyer_minor": target_buyer,
+                    "target_seller_minor": decision["target_seller_minor"],
+                    "floor_seller_minor": decision["floor_seller_minor"],
+                    "delta_buyer_minor": delta,
+                },
+                threshold={
+                    "min_change_minor": policy_data["min_change_minor"],
+                    "min_change_percent": policy_data["min_change_percent"],
+                    "required_delta_buyer_minor": max(
+                        int(policy_data["min_change_minor"]),
+                        math.ceil(old_buyer * float(policy_data["min_change_percent"]) / 100),
+                    ),
+                    "max_loss_percent": policy_data["max_loss_percent"],
+                },
+                output={"market_reason": decision.get("market_reason")},
+            ))
+            result = {
+                "status": step_status,
+                "steps": steps,
+                "suggestion": {
+                    "action": "adjust" if decision["adjust"] else "none",
+                    "target_buyer_minor": target_buyer,
+                    "target_seller_minor": decision["target_seller_minor"],
+                    "floor_seller_minor": decision["floor_seller_minor"],
+                    "delta_buyer_minor": delta,
+                },
+                "execution": execution,
+            }
+            _capture_reprice_decision(
+                effective, _decision_item(listing, purchase),
+                _repricing_inputs(listing, purchase, remote, policy_data),
+                result, evaluated_at,
+            )
     finally:
         session.close()
 

@@ -1454,12 +1454,13 @@ def apply_strategy_to_config(config: dict, strategy_type: str, strategy_override
     enabled_steps = copy.deepcopy(_enabled_steps(strategy))
     runtime_modules = {
         module_id: copy.deepcopy(modules.get(module_id) or {})
-        for module_id in enabled_ids
+        for module_id in {step.get("module_id") for step in strategy.get("steps", [])}
         if modules.get(module_id)
     }
     runtime = cfg.setdefault("_strategy_runtime", {})
     runtime[strategy_type] = {
         "active_strategy_id": active_id,
+        "strategy": copy.deepcopy(strategy),
         "enabled_modules": sorted(enabled_ids),
         "params": copy.deepcopy(params_by_module),
         "steps": enabled_steps,
@@ -1769,43 +1770,6 @@ def evaluate_strategy_runtime_modules(
     return results, None
 
 
-def _sample_strategy_context(strategy_type: str) -> Dict[str, Any]:
-    if strategy_type == "sell":
-        return {
-            "item": {"name": "Sample Item", "assetid": "123", "market_hash_name": "Sample Item"},
-            "buy_record": {"price": 8.0, "market_price": 12.0},
-            "listing": {"list_price": 12.8, "display_price": 12.8},
-            "config": {"pipeline": {}, "stability": {}},
-        }
-    return {
-        "item": {
-            "name": "Sample Item",
-            "goods_id": 1001,
-            "min_price": 9.8,
-            "daily_volume": 80,
-            "ratio": 0.82,
-            "steam_market_name": "Sample Item",
-        },
-        "config": {"pipeline": {}, "stability": {}},
-    }
-
-
-def _simulate_builtin_step(module_id: str, step: dict, outputs: dict) -> Dict[str, Any]:
-    if module_id == "action.pause_auto_sell":
-        status = "wait"
-        reason = "Simulation: auto sell would pause here"
-    elif str(module_id).startswith("action."):
-        status = "action"
-        reason = "模拟跳过真实交易 / Simulation skipped the real trading action"
-    else:
-        status = "pass"
-        reason = "Simulation passed with sample market data"
-    output = copy.deepcopy(MODULE_SAMPLE_OUTPUTS.get(module_id) or {})
-    if output:
-        outputs[module_id] = output
-    return {"status": status, "reason": reason, "output": output}
-
-
 def get_strategy_payload() -> Dict[str, Any]:
     cfg = load_app_config_validated()
     active = get_active_strategy_ids(cfg)
@@ -1829,53 +1793,9 @@ def get_strategy_payload() -> Dict[str, Any]:
 
 
 def simulate_strategy(raw: dict) -> Dict[str, Any]:
-    strategy = get_strategy(raw.get("strategy_id") or "") if raw.get("strategy_id") else None
-    if strategy is None:
-        strategy = normalize_strategy(raw.get("strategy") or raw)
-    errors = validate_strategy(strategy, for_activation=False)
-    if errors:
-        return {"ok": False, "errors": errors, "results": []}
-    modules = _module_by_id()
-    context = _sample_strategy_context(strategy.get("strategy_type"))
-    outputs: Dict[str, Any] = {}
-    results = []
-    for idx, step in enumerate(strategy.get("steps") or [], start=1):
-        module_id = step.get("module_id")
-        mod = modules.get(module_id)
-        output: Dict[str, Any] = {}
-        if step.get("enabled") is False:
-            status = "skip"
-            reason = "Module is disabled"
-        elif not mod:
-            status = "error"
-            reason = "Unknown module"
-        elif mod.get("origin") == "user":
-            if _is_declarative_user_module(mod):
-                evaluated = _evaluate_declarative_module(
-                    mod,
-                    step.get("params") if isinstance(step.get("params"), dict) else {},
-                    context=context,
-                    outputs=outputs,
-                )
-                status = evaluated["status"]
-                reason = evaluated["reason"]
-                output = evaluated.get("output") or {}
-                outputs[module_id] = copy.deepcopy(output)
-            else:
-                status = "error"
-                reason = "User code modules are registered only and are not executed"
-        else:
-            evaluated = _simulate_builtin_step(module_id, step, outputs)
-            status = evaluated["status"]
-            reason = evaluated["reason"]
-            output = evaluated.get("output") or {}
-        results.append({
-            "index": idx,
-            "module_id": module_id,
-            "module_name": (mod or {}).get("name", module_id),
-            "status": status,
-            "reason": reason,
-            "output_keys": sorted(output.keys()) if isinstance(output, dict) else [],
-            "output": output,
-        })
-    return {"ok": True, "strategy": strategy, "results": results, "available_data": _available_data_catalog()}
+    from app.decision_preview import compare
+    from app.decision_records import DecisionError
+    try:
+        return compare(raw)
+    except DecisionError as exc:
+        return {"ok": False, "error": str(exc), "results": []}

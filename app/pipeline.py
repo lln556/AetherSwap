@@ -167,6 +167,7 @@ def _process_deals_for_target(
             return acc, bought, TIME_WINDOW_CLOSED
 
         ctx.set_status("running", "CHECKING_STABILITY", progress_total=n_filtered, progress_done=0, progress_item="")
+        cfg = {**cfg, "_decision_accumulated_spend": acc}
         chosen, new_stability_failed = pick_stable_item(
             filtered, cfg, steam_client, analyzer, ctx.is_stop_requested,
             log_fn=ctx.log,
