@@ -159,3 +159,35 @@ def test_history_transport_retry_can_recover(monkeypatch, environment):
     messages = " ".join(call.args[0] for call in environment.logs.call_args_list)
     assert "Timeout" in messages
     assert "secret-cookie" not in messages
+
+
+@pytest.mark.parametrize('account_currency,account_id,cookie_id,expected', [
+    ('CNY', '76561198000000001', '76561198000000001', 'CNY'),
+    ('JPY', '76561198000000001', '76561198000000001', 'JPY'),
+    ('CNY', '76561198000000002', '76561198000000001', None),
+    ('CNY', '76561198000000001', '76561198000000002', None),
+    ('USD', '76561198000000001', '76561198000000001', None),
+    ('', '76561198000000001', '76561198000000001', None),
+])
+def test_yen_history_uses_only_matching_account_currency(monkeypatch, environment, account_currency, account_id, cookie_id, expected):
+    environment.credentials.update(steam_id='76561198000000001', cookies=f'steamLoginSecure={cookie_id}%7C%7Csecret')
+    monkeypatch.setattr('app.accounts.get_current_account', lambda: {'steam_id': account_id, 'currency_code': account_currency})
+    rows = [['Oct 28 2026 01: +0', 10.5, '2']]
+    monkeypatch.setattr(client.http, 'get', Mock(return_value=response(body={
+        'success': True, 'prices': rows, 'price_prefix': '\u00a5', 'price_suffix': '',
+    })))
+    result = service.SteamClient().fetch_history('Test Item', return_currency=True)
+    assert result == {'history': rows, 'currency': expected}
+
+
+def test_currency_context_changes_invalidate_ambiguous_history_cache(monkeypatch, environment):
+    environment.credentials.update(steam_id='76561198000000001', cookies='steamLoginSecure=76561198000000001%7C%7Csecret')
+    account = {'steam_id': '76561198000000001', 'currency_code': ''}
+    monkeypatch.setattr('app.accounts.get_current_account', lambda: account.copy())
+    get = Mock(return_value=response(body={'success': True, 'prices': [], 'price_prefix': '\u00a5', 'price_suffix': ''}))
+    monkeypatch.setattr(client.http, 'get', get)
+    history = service.SteamClient()
+    assert history.fetch_history('Test Item', return_currency=True)['currency'] is None
+    account['currency_code'] = 'CNY'
+    assert history.fetch_history('Test Item', return_currency=True)['currency'] == 'CNY'
+    assert get.call_count == 2

@@ -89,3 +89,21 @@ def test_history_preserves_explicit_headers(monkeypatch):
     for name, value in headers.items():
         assert sent[0]["headers"][name] == value
     assert client.DEFAULT_HEADERS["Accept-Language"] == "en-US,en;q=0.9"
+
+
+@pytest.mark.parametrize('prefix,suffix,hint,expected', [
+    ('\u00a5', '', 'CNY', 'CNY'),
+    ('\u00a5', '', 'JPY', 'JPY'),
+    ('\u00a5', '', None, None),
+    ('\u00a5', ' JPY', 'CNY', 'JPY'),
+    ('CN\u00a5', '', 'JPY', 'CNY'),
+    ('$', '', 'CNY', 'USD'),
+    ('', '', 'CNY', None),
+    (None, None, 'CNY', None),
+])
+def test_history_currency_hint_disambiguates_symbol_without_overriding_evidence(monkeypatch, prefix, suffix, hint, expected):
+    monkeypatch.setattr(client.http, 'get', lambda *a, **kw: response(body={
+        'success': True, 'prices': [], 'price_prefix': prefix, 'price_suffix': suffix,
+    }))
+    result = client.fetch_history('Test Item', return_currency=True, currency_hint=hint)
+    assert result == {'history': [], 'currency': expected}

@@ -155,7 +155,7 @@ def _extract_group_market_hash_name(html: str, source_url: str = "") -> Optional
     return descriptions[0] if descriptions else None
 
 
-def detect_currency(html: str) -> Optional[str]:
+def detect_currency(html: str, *, currency_hint: Optional[str] = None) -> Optional[str]:
     s = html or ""
     upper = s.upper()
     if "CNY" in upper or "RMB" in upper or "\u4eba\u6c11\u5e01" in s:
@@ -184,6 +184,11 @@ def detect_currency(html: str) -> Optional[str]:
         return CURRENCY_USD
     if "$" in s:  
         return CURRENCY_USD
+    # U+00A5 alone is shared by CNY and JPY. Resolve it only with an
+    # account identity verified by the caller; never default to CNY.
+    hint = str(currency_hint or "").strip().upper()
+    if "\u00a5" in s and hint in {"CNY", "JPY"}:
+        return hint
     return None
 def build_listing_url(market_hash_name: str, app_id: int = 730) -> str:
     encoded = quote(market_hash_name, safe="")
@@ -287,6 +292,7 @@ def fetch_history(
     cookies: Optional[Union[dict, str]] = None,
     return_currency: bool = False,
     raise_on_error: bool = False,
+    currency_hint: Optional[str] = None,
 ) -> Union[Optional[list], Optional[dict]]:
     encoded = quote(market_hash_name, safe="")
     url = f"https://steamcommunity.com/market/pricehistory/?appid={app_id}&market_hash_name={encoded}"
@@ -333,8 +339,8 @@ def fetch_history(
             raise SteamHistoryError("invalid_prices", resp)
         history = data["prices"]
         if return_currency:
-            currency_clue = data.get("price_prefix", "") + data.get("price_suffix", "")
-            currency = detect_currency(currency_clue)
+            currency_clue = str(data.get("price_prefix") or "") + str(data.get("price_suffix") or "")
+            currency = detect_currency(currency_clue, currency_hint=currency_hint)
             if not currency:
                 currency = detect_currency(resp.text)
             return {"history": history, "currency": currency}

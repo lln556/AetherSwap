@@ -17,6 +17,19 @@ _history_cache_max = 200
 _history_failure_ttl = 30
 _history_lock = threading.Lock()
 _history_cooldown = MarketCooldown()
+def _history_currency_hint(credentials: dict) -> Optional[str]:
+    """Bind ambiguous history symbols to the same account as the request."""
+    from app.accounts import get_current_account
+    from app.services.steam_auth import steam_id_from_cookie_str
+    account = get_current_account() or {}
+    steam_id = str(credentials.get("steam_id") or "").strip()
+    cookie_id = steam_id_from_cookie_str(credentials.get("cookies") or "")
+    if not steam_id or steam_id != str(account.get("steam_id") or "") or steam_id != cookie_id:
+        return None
+    currency = str(account.get("currency_code") or "").strip().upper()
+    return currency if currency in {"CNY", "JPY"} else None
+
+
 class SteamClient:
     def __init__(
         self,
@@ -39,7 +52,8 @@ class SteamClient:
         cookies = (cred.get("cookies") or "").strip() or None
         identity = f"{cred.get('steam_id') or ''}\0{cookies or ''}"
         account_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        key = (account_key, market_hash_name, app_id, return_currency)
+        currency_hint = _history_currency_hint(cred) if return_currency else None
+        key = (account_key, market_hash_name, app_id, return_currency, currency_hint)
         # Serialize cache misses so concurrent buy/sell tasks cannot duplicate a
         # failed request or race past a newly established endpoint cooldown.
         with _history_lock:
@@ -55,7 +69,8 @@ class SteamClient:
                 from app.state import log
                 log(f"[SteamClient] 历史接口冷却中，约 {remaining:.0f}s 后可重试，本次未发送请求", "debug", category="steam")
                 return None
-            result = self._fetch_history_impl(market_hash_name, app_id, return_currency, cookies)
+            hint = {"currency_hint": currency_hint} if currency_hint else {}
+            result = self._fetch_history_impl(market_hash_name, app_id, return_currency, cookies, **hint)
             if result is None and _history_cooldown.remaining() > 0:
                 return None
             if len(_history_cache) >= max(1, self._cache_max):
@@ -69,6 +84,8 @@ class SteamClient:
         app_id: int,
         return_currency: bool,
         cookies: Optional[str],
+        *,
+        currency_hint: Optional[str] = None,
     ) -> Union[Optional[List], Optional[Dict]]:
         cfg = load_app_config_validated()
         from utils.proxy_manager import get_proxy_manager
@@ -88,6 +105,7 @@ class SteamClient:
                     cookies=cookies,
                     proxies=proxies,
                     raise_on_error=True,
+                    currency_hint=currency_hint,
                 )
             except SteamHistoryError as exc:
                 from app.state import log
