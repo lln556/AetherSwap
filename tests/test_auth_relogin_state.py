@@ -20,53 +20,57 @@ def _isolated_global_buff_policy(monkeypatch):
 
 def test_manual_buff_cookie_requires_session(monkeypatch):
     from app.routes import auth
+    from app.services import buff_session
 
-    saved = []
-    monkeypatch.setattr(auth, "update_buff_creds", lambda cookie, **kwargs: saved.append((cookie, kwargs)))
+    monkeypatch.setattr(buff_session, "session_status", lambda: {"status": "unconfigured"})
 
     result = auth.api_auth_manual_cookie("buff", auth.ManualCookieBody(cookies="csrf_token=abc"))
 
     assert result["ok"] is False
+    assert result["code"] == "invalid_cookie"
     assert "session" in result["error"]
-    assert saved == []
+    assert result["session"] == {"status": "unconfigured"}
 
 
 @pytest.mark.parametrize(
-    ("step", "should_resume"),
+    "step",
     [
-        ("BUFF_AUTH_EXPIRED", True),
-        ("BUFF_VERIFICATION_REQUIRED", True),
-        ("BUFF_WRITE_RESULT_UNKNOWN", False),
-        ("BUFF_ORDER_CREATED_PENDING", False),
-        ("CHECKOUT_PENDING", False),
+        "BUFF_AUTH_EXPIRED",
+        "BUFF_VERIFICATION_REQUIRED",
+        "BUFF_WRITE_RESULT_UNKNOWN",
+        "BUFF_ORDER_CREATED_PENDING",
+        "CHECKOUT_PENDING",
+        "",
     ],
 )
-def test_cookie_update_only_resumes_pure_auth_failures(
+def test_buff_cookie_update_only_clears_auth_flags_and_never_starts_pipeline(
     monkeypatch,
     step,
-    should_resume,
 ):
     from app import pipeline, state
     from app.routes import auth
 
-    starts = []
+    flag_calls = []
     monkeypatch.setattr(
         state,
         "get_status",
         lambda: {"status": "error", "step": step},
     )
+    monkeypatch.setattr(auth, "set_buff_auth_expired", lambda value: flag_calls.append(("auth", value)))
+    monkeypatch.setattr(
+        auth,
+        "set_buff_verification_required",
+        lambda value: flag_calls.append(("verify", value)),
+    )
     monkeypatch.setattr(
         pipeline,
         "start_pipeline",
-        lambda config: starts.append(config) or True,
+        lambda config: (_ for _ in ()).throw(AssertionError("credential update must not start trading")),
     )
-    monkeypatch.setattr(auth, "load_app_config_validated", lambda: {"test": True})
-    monkeypatch.setattr(auth, "set_buff_auth_expired", lambda _value: None)
-    monkeypatch.setattr(auth, "set_buff_verification_required", lambda _value: None)
 
-    auth._maybe_resume_after_buff_cookie_update()
+    auth._clear_buff_auth_error_flags()
 
-    assert bool(starts) is should_resume
+    assert flag_calls == [("auth", False), ("verify", False)]
 
 
 def test_relogin_finish_surfaces_worker_error(monkeypatch):

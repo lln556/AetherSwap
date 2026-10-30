@@ -269,6 +269,35 @@ class BuffRequestPolicy:
             self._last_started[account_key] = self._clock()
             yield
 
+    @contextmanager
+    def verification_slot(self, account_key: str) -> Iterator[None]:
+        """Pace one explicit recovery probe while leaving trading blocked.
+
+        Callers must restrict the operation to the read-only user-info endpoint.
+        A server-issued rate limit always wins, including during recovery.
+        """
+        with self._account_lock(account_key):
+            try:
+                self.raise_if_blocked(account_key)
+            except BuffRateLimited:
+                raise
+            except BuffRequestBlocked:
+                pass
+            previous = self._last_started.get(account_key)
+            if previous is not None:
+                remaining = self.min_interval - (self._clock() - previous)
+                if remaining > 0:
+                    self._sleep(remaining)
+            # Another operation may have established a cooldown while waiting.
+            try:
+                self.raise_if_blocked(account_key)
+            except BuffRateLimited:
+                raise
+            except BuffRequestBlocked:
+                pass
+            self._last_started[account_key] = self._clock()
+            yield
+
     def raise_if_blocked(self, account_key: str) -> None:
         with self._guard:
             if self._state_invalid:

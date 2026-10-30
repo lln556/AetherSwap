@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AetherSwap BUFF 会话导入</title>
+  <link rel="stylesheet" href="popup.css">
+  <script type="module" src="popup.js"></script>
+</head>
+<body>
+  <main>
+    <p class="kicker">AETHERSWAP / CHROME EXTENSION</p>
+    <h1>BUFF 会话导入</h1>
+    <p class="lede">仅在你主动导入并再次确认后读取 BUFF 登录 Cookie。页面只会收到验证状态。</p>
+    <section class="panel" aria-labelledby="origin-label">
+      <p id="origin-label" class="label">当前 AetherSwap 来源</p>
+      <code id="current-origin">正在读取当前标签页…</code>
+    </section>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+    <div class="actions">
+      <button id="authorize" type="button" disabled>授权当前站点</button>
+      <button id="revoke" class="secondary" type="button" disabled>撤销授权</button>
+    </div>
+    <p class="guide">导入前，请先在 Chrome 打开 <a id="open-buff" href="https://buff.163.com/" target="_blank" rel="noreferrer">BUFF 并完成登录</a>。未登录时，确认页会保留并提示登录步骤。</p>
+  </main>
+</body>
+</html>

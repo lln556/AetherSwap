@@ -7,6 +7,7 @@ from app.routes.transactions import router as transactions_router
 from app.routes.pipeline import router as pipeline_router
 from app.routes.inventory import router as inventory_router
 from app.routes.auth import router as auth_router
+from app.routes.buff_session import router as buff_session_router
 from app.routes.accounts import router as accounts_router
 from app.routes.config import router as config_router
 from app.routes.gift import router as gift_router
@@ -21,6 +22,7 @@ def register_routes(app: FastAPI) -> None:
     app.include_router(pipeline_router)
     app.include_router(inventory_router)
     app.include_router(auth_router)
+    app.include_router(buff_session_router)
     app.include_router(accounts_router)
     app.include_router(config_router)
     app.include_router(gift_router)

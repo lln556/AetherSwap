@@ -82,7 +82,7 @@ def buff_credential_replacement_block_reason() -> str:
     """
 
     try:
-        from app.pipeline import is_shutdown_pending
+        from app.pipeline import is_shutdown_pending, is_pipeline_running
         from app.services.buff_checkout_guard import get_unresolved_checkout
 
         if is_shutdown_pending():
@@ -96,6 +96,7 @@ def buff_credential_replacement_block_reason() -> str:
         step = str(status.get("step") or "")
         if (
             status.get("status") == "running"
+            or is_pipeline_running()
             or get_pending_payment()
             or step in _CHECKOUT_CREDENTIAL_FREEZE_STEPS
         ):

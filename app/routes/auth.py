@@ -14,10 +14,8 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from app.state import log, set_buff_auth_expired, set_buff_verification_required
 from app.config_loader import (
-    get_buff_credentials,
     get_steam_credentials,
     load_app_config_validated,
-    update_buff_creds,
     update_steam_creds,
 )
 from app.accounts import get_current_account, get_profile_dir, set_current, update_account
@@ -27,18 +25,16 @@ from app.services.steam_auth import (
 )
 from app.services.buff_auth import (
     BUFF_BROWSER_LAUNCH_ARGS,
-    BUFF_ACCOUNT_ID,
     BUFF_ORIGIN,
     browser_buff_verification_allowed,
     buff_credential_replacement_block_reason,
-    clear_buff_request_policy_after_verification,
     get_buff_auth_lock,
-    manual_buff_probe_allowed,
     read_buff_browser_user_agent,
-    verify_buff_browser_session,
-    verify_manual_buff_credentials,
 )
 from app.runtime_env import get_runtime_profile
+from app.services.session_input import (normalize_cookie_input as _normalize_cookie_input,
+                                        normalize_user_agent as _normalize_user_agent,
+                                        cookie_value as _cookie_value)
 router = APIRouter()
 _relogin_lock = threading.Lock()
 _relogin_type = None
@@ -71,33 +67,6 @@ class ManualCookieBody(BaseModel):
     session_id: str = ""
     steam_id: str = ""
     user_agent: str = ""
-def _normalize_cookie_input(raw: str) -> str:
-    text = (raw or "").strip()
-    text = re.sub(r"^\s*cookie\s*:\s*", "", text, flags=re.I)
-    pieces = []
-    for part in re.split(r";|\r?\n", text):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        name, _, value = part.partition("=")
-        name = name.strip()
-        value = value.strip()
-        if name:
-            pieces.append(f"{name}={value}")
-    return "; ".join(pieces)
-def _normalize_user_agent(raw: str) -> str:
-    # A header value must be one line.  Keep a generous upper bound while
-    # preventing accidental pasted request dumps from entering credentials.
-    return " ".join((raw or "").split())[:1024]
-def _cookie_value(cookie_str: str, name: str) -> str:
-    wanted = name.lower()
-    for part in (cookie_str or "").split(";"):
-        if "=" not in part:
-            continue
-        key, _, value = part.partition("=")
-        if key.strip().lower() == wanted:
-            return value.strip()
-    return ""
 def _cookie_header_from_browser(cookies: list) -> str:
     pieces = []
     for cookie in cookies or []:
@@ -211,27 +180,10 @@ def _launch_relogin_context(playwright, profile_dir: Path, relogin_type: str):
             )
             shutil.rmtree(temp_profile, ignore_errors=True)
             raise RuntimeError(_friendly_browser_launch_error(second_exc, relogin_type, retried=True)) from second_exc
-def _maybe_resume_after_buff_cookie_update() -> None:
+def _clear_buff_auth_error_flags() -> None:
+    """Clear authentication errors without starting or resuming trading."""
     set_buff_auth_expired(False)
     set_buff_verification_required(False)
-    try:
-        from app.state import get_status
-        from app.pipeline import start_pipeline
-        st = get_status()
-        err_msg = str(st.get("step") or "")
-        if st.get("status") == "error" and err_msg in ("BUFF_AUTH_EXPIRED", "BUFF_VERIFICATION_REQUIRED"):
-            log("检测到 Buff Cookie 已手动更新，尝试自动恢复流水线...", "info", category="system")
-            try:
-                if not start_pipeline(load_app_config_validated()):
-                    log(
-                        "Buff 验证已完成，但流水线当前不可自动恢复；请确认状态后手动启动。",
-                        "warn",
-                        category="system",
-                    )
-            except Exception as resume_err:
-                log(f"自动恢复流水线失败: {resume_err}", "warn", category="system")
-    except Exception as resume_err:
-        log(f"Buff Cookie 更新后的恢复检查失败: {resume_err}", "warn", category="system")
 def _relogin_worker(relogin_type: str) -> None:
     global _relogin_playwright, _relogin_browser, _relogin_context, _relogin_error, _relogin_success, _relogin_thread
     p = None
@@ -316,35 +268,32 @@ def _relogin_worker(relogin_type: str) -> None:
                         display_name, avatar_url = fetch_steam_profile_via_api(steam_id or "", cookie_str)
                         update_account(cur["id"], steam_id=steam_id or "", display_name=display_name, avatar_url=avatar_url)
             else:
-                verified, verify_status, verify_message = verify_buff_browser_session(page)
-                if not verified:
-                    if verify_status == "verification":
-                        set_buff_verification_required(True, verify_message)
-                    elif verify_status == "expired":
-                        set_buff_auth_expired(True)
-                    _relogin_error = f"Buff 登录在线验证未通过：{verify_message}"
+                refreshed_cookies = context.cookies([BUFF_ORIGIN])
+                if not _has_browser_cookie(refreshed_cookies, "session"):
+                    _relogin_error = "未检测到 Buff 登录 session，请确认弹出的浏览器已经完成登录或验证后再点击完成。"
                 else:
-                    refreshed_cookies = context.cookies([BUFF_ORIGIN])
-                    if not _has_browser_cookie(refreshed_cookies, "session"):
-                        _relogin_error = "未检测到 Buff 登录 session，请确认弹出的浏览器已经完成登录或验证后再点击完成。"
+                    checkout_block = buff_credential_replacement_block_reason()
+                    if checkout_block:
+                        _relogin_error = checkout_block
                     else:
-                        checkout_block = buff_credential_replacement_block_reason()
-                        if checkout_block:
-                            _relogin_error = checkout_block
-                        else:
-                            user_agent = read_buff_browser_user_agent(page)
-                            cookie_str = _cookie_header_from_browser(refreshed_cookies)
-                            update_buff_creds(
-                                cookie_str,
-                                user_agent=user_agent or None,
-                                source="playwright" if temp_profile_dir is None else "playwright_ephemeral",
+                        from app.services.buff_session import import_session
+
+                        user_agent = _normalize_user_agent(read_buff_browser_user_agent(page))
+                        cookie_str = _cookie_header_from_browser(refreshed_cookies)
+                        import_result = import_session(
+                            cookie_str,
+                            user_agent,
+                            source="playwright" if temp_profile_dir is None else "playwright_ephemeral",
+                            recovery=True,
+                        )
+                        if not import_result.get("ok"):
+                            _relogin_error = str(
+                                import_result.get("error")
+                                or import_result.get("code")
+                                or "Buff 会话导入失败，原会话未改变。"
                             )
-                            if not clear_buff_request_policy_after_verification(BUFF_ACCOUNT_ID):
-                                _relogin_error = "Buff 登录已验证，但请求熔断重置失败，请稍后重试。"
-                            else:
-                                set_buff_auth_expired(False)
-                                set_buff_verification_required(False)
-                                _maybe_resume_after_buff_cookie_update()
+                        else:
+                            _clear_buff_auth_error_flags()
     except Exception as e:
         if _looks_like_browser_launch_error(e):
             _relogin_error = _friendly_browser_launch_error(e, relogin_type)
@@ -465,6 +414,19 @@ def api_auth_buff_relogin_finish(body: ReloginFinishBody):
     return _relogin_finish(body.success)
 @router.post("/api/auth/{relogin_type}/manual_cookie")
 def api_auth_manual_cookie(relogin_type: str, body: ManualCookieBody):
+    if relogin_type == "buff":
+        from app.services.buff_session import import_session
+
+        result = import_session(
+            body.cookies,
+            _normalize_user_agent(body.user_agent),
+            source="manual",
+            recovery=False,
+        )
+        if result.get("ok"):
+            _clear_buff_auth_error_flags()
+            result.setdefault("message", "Buff Cookie 已保存")
+        return result
     cookie_str = _normalize_cookie_input(body.cookies)
     if not cookie_str:
         return {"ok": False, "error": "Cookie 不能为空"}
@@ -483,83 +445,6 @@ def api_auth_manual_cookie(relogin_type: str, body: ManualCookieBody):
             display_name, avatar_url = fetch_steam_profile_via_api(steam_id or cur.get("steam_id", ""), cookie_str)
             update_account(cur["id"], steam_id=steam_id or cur.get("steam_id", ""), display_name=display_name, avatar_url=avatar_url)
         return {"ok": True, "message": "Steam Cookie 已保存", "steam_id": steam_id}
-    if relogin_type == "buff":
-        if not _cookie_value(cookie_str, "session"):
-            return {"ok": False, "error": "Buff Cookie 缺少 session"}
-        if not _cookie_value(cookie_str, "csrf_token"):
-            return {"ok": False, "error": "Buff Cookie 缺少 csrf_token"}
-        checkout_block = buff_credential_replacement_block_reason()
-        if checkout_block:
-            return {
-                "ok": False,
-                "code": "buff_checkout_pending",
-                "error": checkout_block,
-            }
-        lock = get_buff_auth_lock()
-        if not lock.acquire(blocking=False):
-            return {"ok": False, "error": "另一项 Buff 登录或保活任务正在进行，请稍后重试"}
-        try:
-            checkout_block = buff_credential_replacement_block_reason()
-            if checkout_block:
-                return {
-                    "ok": False,
-                    "code": "buff_checkout_pending",
-                    "error": checkout_block,
-                }
-            saved_credentials = get_buff_credentials() or {}
-            user_agent = _normalize_user_agent(body.user_agent)
-            if not user_agent:
-                user_agent = _normalize_user_agent(saved_credentials.get("user_agent", ""))
-            probe_allowed, probe_status, probe_message = manual_buff_probe_allowed(
-                cookie_str,
-                str(saved_credentials.get("cookies") or ""),
-            )
-            if not probe_allowed:
-                return {
-                    "ok": False,
-                    "code": f"buff_cookie_{probe_status}",
-                    "error": probe_message or "当前 BUFF 请求熔断尚未解除，请稍后重试或完成浏览器验证。",
-                }
-            validated_cookie = [cookie_str]
-
-            def remember_validated_cookie(value: str) -> None:
-                if value:
-                    validated_cookie[0] = value
-
-            verified, verify_status, verify_message = verify_manual_buff_credentials(
-                cookie_str,
-                user_agent,
-                remember_validated_cookie,
-            )
-            if not verified:
-                return {
-                    "ok": False,
-                    "code": f"buff_cookie_{verify_status}",
-                    "error": verify_message,
-                }
-            checkout_block = buff_credential_replacement_block_reason()
-            if checkout_block:
-                return {
-                    "ok": False,
-                    "code": "buff_checkout_pending",
-                    "error": checkout_block,
-                }
-            update_buff_creds(
-                validated_cookie[0],
-                user_agent=user_agent or None,
-                source="manual",
-            )
-            if not clear_buff_request_policy_after_verification(BUFF_ACCOUNT_ID):
-                return {
-                    "ok": False,
-                    "code": "buff_policy_reset_failed",
-                    "credentials_saved": True,
-                    "error": "Buff Cookie 已验证并保存，但请求熔断重置失败；流水线未恢复。",
-                }
-            _maybe_resume_after_buff_cookie_update()
-        finally:
-            lock.release()
-        return {"ok": True, "message": "Buff Cookie 已保存"}
     return {"ok": False, "error": "未知登录类型"}
 @router.get("/api/steam_guard")
 def api_steam_guard():

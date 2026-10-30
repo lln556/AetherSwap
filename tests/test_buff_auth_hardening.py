@@ -49,42 +49,89 @@ def test_buff_credentials_keep_identity_metadata_and_advance_generation(monkeypa
     assert second["generation"] == 2
 
 
-def test_manual_buff_cookie_saves_stable_user_agent_and_source(monkeypatch):
+def test_manual_buff_cookie_delegates_to_shared_import_with_sanitized_ua(monkeypatch):
+    from app import pipeline
     from app.routes import auth
+    from app.services import buff_session
 
-    saved = []
-    monkeypatch.setattr(auth, "get_buff_credentials", lambda: {})
-    monkeypatch.setattr(auth, "manual_buff_probe_allowed", lambda *args: (True, "ok", ""))
-    monkeypatch.setattr(auth, "verify_manual_buff_credentials", lambda *args: (True, "ok", "verified"))
-    monkeypatch.setattr(auth, "clear_buff_request_policy_after_verification", lambda *args: True)
-    monkeypatch.setattr(auth, "update_buff_creds", lambda cookie, **kwargs: saved.append((cookie, kwargs)))
-    monkeypatch.setattr(auth, "_maybe_resume_after_buff_cookie_update", lambda: None)
+    calls = []
+    flag_calls = []
+    session = {"status": "valid", "checked_at": 123.0, "message": "会话已验证并保存；未启动买入"}
+
+    def fake_import(cookies, user_agent="", source="manual", recovery=False):
+        calls.append((cookies, user_agent, source, recovery))
+        return {"ok": True, "session": session}
+
+    monkeypatch.setattr(buff_session, "import_session", fake_import)
+    monkeypatch.setattr(auth, "set_buff_auth_expired", lambda value: flag_calls.append(("auth", value)))
+    monkeypatch.setattr(
+        auth,
+        "set_buff_verification_required",
+        lambda value: flag_calls.append(("verify", value)),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "start_pipeline",
+        lambda config: (_ for _ in ()).throw(AssertionError("credential update must not start trading")),
+    )
 
     result = auth.api_auth_manual_cookie(
         "buff",
         auth.ManualCookieBody(
-            cookies="session=abc; csrf_token=def",
+            cookies=" session=abc; csrf_token=def ",
             user_agent="Browser/1.0\r\nInjected: no",
         ),
     )
 
-    assert result["ok"] is True
-    assert saved == [
+    assert calls == [
         (
-            "session=abc; csrf_token=def",
-            {"user_agent": "Browser/1.0 Injected: no", "source": "manual"},
+            " session=abc; csrf_token=def ",
+            "Browser/1.0 Injected: no",
+            "manual",
+            False,
         )
     ]
+    assert flag_calls == [("auth", False), ("verify", False)]
+    assert result == {
+        "ok": True,
+        "session": session,
+        "message": "Buff Cookie 已保存",
+    }
+
+
+def test_empty_manual_buff_cookie_still_uses_shared_import(monkeypatch):
+    from app.routes import auth
+    from app.services import buff_session
+
+    calls = []
+    monkeypatch.setattr(
+        buff_session,
+        "import_session",
+        lambda cookies, user_agent="", source="manual", recovery=False: calls.append(
+            (cookies, user_agent, source, recovery)
+        ) or {
+            "ok": False,
+            "code": "invalid_cookie",
+            "error": "BUFF Cookie 必须包含 session 和 csrf_token",
+            "session": {"status": "unconfigured"},
+        },
+    )
+
+    result = auth.api_auth_manual_cookie(
+        "buff",
+        auth.ManualCookieBody(cookies="", user_agent="Browser/1.0"),
+    )
+
+    assert calls == [("", "Browser/1.0", "manual", False)]
+    assert result["code"] == "invalid_cookie"
+    assert result["session"] == {"status": "unconfigured"}
 
 
 def test_manual_buff_cookie_requires_csrf_token(monkeypatch):
     from app.routes import auth
+    from app.services import buff_session
 
-    monkeypatch.setattr(
-        auth,
-        "verify_manual_buff_credentials",
-        lambda *args: (_ for _ in ()).throw(AssertionError("must reject before probing")),
-    )
+    monkeypatch.setattr(buff_session, "session_status", lambda: {"status": "unconfigured"})
 
     result = auth.api_auth_manual_cookie(
         "buff",
@@ -92,33 +139,29 @@ def test_manual_buff_cookie_requires_csrf_token(monkeypatch):
     )
 
     assert result["ok"] is False
+    assert result["code"] == "invalid_cookie"
     assert "csrf_token" in result["error"]
 
 
-def test_failed_manual_cookie_probe_never_saves_clears_or_resumes(monkeypatch):
+def test_failed_manual_cookie_import_never_saves_clears_or_resumes(monkeypatch):
     from app.routes import auth
+    from app.services import buff_session
 
-    monkeypatch.setattr(auth, "get_buff_credentials", lambda: {"cookies": "session=old"})
-    monkeypatch.setattr(auth, "manual_buff_probe_allowed", lambda *args: (True, "ok", ""))
+    session = {"status": "verification", "checked_at": 123.0, "message": "安全验证未完成"}
     monkeypatch.setattr(
-        auth,
-        "verify_manual_buff_credentials",
-        lambda *args: (False, "verification", "安全验证未完成"),
+        buff_session,
+        "import_session",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "code": "verification",
+            "error": "安全验证未完成",
+            "session": session,
+        },
     )
     monkeypatch.setattr(
         auth,
-        "update_buff_creds",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not save")),
-    )
-    monkeypatch.setattr(
-        auth,
-        "clear_buff_request_policy_after_verification",
-        lambda *args: (_ for _ in ()).throw(AssertionError("must not clear")),
-    )
-    monkeypatch.setattr(
-        auth,
-        "_maybe_resume_after_buff_cookie_update",
-        lambda: (_ for _ in ()).throw(AssertionError("must not resume")),
+        "_clear_buff_auth_error_flags",
+        lambda: (_ for _ in ()).throw(AssertionError("failure must not clear flags")),
     )
 
     result = auth.api_auth_manual_cookie(
@@ -126,8 +169,12 @@ def test_failed_manual_cookie_probe_never_saves_clears_or_resumes(monkeypatch):
         auth.ManualCookieBody(cookies="session=new; csrf_token=csrf"),
     )
 
-    assert result["ok"] is False
-    assert result["code"] == "buff_cookie_verification"
+    assert result == {
+        "ok": False,
+        "code": "verification",
+        "error": "安全验证未完成",
+        "session": session,
+    }
 
 
 def test_manual_probe_uses_one_global_paced_default_account_request(
@@ -511,22 +558,199 @@ def test_active_rate_limit_rejects_browser_relogin_before_thread_start(
     assert result["code"] == "buff_rate_limited"
 
 
+@pytest.mark.parametrize(
+    ("temp_profile", "expected_source"),
+    [
+        (False, "playwright"),
+        (True, "playwright_ephemeral"),
+    ],
+)
+def test_browser_relogin_imports_verified_session_without_starting_pipeline(
+    monkeypatch,
+    tmp_path,
+    temp_profile,
+    expected_source,
+):
+    from app import pipeline
+    from app.routes import auth
+    from app.services import buff_session
+
+    class Page:
+        def goto(self, *args, **kwargs):
+            return None
+
+    class Context:
+        pages = [Page()]
+
+        def __init__(self):
+            self.closed = False
+
+        def cookies(self, urls=None):
+            assert urls == ["https://buff.163.com/"]
+            return [
+                {"name": "session", "value": "ok"},
+                {"name": "csrf_token", "value": "csrf"},
+            ]
+
+        def close(self):
+            self.closed = True
+
+    context = Context()
+
+    class Playwright:
+        def stop(self):
+            return None
+
+    playwright_pkg = types.ModuleType("playwright")
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = lambda: types.SimpleNamespace(start=lambda: Playwright())
+    monkeypatch.setitem(__import__("sys").modules, "playwright", playwright_pkg)
+    monkeypatch.setitem(__import__("sys").modules, "playwright.sync_api", sync_api)
+    temp_dir = tmp_path / "playwright_tmp" if temp_profile else None
+    monkeypatch.setattr(auth, "_launch_relogin_context", lambda *args: (context, temp_dir))
+    monkeypatch.setattr(auth, "buff_credential_replacement_block_reason", lambda: "")
+    monkeypatch.setattr(auth, "browser_buff_verification_allowed", lambda: (True, "ok", ""))
+    monkeypatch.setattr(auth, "verify_buff_browser_session", lambda page: pytest.fail("relogin must not probe twice"), raising=False)
+    monkeypatch.setattr(auth, "read_buff_browser_user_agent", lambda page: "Test Browser/1.0")
+    wake = threading.Event()
+    wake.set()
+    monkeypatch.setattr(auth, "_relogin_wake", wake)
+    monkeypatch.setattr(auth, "_relogin_done", threading.Event())
+    monkeypatch.setattr(auth, "_relogin_success", True)
+    monkeypatch.setattr(auth, "_relogin_error", None)
+    monkeypatch.setattr(auth, "_relogin_context", None)
+    monkeypatch.setattr(auth, "_relogin_thread", None)
+    monkeypatch.setattr(
+        pipeline,
+        "start_pipeline",
+        lambda config: (_ for _ in ()).throw(AssertionError("credential update must not start trading")),
+    )
+    flag_calls = []
+    monkeypatch.setattr(auth, "set_buff_auth_expired", lambda value: flag_calls.append(("auth", value)))
+    monkeypatch.setattr(
+        auth,
+        "set_buff_verification_required",
+        lambda value: flag_calls.append(("verify", value)),
+    )
+    import_calls = []
+
+    def fake_import(cookies, user_agent="", source="manual", recovery=False):
+        lock = auth.get_buff_auth_lock()
+        assert lock.acquire(blocking=False) is True
+        lock.release()
+        import_calls.append((cookies, user_agent, source, recovery))
+        return {
+            "ok": True,
+            "session": {"status": "valid", "checked_at": 123.0},
+        }
+
+    monkeypatch.setattr(buff_session, "import_session", fake_import)
+
+    auth._relogin_worker("buff")
+
+    assert import_calls == [
+        (
+            "session=ok; csrf_token=csrf",
+            "Test Browser/1.0",
+            expected_source,
+            True,
+        )
+    ]
+    assert flag_calls == [("auth", False), ("verify", False)]
+    assert auth._relogin_error is None
+    assert context.closed is True
+
+
+def test_browser_relogin_account_mismatch_fails_without_clearing_flags(monkeypatch):
+    from app.routes import auth
+    from app.services import buff_session
+
+    class Page:
+        def goto(self, *args, **kwargs):
+            return None
+
+    class Context:
+        pages = [Page()]
+
+        def cookies(self, urls=None):
+            return [
+                {"name": "session", "value": "candidate"},
+                {"name": "csrf_token", "value": "csrf"},
+            ]
+
+        def close(self):
+            return None
+
+    class Playwright:
+        def stop(self):
+            return None
+
+    playwright_pkg = types.ModuleType("playwright")
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = lambda: types.SimpleNamespace(start=lambda: Playwright())
+    monkeypatch.setitem(__import__("sys").modules, "playwright", playwright_pkg)
+    monkeypatch.setitem(__import__("sys").modules, "playwright.sync_api", sync_api)
+    monkeypatch.setattr(auth, "_launch_relogin_context", lambda *args: (Context(), None))
+    monkeypatch.setattr(auth, "buff_credential_replacement_block_reason", lambda: "")
+    monkeypatch.setattr(auth, "browser_buff_verification_allowed", lambda: (True, "ok", ""))
+    monkeypatch.setattr(auth, "verify_buff_browser_session", lambda page: pytest.fail("relogin must not probe twice"), raising=False)
+    monkeypatch.setattr(auth, "read_buff_browser_user_agent", lambda page: "Test Browser/1.0")
+    wake = threading.Event()
+    wake.set()
+    monkeypatch.setattr(auth, "_relogin_wake", wake)
+    monkeypatch.setattr(auth, "_relogin_done", threading.Event())
+    monkeypatch.setattr(auth, "_relogin_success", True)
+    monkeypatch.setattr(auth, "_relogin_error", None)
+    monkeypatch.setattr(auth, "_relogin_context", None)
+    monkeypatch.setattr(auth, "_relogin_thread", None)
+    monkeypatch.setattr(
+        auth,
+        "set_buff_auth_expired",
+        lambda value: (_ for _ in ()).throw(AssertionError("failure must not clear auth flags")),
+    )
+    monkeypatch.setattr(
+        auth,
+        "set_buff_verification_required",
+        lambda value: (_ for _ in ()).throw(AssertionError("failure must not clear auth flags")),
+    )
+    monkeypatch.setattr(
+        buff_session,
+        "import_session",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "code": "account_mismatch",
+            "error": "导入的 BUFF 绑定 Steam 账号与当前账号不一致或无法核实，原会话未改变",
+            "session": {"status": "valid"},
+        },
+    )
+
+    auth._relogin_worker("buff")
+
+    assert "账号" in auth._relogin_error
+    assert "原会话未改变" in auth._relogin_error
+
+
 def test_checkout_pending_rejects_manual_and_browser_credential_replacement(
     monkeypatch,
 ):
     from app.routes import auth
+    from app.services import buff_session
 
+    manual_calls = []
+    monkeypatch.setattr(
+        buff_session,
+        "import_session",
+        lambda *args, **kwargs: manual_calls.append((args, kwargs)) or {
+            "ok": False,
+            "code": "checkout_pending",
+            "error": "checkout pending",
+            "session": {"status": "valid", "can_replace": False},
+        },
+    )
     monkeypatch.setattr(
         auth,
         "buff_credential_replacement_block_reason",
         lambda: "checkout pending",
-    )
-    monkeypatch.setattr(
-        auth,
-        "verify_manual_buff_credentials",
-        lambda *args: (_ for _ in ()).throw(
-            AssertionError("manual probe must not run during checkout")
-        ),
     )
     manual_result = auth.api_auth_manual_cookie(
         "buff",
@@ -550,7 +774,13 @@ def test_checkout_pending_rejects_manual_and_browser_credential_replacement(
     )
     browser_result = auth._relogin_start("buff")
 
-    assert manual_result["code"] == "buff_checkout_pending"
+    assert manual_calls == [
+        (
+            ("session=new; csrf_token=new", "",),
+            {"source": "manual", "recovery": False},
+        )
+    ]
+    assert manual_result["code"] == "checkout_pending"
     assert browser_result["code"] == "buff_checkout_pending"
 
 

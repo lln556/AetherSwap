@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import threading
 import uuid
 from pathlib import Path
@@ -111,3 +112,10 @@ def get_profile_dir(account_id: Optional[str] = None) -> Path:
     if cur:
         return base / cur.get("id", "default")
     return base / "default"
+
+
+@contextmanager
+def current_account_guard():
+    """Keep the selected account stable across a related local state update."""
+    with _lock:
+        yield

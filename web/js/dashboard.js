@@ -79,6 +79,9 @@ const Dashboard = {
     el("health-buff")?.classList.toggle("text-bad", !!buffNeedsAction);
     const region = d.account_region || {};
     this.setText("health-region", region.region_check_ok ? [region.currency_code, region.region_code].filter(Boolean).join(" / ") : "地区尚未确认");
+    // BUFF session history has its own cache endpoint. Keep replacement
+    // protection fresh without probing BUFF or conflating it with live flags.
+    window.BuffSession?.refreshCachedSession?.();
   },
   renderStats(s) {
     this.setText("stat-holding-cost", this.money(s.holding_cost));

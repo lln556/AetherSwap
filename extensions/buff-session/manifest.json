@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "AetherSwap BUFF 会话导入",
+  "version": "0.1.0",
+  "description": "经用户确认，将当前 Chrome 个人资料中的 BUFF 登录会话交给 AetherSwap 验证。",
+  "minimum_chrome_version": "120",
+  "incognito": "not_allowed",
+  "permissions": ["activeTab", "cookies", "scripting", "storage"],
+  "host_permissions": ["https://buff.163.com/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "AetherSwap BUFF 会话导入",
+    "default_popup": "popup.html"
+  }
+}

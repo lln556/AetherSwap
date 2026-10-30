@@ -1,0 +1,527 @@
+/* Persistent BUFF session result card. Detection history is intentionally
+   separate from the live /api/status flags shown elsewhere on the dashboard. */
+.buff-session-card {
+  --buff-accent: #4f46e5;
+  --buff-accent-soft: rgba(79, 70, 229, 0.08);
+  --buff-line: color-mix(in srgb, var(--border-color) 78%, var(--text-muted));
+  position: relative;
+  isolation: isolate;
+  margin: 0 0 24px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background:
+    linear-gradient(115deg, var(--bg-surface) 0%, var(--bg-surface) 68%, var(--buff-accent-soft) 100%);
+  box-shadow: var(--shadow-sm);
+  animation: buffSessionReveal 0.42s var(--ease-spring) both;
+}
+
+.buff-session-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--gradient-accent);
+  z-index: 2;
+}
+
+.buff-session-card::after {
+  content: "BUFF";
+  position: absolute;
+  right: 24px;
+  bottom: -26px;
+  z-index: -1;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: clamp(72px, 10vw, 132px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.1em;
+  opacity: 0.025;
+  pointer-events: none;
+}
+
+.buff-session-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 24px 18px 28px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.buff-session-kicker {
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+}
+
+.buff-session-head h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.buff-session-lede {
+  max-width: 660px;
+  margin: 7px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.buff-session-lede code {
+  padding: 1px 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  background: var(--bg-input);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.buff-session-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 5px 11px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  box-shadow: var(--shadow-xs);
+}
+
+.buff-session-badge::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.buff-session-badge[data-status="valid"] { color: var(--success); }
+.buff-session-badge[data-status="expired"],
+.buff-session-badge[data-status="error"],
+.buff-session-badge[data-status="account_mismatch"] { color: var(--danger); }
+.buff-session-badge[data-status="verification"],
+.buff-session-badge[data-status="rate_limited"] { color: var(--warning); }
+.buff-session-badge[data-status="checking"]::before,
+.buff-session-badge[data-status="importing"]::before {
+  animation: buffSessionPulse 1s ease-in-out infinite;
+}
+
+.buff-session-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 24px;
+  padding: 18px 24px 20px 28px;
+}
+
+.buff-session-message {
+  margin: 0 0 14px;
+  color: var(--text-main);
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.buff-session-facts {
+  display: grid;
+  grid-template-columns: minmax(160px, max-content) minmax(220px, 1fr);
+  gap: 12px 24px;
+  margin: 0;
+}
+
+.buff-session-facts > div {
+  min-width: 0;
+}
+
+.buff-session-facts dt {
+  margin-bottom: 3px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.buff-session-facts dd {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#buff-session-checked-at {
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+.buff-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: min(100%, 340px);
+}
+
+.buff-session-actions .btn {
+  min-height: 38px;
+}
+
+.buff-session-protection {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 9px 24px 9px 28px;
+  border-top: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--bg-input) 72%, transparent);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.buff-session-protection-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--warning);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.buff-session-protection strong {
+  margin-right: 9px;
+  color: var(--text-main);
+  font-weight: 650;
+}
+
+#buff-replace-reason {
+  overflow-wrap: anywhere;
+}
+
+@keyframes buffSessionReveal {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes buffSessionPulse {
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+
+@media (max-width: 768px) {
+  .buff-session-card {
+    margin-bottom: 16px;
+  }
+
+  .buff-session-card::after {
+    right: 12px;
+    font-size: 76px;
+  }
+
+  .buff-session-head {
+    flex-direction: column;
+    gap: 12px;
+    padding: 20px 18px 16px 22px;
+  }
+
+  .buff-session-body {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 16px 18px 18px 22px;
+  }
+
+  .buff-session-facts {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .buff-session-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    min-width: 0;
+  }
+
+  .buff-session-actions .btn:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .buff-session-actions .btn {
+    width: 100%;
+    min-height: 44px;
+    padding-inline: 10px;
+  }
+
+  .buff-session-protection {
+    align-items: flex-start;
+    padding: 10px 18px 10px 22px;
+  }
+}
+
+/* Native dialogs keep manual credentials in the page only while the user is
+   actively importing them. Credential values are never rendered as status. */
+.buff-session-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(780px, calc(100dvh - 32px));
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface);
+  color: var(--text-main);
+  box-shadow: var(--shadow-lg);
+}
+
+.buff-session-dialog::backdrop {
+  background: rgba(8, 8, 12, 0.58);
+  backdrop-filter: blur(10px) saturate(1.15);
+}
+
+.buff-session-dialog-form {
+  padding: 26px;
+}
+
+.buff-session-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.buff-session-dialog-head h3 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.buff-session-dialog-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.buff-session-dialog-close:hover {
+  color: var(--text-main);
+  border-color: var(--text-muted);
+}
+
+.buff-session-dialog-copy {
+  margin: 0 0 20px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.buff-session-field {
+  display: grid;
+  gap: 7px;
+  margin-top: 16px;
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.buff-session-field textarea,
+.buff-session-field input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-main);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.buff-session-field textarea:focus,
+.buff-session-field input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--primary-light);
+}
+
+.buff-session-field small {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.buff-session-advanced {
+  margin-top: 16px;
+  border-top: 1px solid var(--border-color);
+}
+
+.buff-session-advanced summary {
+  padding: 12px 0 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.buff-session-advanced summary:hover {
+  color: var(--text-main);
+}
+
+.buff-session-inline-error {
+  margin: 14px 0 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 36%, var(--border-color));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-surface));
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.buff-session-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+@media (max-width: 600px) {
+  .buff-session-dialog-form {
+    padding: 22px 18px;
+  }
+
+  .buff-session-dialog-actions {
+    flex-direction: column-reverse;
+  }
+
+  .buff-session-dialog-actions .btn {
+    width: 100%;
+    min-height: 44px;
+  }
+}
+
+.buff-session-extension-help {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 24px 14px 28px;
+  border-top: 1px solid color-mix(in srgb, var(--warning) 26%, var(--border-color));
+  background: color-mix(in srgb, var(--warning) 7%, var(--bg-surface));
+}
+
+.buff-session-extension-copy strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.buff-session-extension-copy p {
+  max-width: 720px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.buff-session-extension-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.buff-session-extension-actions .btn,
+.buff-session-guide-actions .btn {
+  text-decoration: none;
+}
+
+.buff-session-guide-steps {
+  display: grid;
+  gap: 0;
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border-color);
+}
+
+.buff-session-guide-steps li {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.buff-session-guide-steps li > span {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.buff-session-guide-steps strong {
+  display: block;
+  font-size: 13px;
+}
+
+.buff-session-guide-steps p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.buff-session-guide-steps code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--bg-input);
+  font-family: var(--font-mono);
+  font-size: 0.94em;
+}
+
+@media (max-width: 768px) {
+  .buff-session-extension-help {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 13px 18px 14px 22px;
+  }
+
+  .buff-session-extension-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .buff-session-extension-actions .btn {
+    justify-content: center;
+  }
+}

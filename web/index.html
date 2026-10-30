@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="/css/decision-preview.css?v=1" />
   <link rel="stylesheet" href="/css/animations.css" />
   <link rel="stylesheet" href="/css/dashboard.css?v=1" />
+  <link rel="stylesheet" href="/css/buff-session.css?v=1" />
   <style>
     /* Nav badge */
     .nav-badge {
@@ -459,6 +460,47 @@
             <div class="dashboard-stat-note">仅 CNY：成本 / 到账的均值（含标注的历史估算）</div>
           </div>
         </div>
+
+        <section id="buff-session-card" class="buff-session-card" aria-labelledby="buff-session-title">
+          <div class="buff-session-head">
+            <div>
+              <div class="buff-session-kicker">BUFF 账户连接</div>
+              <h2 id="buff-session-title">BUFF 登录检测</h2>
+              <p class="buff-session-lede">查看最近一次登录检测结果。点击“检测登录”可重新验证，更新登录后不会自动开始买入。</p>
+            </div>
+            <span id="buff-session-badge" class="buff-session-badge" data-status="loading">读取中</span>
+          </div>
+          <div class="buff-session-body">
+            <div class="buff-session-result">
+              <p id="buff-session-message" class="buff-session-message" role="status" aria-live="polite">正在读取最近检测结果…</p>
+              <dl class="buff-session-facts">
+                <div><dt>最近检测</dt><dd id="buff-session-checked-at">尚未检测</dd></div>
+                <div><dt>检测说明</dt><dd>结果对应上次检测时间；超过 30 分钟请重新检测</dd></div>
+                <div id="buff-session-retry" class="hidden"><dt>冷却</dt><dd></dd></div>
+              </dl>
+            </div>
+            <div class="buff-session-actions" aria-label="BUFF 登录会话操作">
+              <button type="button" id="btn-buff-check" class="btn btn-primary">检测登录</button>
+              <button type="button" id="btn-buff-import" class="btn btn-secondary" disabled>从浏览器导入</button>
+              <button type="button" id="btn-buff-cancel-import" class="btn btn-secondary hidden" disabled>取消导入</button>
+              <button type="button" id="btn-buff-manual" class="btn btn-secondary" disabled>手动填写</button>
+            </div>
+          </div>
+          <div id="buff-replace-protection" class="buff-session-protection" role="note">
+            <span class="buff-session-protection-mark" aria-hidden="true">!</span>
+            <div><strong>替换保护</strong><span id="buff-replace-reason">正在读取替换保护状态…</span></div>
+          </div>
+          <div id="buff-extension-help" class="buff-session-extension-help hidden" role="note">
+            <div class="buff-session-extension-copy">
+              <strong>浏览器扩展未就绪</strong>
+              <p id="buff-extension-help-message">未检测到扩展，或扩展尚未授权当前服务。请下载并安装扩展，在扩展弹窗中授权当前服务，然后刷新页面。</p>
+            </div>
+            <div class="buff-session-extension-actions">
+              <a class="btn btn-secondary btn-sm" href="/api/auth/buff/extension.zip" download>下载扩展</a>
+              <button type="button" id="btn-buff-extension-guide" class="btn btn-primary btn-sm">安装与授权说明</button>
+            </div>
+          </div>
+        </section>
 
         <div class="control-bar dashboard-control">
           <div class="task-summary">
@@ -1878,6 +1920,61 @@
   </div>
 
 
+  <dialog id="buff-extension-dialog" class="buff-session-dialog" aria-labelledby="buff-extension-title">
+    <div class="buff-session-dialog-form">
+      <div class="buff-session-dialog-head">
+        <div>
+          <div class="buff-session-kicker">CHROME EXTENSION SETUP</div>
+          <h3 id="buff-extension-title">安装并授权浏览器扩展</h3>
+        </div>
+        <button type="button" id="btn-buff-extension-close" class="buff-session-dialog-close" aria-label="关闭安装说明">×</button>
+      </div>
+      <p class="buff-session-dialog-copy">扩展只在 Chrome 桌面普通窗口中工作。它会在你主动点击导入并再次确认后读取当前 BUFF 会话；页面只接收状态结果，不接收 Cookie。</p>
+      <ol class="buff-session-guide-steps">
+        <li><span>01</span><div><strong>下载并解压</strong><p>下载 <code>extension.zip</code>，解压到一个固定目录；不要删除该目录。</p></div></li>
+        <li><span>02</span><div><strong>打开扩展管理</strong><p>在 Chrome 地址栏打开 <code>chrome://extensions</code>，开启右上角“开发者模式”。</p></div></li>
+        <li><span>03</span><div><strong>加载已解压目录</strong><p>点击“加载已解压的扩展程序”，选择刚才解压出的目录。</p></div></li>
+        <li><span>04</span><div><strong>授权当前服务</strong><p>点击 Chrome 工具栏中的扩展图标，在扩展弹窗中授权当前 AetherSwap 地址。</p></div></li>
+        <li><span>05</span><div><strong>刷新并重试</strong><p>返回本页并刷新页面，再点击“从浏览器导入”。</p></div></li>
+      </ol>
+      <div class="buff-session-dialog-actions buff-session-guide-actions">
+        <a class="btn btn-secondary" href="/api/auth/buff/extension.zip" download>下载扩展包</a>
+        <button type="button" id="btn-buff-extension-done" class="btn btn-primary">知道了</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="buff-manual-dialog" class="buff-session-dialog" aria-labelledby="buff-manual-title">
+    <form id="buff-manual-form" class="buff-session-dialog-form">
+      <div class="buff-session-dialog-head">
+        <div>
+          <div class="buff-session-kicker">MANUAL SESSION IMPORT</div>
+          <h3 id="buff-manual-title">手动填写 BUFF 会话</h3>
+        </div>
+        <button type="button" id="btn-buff-manual-close" class="buff-session-dialog-close" aria-label="关闭手动填写">×</button>
+      </div>
+      <p class="buff-session-dialog-copy">仅粘贴 Cookie 即可；提交时默认使用当前浏览器的 User-Agent。服务端会先验证并核对当前账号，失败不会替换原会话，也不会自动启动买入。</p>
+      <label class="buff-session-field">
+        <span>BUFF Cookie</span>
+        <textarea id="buff-cookies-input" rows="5" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="粘贴完整的 BUFF Cookie"></textarea>
+        <small>只用于本次 import 请求，不写入 localStorage、sessionStorage 或日志。</small>
+      </label>
+      <details id="buff-manual-advanced" class="buff-session-advanced">
+        <summary>高级：覆盖 User-Agent（可选）</summary>
+        <label class="buff-session-field">
+          <span>User-Agent</span>
+          <input id="buff-user-agent-input" type="text" autocomplete="off" spellcheck="false" placeholder="留空则使用当前浏览器 User-Agent" />
+          <small>只有 Cookie 来自其他浏览器或环境时才需要覆盖。</small>
+        </label>
+      </details>
+      <p id="buff-manual-error" class="buff-session-inline-error hidden" role="alert"></p>
+      <div class="buff-session-dialog-actions">
+        <button type="button" id="btn-buff-manual-cancel" class="btn btn-secondary">取消</button>
+        <button type="submit" id="btn-buff-manual-submit" class="btn btn-primary">验证并替换</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="relogin-overlay" class="relogin-overlay hidden">
     <div class="relogin-modal">
       <h3 id="relogin-title">Steam 登录已过期</h3>
@@ -1902,6 +1999,7 @@
   <script src="/js/proxy.js"></script>
   <script src="/js/decision-preview.js?v=1"></script>
   <script src="/js/strategies.js"></script>
+  <script src="/js/buff-session.js?v=1"></script>
   <script src="/js/dashboard.js?v=2"></script>
   <script src="/js/main.js?v=6"></script>
   <script src="/js/gift.js"></script>
