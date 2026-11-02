@@ -1,4 +1,5 @@
 export const BUFF_ORIGIN = "https://buff.163.com/";
+export const BUFF_SESSION_URL = "https://buff.163.com/account/api/user/info/v2";
 export const AUTHORIZED_ORIGINS_KEY = "authorizedOrigins";
 
 export function canonicalOriginFromUrl(value) {

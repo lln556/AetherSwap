@@ -50,6 +50,40 @@ async function tabSwitch(name) {
 let lastStatus = null;
 // 是否已配置账号的缓存标志（避免 popup 在未配置时误弹出）
 let _hasAnyAccount = false;
+let steamAuthExpiredEventActive = false;
+let steamAuthPromptedAccount = "";
+
+function _hasBuffSessionEntry() {
+  return typeof window.BuffSession !== "undefined" && !!el("buff-session-card");
+}
+
+function _currentSteamAccountIdentity() {
+  if (typeof accountsCurrentId === "undefined" || accountsCurrentId == null) return "";
+  return String(accountsCurrentId);
+}
+
+function _maybePromptSteamAuthExpired(expired, opts = {}) {
+  if (!expired) {
+    steamAuthExpiredEventActive = false;
+    steamAuthPromptedAccount = "";
+    return false;
+  }
+  if (!_hasAnyAccount) return false;
+  if (window.BuffSession?.hasActiveInteraction?.() ||
+      el("buff-manual-dialog")?.open || el("buff-extension-dialog")?.open) return false;
+
+  const accountId = _currentSteamAccountIdentity();
+  const accountChanged = steamAuthExpiredEventActive
+    && !!accountId
+    && !!steamAuthPromptedAccount
+    && accountId !== steamAuthPromptedAccount;
+  if (steamAuthExpiredEventActive && !accountChanged) return false;
+
+  steamAuthExpiredEventActive = true;
+  steamAuthPromptedAccount = accountId || steamAuthPromptedAccount;
+  showReloginModal("steam", opts);
+  return true;
+}
 
 const dashboardStages = {
   STARTING: ["正在启动", "正在准备交易任务。"],
@@ -149,13 +183,14 @@ async function _refreshStatusOnce() {
   try {
     const d = await fetchJson(API + "/status", { signal: AbortSignal.timeout(10000) });
     Dashboard.renderStatus(d);
-    if (d.buff_verification_required && _hasAnyAccount) {
-      showReloginModal("buff", { reason: "verification_required", error: d.buff_verification_reason });
-    } else if (d.buff_auth_expired && _hasAnyAccount) {
-      showReloginModal("buff");
-    } else if (d.steam_auth_expired && _hasAnyAccount) {
-      showReloginModal("steam");
+    if (!_hasBuffSessionEntry()) {
+      if (d.buff_verification_required && _hasAnyAccount) {
+        showReloginModal("buff", { reason: "verification_required", error: d.buff_verification_reason });
+      } else if (d.buff_auth_expired && _hasAnyAccount) {
+        showReloginModal("buff");
+      }
     }
+    _maybePromptSteamAuthExpired(!!d.steam_auth_expired);
     const raw = d.status || "idle";
     const statusText = raw === "running" ? "运行中" : raw === "error" ? "错误" : raw === "stopped" ? "已停止" : "空闲中";
     const top = el("status-text");
@@ -308,8 +343,8 @@ async function refreshInventory(forceRefresh = true) {
       const reason = d.refresh_reason || d.error || "尚未获取到库存，请稍后刷新。";
       if (tbody) tbody.innerHTML = `<tr><td colspan="8" class="muted">${escapeHtml(reason)}</td></tr>`;
     }
-    if (d.auth_expired && _hasAnyAccount) {
-      showReloginModal("steam", { reason: d.auth_expired_reason, error: d.error });
+    if (d.auth_expired) {
+      _maybePromptSteamAuthExpired(true, { reason: d.auth_expired_reason, error: d.error });
       return d;
     }
     if (emptyUnconfirmed) return d;

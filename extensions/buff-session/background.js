@@ -1,6 +1,7 @@
 import {
   AUTHORIZED_ORIGINS_KEY,
   BUFF_ORIGIN,
+  BUFF_SESSION_URL,
   canonicalOriginFromUrl,
   isValidRequestId,
   permissionPatternForOrigin,
@@ -190,7 +191,7 @@ async function pagePing(message, sender) {
   if (!(await exactOriginAuthorized(trusted.origin))) {
     return {ok: false, error: "当前 AetherSwap 来源尚未在扩展中授权"};
   }
-  return {ok: true};
+  return {ok: true, version: chrome.runtime.getManifest().version};
 }
 
 async function pendingRecords() {
@@ -321,10 +322,15 @@ async function getConfirmation(message, sender) {
 }
 
 function browserCookieHeader(cookies) {
-  return (cookies || [])
-    .filter((cookie) => cookie && typeof cookie.name === "string" && cookie.name)
-    .map((cookie) => `${cookie.name}=${String(cookie.value ?? "")}`)
-    .join("; ");
+  // Choose the most specific applicable path explicitly; send each name once
+  // so the server parser cannot overwrite it with a root-path cookie.
+  const ordered = [...(cookies || [])].sort((a, b) => (b?.path || "/").length - (a?.path || "/").length);
+  const selected = new Map();
+  for (const cookie of ordered) {
+    if (!cookie || typeof cookie.name !== "string" || !cookie.name || selected.has(cookie.name)) continue;
+    selected.set(cookie.name, String(cookie.value ?? ""));
+  }
+  return [...selected].map(([name, value]) => `${name}=${value}`).join("; ");
 }
 
 async function verifyDocument(pending) {
@@ -370,11 +376,28 @@ async function confirmImport(message, sender) {
       return {ok: false, code: "cancelled", error: "已取消等待确认，未读取或发送 BUFF 会话。"};
     }
 
-    const cookies = await chrome.cookies.getAll({url: BUFF_ORIGIN});
-    if (!cookies.some((cookie) => cookie.name === "session" && cookie.value)) {
-      const error = "未检测到 BUFF 登录。请先在 Chrome 打开 https://buff.163.com/ 完成登录，再重新导入。";
+    if (!(await chrome.permissions.contains({origins: ["https://buff.163.com/*"]}))) {
+      const error = "扩展没有 BUFF 网站访问权限。请在 Chrome 扩展设置中允许访问 buff.163.com，再重试；尚未发送 Cookie。";
+      await failPending(pending, "buff_permission_required", error);
+      return {ok: false, code: "buff_permission_required", error};
+    }
+    const stores = await chrome.cookies.getAllCookieStores();
+    const store = stores.find(item => item.tabIds.includes(pending.tabId));
+    if (!store) {
+      const error = "无法确定当前标签页的 Cookie 存储，请在同一 Chrome 个人资料的普通窗口重新打开 AetherSwap；尚未发送 Cookie。";
+      await failPending(pending, "buff_cookie_store_unavailable", error);
+      return {ok: false, code: "buff_cookie_store_unavailable", error};
+    }
+    const cookies = await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id});
+    if (!cookies.some(cookie => cookie.name === "session" && cookie.value)) {
+      const error = `当前 Chrome 个人资料读取到 ${cookies.length} 个可用于 BUFF 验证的 Cookie，但没有登录会话 session。请先在 Chrome 打开 https://buff.163.com/ 完成登录，确认 BUFF 与 AetherSwap 使用同一个人资料和普通窗口（手机 App 或其他浏览器的登录不共享）；尚未发送 Cookie。`;
       await failPending(pending, "buff_login_required", error);
       return {ok: false, code: "buff_login_required", error};
+    }
+    if (!cookies.some(cookie => cookie.name === "csrf_token" && cookie.value)) {
+      const error = "已读到 BUFF 登录会话，但缺少 csrf_token。请在同一 Chrome 个人资料中刷新 BUFF 页面后重试；尚未发送 Cookie。";
+      await failPending(pending, "buff_csrf_missing", error);
+      return {ok: false, code: "buff_csrf_missing", error};
     }
     const cookieHeader = browserCookieHeader(cookies);
 

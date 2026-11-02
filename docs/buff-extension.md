@@ -2,6 +2,12 @@
 
 首版是 Chrome Manifest V3 解压扩展，仅支持同一 Chrome 个人资料的普通窗口，不支持无痕窗口或跨 profile 读取。它只在用户主动发起导入并确认目标来源后读取 BUFF Cookie，不做后台同步。
 
+## 更新到 0.1.1
+
+已有扩展不会随服务器更新自动升级。请从首页重新下载扩展包，解压覆盖原扩展目录，在 `chrome://extensions` 找到本扩展并点击“重新加载”，最后刷新 AetherSwap 页面。页面会检测旧版扩展并给出更新提示。
+
+0.1.1 按当前标签页的 Cookie 存储和 BUFF 用户信息验证接口的 URL 读取会话；若失败，会区分网站权限、缺少 session、缺少 csrf_token，不再把所有情况都称为“未登录”。如果显示读取到 0 个 Cookie，请核对 BUFF 网页与 AetherSwap 是否属于同一 Chrome 个人资料的普通窗口；手机 App 或另一个浏览器的登录不共享。
+
 ## 安装
 
 1. 打开 `chrome://extensions`，启用“开发者模式”。

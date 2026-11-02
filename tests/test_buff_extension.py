@@ -294,6 +294,7 @@ def test_installed_extension_authorizes_only_the_exact_source_port(tmp_path):
             _send_page_message(first_page, "PING", "ping-authorized")
             pong = _wait_page_message(first_page, "PONG", "ping-authorized")
             assert pong["ok"] is True
+            assert pong["version"] == "0.1.1"
 
             second_page = context.new_page()
             second_page.goto(second_origin)
@@ -374,7 +375,7 @@ def test_cancel_before_confirmation_never_reads_cookies_or_posts(tmp_path):
             extension, [origin], tmp_path / "profile"
         ) as (context, service_worker, extension_id):
             context.add_cookies(
-                [
+                [{"name": "csrf_token", "value": "synthetic-csrf", "domain": "buff.163.com", "path": "/", "secure": True},
                     {
                         "name": "session",
                         "value": "synthetic-cancelled-session",
@@ -423,7 +424,7 @@ def test_page_cancel_closes_confirmation_without_reading_or_sending_cookies(tmp_
             extension, [origin], tmp_path / "profile"
         ) as (context, service_worker, extension_id):
             context.add_cookies(
-                [
+                [{"name": "csrf_token", "value": "synthetic-csrf", "domain": "buff.163.com", "path": "/", "secure": True},
                     {
                         "name": "session",
                         "value": "synthetic-cancel-bridge-session",
@@ -483,7 +484,7 @@ def test_cancel_after_import_post_starts_reports_result_unconfirmed(tmp_path):
             extension, [origin], tmp_path / "profile"
         ) as (context, _service_worker, extension_id):
             context.add_cookies(
-                [
+                [{"name": "csrf_token", "value": "synthetic-csrf", "domain": "buff.163.com", "path": "/", "secure": True},
                     {
                         "name": "session",
                         "value": "synthetic-inflight-session",
@@ -612,7 +613,7 @@ def test_failed_import_returns_only_safe_error_and_status_fields(tmp_path):
             extension, [origin], tmp_path / "profile"
         ) as (context, _service_worker, extension_id):
             context.add_cookies(
-                [
+                [{"name": "csrf_token", "value": "synthetic-csrf", "domain": "buff.163.com", "path": "/", "secure": True},
                     {
                         "name": "session",
                         "value": session_secret,
@@ -662,7 +663,7 @@ def test_target_navigation_cancels_pending_import_before_cookie_read(tmp_path):
             extension, [origin], tmp_path / "profile"
         ) as (context, service_worker, extension_id):
             context.add_cookies(
-                [
+                [{"name": "csrf_token", "value": "synthetic-csrf", "domain": "buff.163.com", "path": "/", "secure": True},
                     {
                         "name": "session",
                         "value": "synthetic-navigation-session",
@@ -704,7 +705,7 @@ def test_import_rejects_redirect_without_following_it(tmp_path):
             extension, [origin], tmp_path / "profile"
         ) as (context, _service_worker, extension_id):
             context.add_cookies(
-                [
+                [{"name": "csrf_token", "value": "synthetic-csrf", "domain": "buff.163.com", "path": "/", "secure": True},
                     {
                         "name": "session",
                         "value": session_secret,
@@ -853,7 +854,7 @@ def test_late_response_from_cancelled_import_does_not_finish_new_import(tmp_path
     extension = _prepare_test_extension(tmp_path)
     try:
         with _loaded_extension(extension, [origin], tmp_path / "profile") as (context, worker, extension_id):
-            context.add_cookies([{"name": "session", "value": "synthetic-late", "domain": "buff.163.com", "path": "/", "secure": True, "httpOnly": True}])
+            context.add_cookies([{"name": "csrf_token", "value": "synthetic-csrf", "domain": "buff.163.com", "path": "/", "secure": True},{"name": "session", "value": "synthetic-late", "domain": "buff.163.com", "path": "/", "secure": True, "httpOnly": True}])
             page = context.new_page()
             page.goto(origin)
             assert _authorize(context, extension_id, origin)["ok"]
@@ -957,3 +958,71 @@ def test_concurrent_origin_revocations_do_not_leave_authorization_or_registratio
     finally:
         server_a.shutdown()
         server_b.shutdown()
+
+
+def test_import_uses_cookie_scope_of_actual_buff_verification_endpoint(tmp_path):
+    service, server, origin = _start_service()
+    service.response = {'status': 200, 'body': {'ok': True, 'session': {'status': 'valid'}}}
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            context.add_cookies([
+                {'name': 'session', 'value': 'scoped-session', 'domain': 'buff.163.com', 'path': '/account/', 'secure': True, 'httpOnly': True},
+                {'name': 'csrf_token', 'value': 'scoped-csrf', 'domain': 'buff.163.com', 'path': '/', 'secure': True},
+            ])
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'scoped-import')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'scoped-import')
+            assert result['ok'], result
+            body = json.loads(service.requests[0]['body'])
+            assert 'session=scoped-session' in body['cookies']
+    finally:
+        server.shutdown()
+
+
+def test_missing_cookie_explanation_distinguishes_browser_state_from_server_auth(tmp_path):
+    service, server, origin = _start_service()
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'empty-store')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'empty-store')
+            assert not result['ok']
+            assert '0 个' in result['error']
+            assert '个人资料' in result['error']
+            assert '尚未发送' in result['error']
+            assert service.requests == []
+    finally:
+        server.shutdown()
+
+
+def test_scoped_session_is_not_overwritten_by_less_specific_cookie(tmp_path):
+    service, server, origin = _start_service()
+    service.response = {'status': 200, 'body': {'ok': True}}
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            context.add_cookies([
+                {'name': 'session', 'value': 'old-root-session', 'domain': 'buff.163.com', 'path': '/', 'secure': True},
+                {'name': 'session', 'value': 'specific-session', 'domain': 'buff.163.com', 'path': '/account/', 'secure': True, 'httpOnly': True},
+                {'name': 'csrf_token', 'value': 'csrf', 'domain': 'buff.163.com', 'path': '/', 'secure': True},
+            ])
+            worker.evaluate("""() => {
+              const original = chrome.cookies.getAll.bind(chrome.cookies);
+              chrome.cookies.getAll = async query => (await original(query)).reverse();
+            }""")
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'duplicate-session')
+            confirmation.locator('#confirm').click()
+            assert _wait_page_message(page, 'RESULT', 'duplicate-session')['ok']
+            header = json.loads(service.requests[0]['body'])['cookies']
+            assert header.count('session=') == 1
+            assert 'session=specific-session' in header
+    finally:
+        server.shutdown()

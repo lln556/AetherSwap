@@ -757,7 +757,7 @@ def test_extension_messages_require_window_origin_request_id_and_never_carry_coo
     def fake_result(result_type="RESULT", *, origin=None, source="window", request_id_value=None):
         return page.evaluate("""args => {
           const data = args.type === 'PONG'
-            ? {source: 'aetherswap-buff-extension', type: 'PONG', requestId: args.requestId, ok: true}
+            ? {source: 'aetherswap-buff-extension', type: 'PONG', version: '0.1.1', requestId: args.requestId, ok: true}
             : {source: 'aetherswap-buff-extension', type: 'RESULT', requestId: args.requestId, ok: true,
                session: {status: 'valid', checked_at: 1780000000, message: '伪造结果',
                  can_replace: true, replace_block_reason: ''}};
@@ -786,7 +786,7 @@ def test_extension_messages_require_window_origin_request_id_and_never_carry_coo
 
     # A legitimate same-window PONG advances the protocol.
     page.evaluate("""requestId => window.postMessage({
-      source: 'aetherswap-buff-extension', type: 'PONG', requestId, ok: true
+      source: 'aetherswap-buff-extension', type: 'PONG', version: '0.1.1', requestId, ok: true
     }, location.origin)""", request_id)
     page.wait_for_function(
         "document.getElementById('btn-buff-import').textContent === '等待扩展确认…'"
@@ -836,7 +836,7 @@ def test_extension_import_waits_for_single_import_result_without_cookie_data(pag
     window.__buffExtensionMessages.push({...data});
     if (data.type === 'PING') {
       window.postMessage({
-        source: 'aetherswap-buff-extension', type: 'PONG',
+        source: 'aetherswap-buff-extension', type: 'PONG', version: '0.1.1',
         requestId: data.requestId, ok: true
       }, event.origin);
     }
@@ -923,7 +923,7 @@ def test_unauthorized_extension_prompts_for_authorization_without_import(page_fa
     window.__buffExtensionMessages.push({...data});
     if (data.type === 'PING') {
       window.postMessage({
-        source: 'aetherswap-buff-extension', type: 'PONG',
+        source: 'aetherswap-buff-extension', type: 'PONG', version: '0.1.1',
         requestId: data.requestId, ok: false,
         error: '扩展尚未授权当前服务，请在扩展弹窗中授权并刷新页面。'
       }, event.origin);
@@ -954,7 +954,7 @@ def test_extension_wait_can_be_cancelled_and_late_result_is_ignored(page_factory
     window.__buffExtensionMessages.push({...data});
     if (data.type === 'PING') {
       window.postMessage({
-        source: 'aetherswap-buff-extension', type: 'PONG',
+        source: 'aetherswap-buff-extension', type: 'PONG', version: '0.1.1',
         requestId: data.requestId, ok: true
       }, event.origin);
     }
@@ -1020,7 +1020,7 @@ def test_extension_cancel_result_unconfirmed_refreshes_cached_server_state(page_
     window.__buffExtensionMessages.push({...data});
     if (data.type === 'PING') {
       window.postMessage({
-        source: 'aetherswap-buff-extension', type: 'PONG',
+        source: 'aetherswap-buff-extension', type: 'PONG', version: '0.1.1',
         requestId: data.requestId, ok: true
       }, event.origin);
     }
@@ -1074,7 +1074,7 @@ def test_extension_import_timeout_sends_cancel_and_reports_unconfirmed_status(pa
     window.__buffExtensionMessages.push({...data});
     if (data.type === 'PING') {
       window.postMessage({
-        source: 'aetherswap-buff-extension', type: 'PONG',
+        source: 'aetherswap-buff-extension', type: 'PONG', version: '0.1.1',
         requestId: data.requestId, ok: true
       }, event.origin);
     }
@@ -1106,3 +1106,19 @@ def test_extension_import_timeout_sends_cancel_and_reports_unconfirmed_status(pa
     assert len(cached) == 2
     assert not [r for r in requests if r["path"].startswith("/api/auth/buff/session/") and r["method"] == "POST"]
     assert errors == []
+
+
+def test_old_extension_is_identified_before_cookie_import(page_factory):
+    bridge = """window.addEventListener('message', event => {
+      if (event.source !== window || event.data?.source !== 'aetherswap-buff-page') return;
+      if (event.data.type === 'PING') window.postMessage({
+        source: 'aetherswap-buff-extension', type: 'PONG', requestId: event.data.requestId, ok: true
+      }, location.origin);
+    });"""
+    page, requests, errors, logs = page_factory(session=_session('expired', can_replace=True), extension=bridge)
+    page.locator('#btn-buff-import').click()
+    page.wait_for_function("document.getElementById('buff-extension-help').classList.contains('hidden') === false")
+    text = page.locator('#buff-extension-help').inner_text()
+    assert '旧版扩展' in text
+    assert '重新加载' in text
+    assert not any(r['path'].endswith('/session/import') for r in requests)

@@ -230,6 +230,14 @@
           this.showExtensionHelp(data.error || "扩展尚未授权当前服务。请在扩展弹窗中授权当前服务，然后刷新页面。");
           return;
         }
+        const version = String(data.version || "0.0.0").split(".").map(Number);
+        const supported = version.length === 3 && version.every(Number.isInteger) &&
+          (version[0] > 0 || version[1] > 1 || (version[1] === 1 && version[2] >= 1));
+        if (!supported) {
+          this.finishBrowserImport();
+          this.showExtensionHelp("检测到旧版扩展。请下载 0.1.1 或更新版本，解压覆盖原扩展目录，在 chrome://extensions 点击该扩展的“重新加载”，再刷新本页。");
+          return;
+        }
         pending.phase = "import";
         this.setBrowserImportBusy(true, "等待扩展确认…");
         this.setActionMessage("等待扩展确认导入会话…", "info");

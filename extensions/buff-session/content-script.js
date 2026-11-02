@@ -38,6 +38,7 @@
       requestId,
       ok: result.ok === true,
     };
+    if (type === "PONG" && typeof result.version === "string") payload.version = result.version;
     if (typeof result.error === "string" && result.error) payload.error = result.error.slice(0, 1000);
     if (typeof result.code === "string" && result.code) payload.code = result.code.slice(0, 1000);
     const session = sanitizeSession(result.session);
@@ -127,6 +128,7 @@
         });
         post("PONG", data.requestId, {
           ok: result?.ok === true,
+          version: result?.version,
           error: result?.ok === true ? "" : result?.error || "扩展未授权当前来源",
         });
       } catch {
