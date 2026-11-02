@@ -232,10 +232,10 @@
         }
         const version = String(data.version || "0.0.0").split(".").map(Number);
         const supported = version.length === 3 && version.every(Number.isInteger) &&
-          (version[0] > 0 || version[1] > 1 || (version[1] === 1 && version[2] >= 2));
+          (version[0] > 0 || version[1] > 1 || (version[1] === 1 && version[2] >= 3));
         if (!supported) {
           this.finishBrowserImport();
-          this.showExtensionHelp("检测到旧版扩展。请下载 0.1.2 或更新版本，解压覆盖原扩展目录，在 chrome://extensions 点击该扩展的“重新加载”，再刷新本页。");
+          this.showExtensionHelp("检测到旧版扩展。请下载 0.1.3 或更新版本，解压覆盖原扩展目录，在 chrome://extensions 点击该扩展的“重新加载”，再刷新本页。");
           return;
         }
         pending.phase = "import";

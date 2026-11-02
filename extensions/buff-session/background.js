@@ -351,8 +351,12 @@ async function verifyDocument(pending) {
   }
 }
 
+function belongsToBuff(cookie) {
+  return typeof cookie?.domain === "string" && cookie.domain.replace(/^\./, "").toLowerCase() === "buff.163.com";
+}
+
 async function readBuffCookies(store) {
-  const ordinary = await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id});
+  const ordinary = (await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id})).filter(belongsToBuff);
   const tabs = await chrome.tabs.query({url: "https://buff.163.com/*"});
   const eligible = [];
   for (const tab of tabs) {
@@ -361,6 +365,7 @@ async function readBuffCookies(store) {
         await normalWindow(tab.windowId)) eligible.push(tab);
   }
   const partitions = new Map();
+  let partitionEvidenceMissing = false;
   for (const tab of eligible) {
     // Only a verified top-level https://buff.163.com tab is eligible. Its
     // schemeful site is https://163.com; use that exact first-party partition.
@@ -373,16 +378,22 @@ async function readBuffCookies(store) {
     const key = JSON.stringify(partitionKey);
     if (!partitions.has(key)) {
       let cookies;
+      let legacySchema = false;
       try {
         cookies = await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id, partitionKey});
       } catch (error) {
         // Chrome 120-129 supports partitionKey but not the ancestor field.
         // Retry only this known schema error, never a permission/read failure.
         if (!/Unexpected property.*hasCrossSiteAncestor/.test(String(error?.message || ""))) throw error;
+        legacySchema = true;
         cookies = await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id,
           partitionKey: {topLevelSite: partitionKey.topLevelSite}});
       }
-      cookies = cookies.filter(cookie => cookie.partitionKey?.hasCrossSiteAncestor !== true);
+      if (legacySchema && cookies.some(cookie => belongsToBuff(cookie) && cookie.partitionKey?.hasCrossSiteAncestor === undefined)) {
+        partitionEvidenceMissing = true;
+      }
+      cookies = cookies.filter(cookie => belongsToBuff(cookie) && cookie.partitionKey?.hasCrossSiteAncestor !== true &&
+        (!legacySchema || cookie.partitionKey?.hasCrossSiteAncestor === false));
       if (!(await targetTab(tab.id, canonicalOriginFromUrl(BUFF_ORIGIN)))) {
         throw new Error("读取期间 BUFF 标签页已变化，请重试；尚未发送 Cookie。");
       }
@@ -401,7 +412,7 @@ async function readBuffCookies(store) {
   // Preserve ordinary non-session cookies only when not shadowed in the
   // current BUFF partition. Never combine distinct login identities.
   const cookies = scoped ? [...scoped, ...ordinary.filter(c => !scoped.some(p => p.name === c.name))] : ordinary;
-  return {cookies, buffTabCount: eligible.length};
+  return {cookies, buffTabCount: eligible.length, partitionEvidenceMissing};
 }
 
 async function confirmImport(message, sender) {
@@ -429,8 +440,8 @@ async function confirmImport(message, sender) {
       return {ok: false, code: "cancelled", error: "已取消等待确认，未读取或发送 BUFF 会话。"};
     }
 
-    if (!(await chrome.permissions.contains({origins: ["https://buff.163.com/*"]}))) {
-      const error = "扩展没有 BUFF 网站访问权限。请在 Chrome 扩展设置中允许访问 buff.163.com，再重试；尚未发送 Cookie。";
+    if (!(await chrome.permissions.contains({origins: ["https://buff.163.com/*", "http://buff.163.com/*"]}))) {
+      const error = "扩展缺少 BUFF Cookie 读取权限。请在 Chrome 扩展设置中允许访问 buff.163.com 的 HTTP 与 HTTPS 站点，再重试；尚未发送 Cookie。";
       await failPending(pending, "buff_permission_required", error);
       return {ok: false, code: "buff_permission_required", error};
     }
@@ -449,9 +460,9 @@ async function confirmImport(message, sender) {
       await failPending(pending, "buff_cookie_read_failed", message);
       return {ok: false, code: "buff_cookie_read_failed", error: message};
     }
-    const {cookies, buffTabCount} = discovered;
+    const {cookies, buffTabCount, partitionEvidenceMissing} = discovered;
     if (!cookies.some(cookie => cookie.name === "session" && cookie.value)) {
-      const partitionNote = buffTabCount === 0 ? "未找到同一个人资料中打开的 BUFF 网页，请保持已登录的 BUFF 标签页打开。" : "已检查当前 BUFF 标签页的普通和分区 Cookie，但仍未取得会话；这不等于已确认网页登录失效。";
+      const partitionNote = partitionEvidenceMissing ? "当前 Chrome 提供的分区信息不足，无法确认会话范围；请升级 Chrome 或手动填写。" : buffTabCount === 0 ? "未找到同一个人资料中打开的 BUFF 网页，请保持已登录的 BUFF 标签页打开。" : "已检查当前 BUFF 标签页的普通和分区 Cookie，但仍未取得会话；这不等于已确认网页登录失效。";
       const error = `当前 Chrome 个人资料读取到 ${cookies.length} 个可用于 BUFF 验证的 Cookie，但没有登录会话 session。${partitionNote}请先在 Chrome 打开 https://buff.163.com/ 确认网页账号后重试；尚未发送 Cookie。`;
       await failPending(pending, "buff_login_required", error);
       return {ok: false, code: "buff_login_required", error};

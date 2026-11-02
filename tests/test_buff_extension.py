@@ -254,7 +254,7 @@ def test_manifest_scopes_cookie_host_and_makes_service_origins_optional():
     assert "storage" in manifest["permissions"]
     assert "scripting" in manifest["permissions"]
     assert "activeTab" in manifest["permissions"]
-    assert manifest["host_permissions"] == ["https://buff.163.com/*"]
+    assert set(manifest["host_permissions"]) == {"https://buff.163.com/*", "http://buff.163.com/*"}
     assert set(manifest["optional_host_permissions"]) == {
         "http://*/*",
         "https://*/*",
@@ -295,7 +295,7 @@ def test_installed_extension_authorizes_only_the_exact_source_port(tmp_path):
             _send_page_message(first_page, "PING", "ping-authorized")
             pong = _wait_page_message(first_page, "PONG", "ping-authorized")
             assert pong["ok"] is True
-            assert pong["version"] == "0.1.2"
+            assert pong["version"] == "0.1.3"
 
             second_page = context.new_page()
             second_page.goto(second_origin)
@@ -1141,6 +1141,94 @@ def test_partitioned_session_requires_same_profile_buff_tab(tmp_path):
             confirmation.locator('#confirm').click()
             result = _wait_page_message(page, 'RESULT', 'no-buff-tab')
             assert not result['ok'] and '未找到' in result['error']
+            assert service.requests == []
+    finally:
+        server.shutdown()
+
+
+def test_nonsecure_buff_cookies_visible_on_https_page_can_be_imported(tmp_path):
+    service, server, origin = _start_service()
+    service.response = {'status': 200, 'body': {'ok': True, 'session': {'status': 'valid'}}}
+    extension = _prepare_test_extension(tmp_path)
+    # Even if another explicitly authorized origin grants parent-site access,
+    # BUFF export must not include that parent's SSO cookies.
+    manifest_file = extension / 'manifest.json'
+    manifest = json.loads(manifest_file.read_text())
+    manifest['host_permissions'].append('http://163.com/*')
+    manifest_file.write_text(json.dumps(manifest))
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            context.add_cookies([
+                {'name': 'session', 'value': 'synthetic-nonsecure-session', 'domain': 'buff.163.com', 'path': '/', 'secure': False, 'httpOnly': True},
+                {'name': 'csrf_token', 'value': 'synthetic-nonsecure-csrf', 'domain': 'buff.163.com', 'path': '/', 'secure': False},
+                {'name': 'remember_me', 'value': 'synthetic-remember', 'domain': 'buff.163.com', 'path': '/', 'secure': False, 'httpOnly': True},
+                {'name': 'unrelated_parent', 'value': 'parent-secret-excluded', 'domain': '.163.com', 'path': '/', 'secure': False},
+            ])
+            visible = context.cookies('https://buff.163.com/')
+            assert any(c['name'] == 'session' and not c['secure'] for c in visible)
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'nonsecure-session')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'nonsecure-session')
+            assert result['ok'], json.dumps(result, ensure_ascii=False)
+            body = json.loads(service.requests[0]['body'])
+            assert 'session=synthetic-nonsecure-session' in body['cookies']
+            assert 'csrf_token=synthetic-nonsecure-csrf' in body['cookies']
+            assert 'parent-secret-excluded' not in body['cookies']
+            assert 'synthetic-nonsecure-session' not in json.dumps(page.evaluate('window.__aetherMessages'))
+    finally:
+        server.shutdown()
+
+
+def test_missing_http_cookie_permission_is_reported_without_reading(tmp_path):
+    service, server, origin = _start_service()
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            worker.evaluate("""() => {
+              const original = chrome.permissions.contains.bind(chrome.permissions);
+              chrome.permissions.contains = async request => request.origins?.includes('http://buff.163.com/*') ? false : original(request);
+              chrome.cookies.getAll = async () => { throw new Error('Cookie read must not occur'); };
+            }""")
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'missing-http-permission')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'missing-http-permission')
+            assert not result['ok'] and result['code'] == 'buff_permission_required'
+            assert 'HTTP' in result['error']
+            assert service.requests == []
+    finally:
+        server.shutdown()
+
+
+def test_legacy_partition_metadata_cannot_authorize_cross_site_session(tmp_path):
+    service, server, origin = _start_service()
+    service.response = {'status': 200, 'body': {'ok': True}}
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            context.route('https://buff.163.com/**', lambda route: route.fulfill(content_type='text/html', body='<html>BUFF</html>'))
+            buff_page = context.new_page(); buff_page.goto('https://buff.163.com/')
+            cdp = context.new_cdp_session(buff_page)
+            for name in ['session', 'csrf_token']:
+                assert cdp.send('Network.setCookie', {'name': name, 'value': 'cross-site-'+name,
+                    'url': 'https://buff.163.com/', 'secure': True, 'httpOnly': True, 'sameSite': 'None',
+                    'partitionKey': {'topLevelSite': 'https://163.com', 'hasCrossSiteAncestor': True}})['success']
+            worker.evaluate("""() => {
+              const original = chrome.cookies.getAll.bind(chrome.cookies);
+              chrome.cookies.getAll = async query => {
+                if(query.partitionKey && 'hasCrossSiteAncestor' in query.partitionKey) throw new TypeError("Unexpected property: 'hasCrossSiteAncestor'.");
+                return (await original(query)).map(cookie => cookie.partitionKey ? {...cookie, partitionKey:{topLevelSite:cookie.partitionKey.topLevelSite}} : cookie);
+              };
+            }""")
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'unknown-ancestor')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'unknown-ancestor')
+            assert not result['ok'], result
             assert service.requests == []
     finally:
         server.shutdown()
