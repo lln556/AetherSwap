@@ -1,3 +1,4 @@
+import pytest
 import contextlib
 import http.server
 import json
@@ -294,7 +295,7 @@ def test_installed_extension_authorizes_only_the_exact_source_port(tmp_path):
             _send_page_message(first_page, "PING", "ping-authorized")
             pong = _wait_page_message(first_page, "PONG", "ping-authorized")
             assert pong["ok"] is True
-            assert pong["version"] == "0.1.1"
+            assert pong["version"] == "0.1.2"
 
             second_page = context.new_page()
             second_page.goto(second_origin)
@@ -1024,5 +1025,122 @@ def test_scoped_session_is_not_overwritten_by_less_specific_cookie(tmp_path):
             header = json.loads(service.requests[0]['body'])['cookies']
             assert header.count('session=') == 1
             assert 'session=specific-session' in header
+    finally:
+        server.shutdown()
+
+
+@pytest.mark.parametrize("legacy_mode", ["current", "no_partition_key_method", "old_cookie_schema"])
+def test_logged_in_buff_tab_partitioned_cookies_are_imported(tmp_path, legacy_mode):
+    service, server, origin = _start_service()
+    service.response = {'status': 200, 'body': {'ok': True, 'session': {'status': 'valid'}}}
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            context.route('https://buff.163.com/**', lambda route: route.fulfill(content_type='text/html', body='<html><body>BUFF test account</body></html>'))
+            buff_page = context.new_page(); buff_page.goto('https://buff.163.com/market/')
+            cdp = context.new_cdp_session(buff_page)
+            for name, value in [('session', 'partitioned-buff-session'), ('csrf_token', 'partitioned-csrf')]:
+                result = cdp.send('Network.setCookie', {
+                    'name': name, 'value': value, 'url': 'https://buff.163.com/',
+                    'secure': True, 'httpOnly': name == 'session', 'sameSite': 'None',
+                    'partitionKey': {'topLevelSite': 'https://163.com', 'hasCrossSiteAncestor': False},
+                })
+                assert result['success']
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            # Verify the test actually created the browser state missed by 0.1.1.
+            assert worker.evaluate("chrome.cookies.getAll({url:'https://buff.163.com/account/api/user/info/v2'})") == []
+            assert worker.evaluate("chrome.cookies.getAll({url:'https://buff.163.com/account/api/user/info/v2',partitionKey:{topLevelSite:'https://163.com',hasCrossSiteAncestor:false}}).then(c => c.length)") == 2
+            if legacy_mode == 'no_partition_key_method':
+                worker.evaluate('chrome.cookies.getPartitionKey = undefined')
+            elif legacy_mode == 'old_cookie_schema':
+                worker.evaluate("""() => {
+                  const original = chrome.cookies.getAll.bind(chrome.cookies);
+                  chrome.cookies.getAll = async query => {
+                    if (query.partitionKey && 'hasCrossSiteAncestor' in query.partitionKey) {
+                      throw new TypeError("Unexpected property: 'hasCrossSiteAncestor'.");
+                    }
+                    return original(query);
+                  };
+                }""")
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'partitioned-buff')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'partitioned-buff')
+            assert result['ok'], json.dumps(result, ensure_ascii=False)
+            assert len(service.requests) == 1
+            body = json.loads(service.requests[0]['body'])
+            assert 'session=partitioned-buff-session' in body['cookies']
+            assert 'partitioned-buff-session' not in json.dumps(page.evaluate('window.__aetherMessages'))
+    finally:
+        server.shutdown()
+
+
+def test_unrelated_or_cross_site_partition_is_never_imported(tmp_path):
+    service, server, origin = _start_service()
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            context.route('https://buff.163.com/**', lambda route: route.fulfill(content_type='text/html', body='<html>BUFF</html>'))
+            buff_page = context.new_page(); buff_page.goto('https://buff.163.com/')
+            cdp = context.new_cdp_session(buff_page)
+            for top, ancestor, value in [('https://other.example', False, 'other-site-secret'), ('https://163.com', True, 'embedded-secret')]:
+                assert cdp.send('Network.setCookie', {
+                    'name': 'session', 'value': value, 'url': 'https://buff.163.com/', 'secure': True,
+                    'httpOnly': True, 'sameSite': 'None', 'partitionKey': {'topLevelSite': top, 'hasCrossSiteAncestor': ancestor},
+                })['success']
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'wrong-partitions')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'wrong-partitions')
+            assert not result['ok'] and result['code'] == 'buff_login_required'
+            assert service.requests == []
+            assert 'other-site-secret' not in json.dumps(result)
+            assert 'embedded-secret' not in json.dumps(result)
+    finally:
+        server.shutdown()
+
+
+def test_conflicting_ordinary_and_partitioned_sessions_are_not_mixed(tmp_path):
+    service, server, origin = _start_service()
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            context.route('https://buff.163.com/**', lambda route: route.fulfill(content_type='text/html', body='<html>BUFF</html>'))
+            buff_page = context.new_page(); buff_page.goto('https://buff.163.com/')
+            context.add_cookies([{'name': 'session', 'value': 'ordinary-secret', 'url': 'https://buff.163.com/', 'httpOnly': True}])
+            cdp = context.new_cdp_session(buff_page)
+            assert cdp.send('Network.setCookie', {'name': 'session', 'value': 'partitioned-secret', 'url': 'https://buff.163.com/',
+                'secure': True, 'httpOnly': True, 'sameSite': 'None',
+                'partitionKey': {'topLevelSite': 'https://163.com', 'hasCrossSiteAncestor': False}})['success']
+            page = context.new_page(); page.goto(origin)
+            assert _authorize(context, extension_id, origin)['ok']
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'different-sessions')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'different-sessions')
+            assert not result['ok'] and result['code'] == 'buff_cookie_read_failed'
+            assert '不同' in result['error']
+            assert service.requests == []
+            assert 'ordinary-secret' not in json.dumps(result) and 'partitioned-secret' not in json.dumps(result)
+    finally:
+        server.shutdown()
+
+
+def test_partitioned_session_requires_same_profile_buff_tab(tmp_path):
+    service, server, origin = _start_service()
+    extension = _prepare_test_extension(tmp_path)
+    try:
+        with _loaded_extension(extension, [origin], tmp_path / 'profile') as (context, worker, extension_id):
+            page = context.new_page(); page.goto(origin)
+            cdp = context.new_cdp_session(page)
+            assert cdp.send('Network.setCookie', {'name': 'session', 'value': 'hidden-partition', 'url': 'https://buff.163.com/',
+                'secure': True, 'httpOnly': True, 'sameSite': 'None',
+                'partitionKey': {'topLevelSite': 'https://163.com', 'hasCrossSiteAncestor': False}})['success']
+            assert _authorize(context, extension_id, origin)['ok']
+            confirmation = _request_import_and_wait_confirmation(context, extension_id, page, 'no-buff-tab')
+            confirmation.locator('#confirm').click()
+            result = _wait_page_message(page, 'RESULT', 'no-buff-tab')
+            assert not result['ok'] and '未找到' in result['error']
+            assert service.requests == []
     finally:
         server.shutdown()

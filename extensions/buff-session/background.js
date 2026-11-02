@@ -351,6 +351,59 @@ async function verifyDocument(pending) {
   }
 }
 
+async function readBuffCookies(store) {
+  const ordinary = await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id});
+  const tabs = await chrome.tabs.query({url: "https://buff.163.com/*"});
+  const eligible = [];
+  for (const tab of tabs) {
+    if (!tab.incognito && store.tabIds.includes(tab.id) &&
+        canonicalOriginFromUrl(tab.url) === canonicalOriginFromUrl(BUFF_ORIGIN) &&
+        await normalWindow(tab.windowId)) eligible.push(tab);
+  }
+  const partitions = new Map();
+  for (const tab of eligible) {
+    // Only a verified top-level https://buff.163.com tab is eligible. Its
+    // schemeful site is https://163.com; use that exact first-party partition.
+    // getPartitionKey() would additionally require permission for 163.com,
+    // which we deliberately do not grant. Never query an empty/wildcard key.
+    const partitionKey = {topLevelSite: "https://163.com", hasCrossSiteAncestor: false};
+    if (!(await targetTab(tab.id, canonicalOriginFromUrl(BUFF_ORIGIN)))) {
+      throw new Error("读取期间 BUFF 标签页已变化，请保持已登录网页打开后重试；尚未发送 Cookie。");
+    }
+    const key = JSON.stringify(partitionKey);
+    if (!partitions.has(key)) {
+      let cookies;
+      try {
+        cookies = await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id, partitionKey});
+      } catch (error) {
+        // Chrome 120-129 supports partitionKey but not the ancestor field.
+        // Retry only this known schema error, never a permission/read failure.
+        if (!/Unexpected property.*hasCrossSiteAncestor/.test(String(error?.message || ""))) throw error;
+        cookies = await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id,
+          partitionKey: {topLevelSite: partitionKey.topLevelSite}});
+      }
+      cookies = cookies.filter(cookie => cookie.partitionKey?.hasCrossSiteAncestor !== true);
+      if (!(await targetTab(tab.id, canonicalOriginFromUrl(BUFF_ORIGIN)))) {
+        throw new Error("读取期间 BUFF 标签页已变化，请重试；尚未发送 Cookie。");
+      }
+      partitions.set(key, cookies);
+    }
+  }
+  const grouped = [ordinary, ...partitions.values()];
+  const sessions = new Set(grouped.map(cookies => {
+    const header = browserCookieHeader(cookies);
+    return header.split("; ").find(value => value.startsWith("session=")) || "";
+  }).filter(value => value !== "" && value !== "session="));
+  if (sessions.size > 1) {
+    throw new Error("BUFF 存在不同的普通/分区登录会话，不能自动选择。请重新登录统一会话，或手动填写实际请求中的 Cookie；尚未发送 Cookie。");
+  }
+  const scoped = [...partitions.values()].find(cookies => cookies.some(c => c.name === "session" && c.value));
+  // Preserve ordinary non-session cookies only when not shadowed in the
+  // current BUFF partition. Never combine distinct login identities.
+  const cookies = scoped ? [...scoped, ...ordinary.filter(c => !scoped.some(p => p.name === c.name))] : ordinary;
+  return {cookies, buffTabCount: eligible.length};
+}
+
 async function confirmImport(message, sender) {
   if (!extensionPage(sender)) return {ok: false, error: "无效的确认页面"};
   const pending = await getPending(message.confirmationId);
@@ -388,9 +441,18 @@ async function confirmImport(message, sender) {
       await failPending(pending, "buff_cookie_store_unavailable", error);
       return {ok: false, code: "buff_cookie_store_unavailable", error};
     }
-    const cookies = await chrome.cookies.getAll({url: BUFF_SESSION_URL, storeId: store.id});
+    let discovered;
+    try {
+      discovered = await readBuffCookies(store);
+    } catch (error) {
+      const message = safeText(error?.message, "浏览器会话读取失败，请保持 BUFF 网页打开后重试；尚未发送 Cookie。");
+      await failPending(pending, "buff_cookie_read_failed", message);
+      return {ok: false, code: "buff_cookie_read_failed", error: message};
+    }
+    const {cookies, buffTabCount} = discovered;
     if (!cookies.some(cookie => cookie.name === "session" && cookie.value)) {
-      const error = `当前 Chrome 个人资料读取到 ${cookies.length} 个可用于 BUFF 验证的 Cookie，但没有登录会话 session。请先在 Chrome 打开 https://buff.163.com/ 完成登录，确认 BUFF 与 AetherSwap 使用同一个人资料和普通窗口（手机 App 或其他浏览器的登录不共享）；尚未发送 Cookie。`;
+      const partitionNote = buffTabCount === 0 ? "未找到同一个人资料中打开的 BUFF 网页，请保持已登录的 BUFF 标签页打开。" : "已检查当前 BUFF 标签页的普通和分区 Cookie，但仍未取得会话；这不等于已确认网页登录失效。";
+      const error = `当前 Chrome 个人资料读取到 ${cookies.length} 个可用于 BUFF 验证的 Cookie，但没有登录会话 session。${partitionNote}请先在 Chrome 打开 https://buff.163.com/ 确认网页账号后重试；尚未发送 Cookie。`;
       await failPending(pending, "buff_login_required", error);
       return {ok: false, code: "buff_login_required", error};
     }

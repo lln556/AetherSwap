@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AetherSwap BUFF 会话导入",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "经用户确认，将当前 Chrome 个人资料中的 BUFF 登录会话交给 AetherSwap 验证。",
   "minimum_chrome_version": "120",
   "incognito": "not_allowed",
