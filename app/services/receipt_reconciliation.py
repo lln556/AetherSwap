@@ -9,6 +9,7 @@ from pathlib import Path
 import struct
 import tempfile
 import time
+import httpx
 
 from app.config_loader import get_steam_credentials, load_app_config_validated
 from app.database import db_apply_receipt_reconciliation
@@ -33,7 +34,8 @@ def _fingerprint(name, classid, seed, wear):
         return None
 
 
-def build_reconciliation_plan(purchases, orders, inventory, steam_id):
+def build_reconciliation_plan(purchases, orders, inventory, steam_id, *, diagnostics=None):
+    unmatched = Counter()
     by_order = defaultdict(list)
     for order in orders:
         if isinstance(order, dict):
@@ -98,7 +100,18 @@ def build_reconciliation_plan(purchases, orders, inventory, steam_id):
         candidates = by_fingerprint.get(fp, []) if fp else []
         if len(candidates) == 1:
             received.append({"purchase": purchase, "assetid": candidates[0]})
+        elif not fp:
+            unmatched["missing_item_fingerprint"] += 1
+        elif not candidates:
+            unmatched["no_matching_inventory_asset"] += 1
+        else:
+            unmatched["ambiguous_inventory_assets"] += 1
     claims = Counter(x["assetid"] for x in received)
+    for row in received:
+        if claims[row["assetid"]] > 1:
+            unmatched["ambiguous_inventory_assets"] += 1
+    if diagnostics is not None:
+        diagnostics.update(unmatched)
     return [x for x in received if claims[x["assetid"]] == 1], closed
 
 
@@ -133,10 +146,17 @@ def reconcile_receipts_once(buff_client, scan_inventory=scan_cs2_inventory):
         if not pending:
             return {"ok": True, "received": 0, "closed": 0, "pending": 0, "inventory": None}
         cfg = load_app_config_validated()
-        orders = buff_client.get_purchase_history_orders(
-            (cfg.get("buff") or {}).get("game", "csgo"),
-            [p.get("buff_order_id") for p in pending if p.get("buff_order_id")],
-        )
+        try:
+            orders = buff_client.get_purchase_history_orders(
+                (cfg.get("buff") or {}).get("game", "csgo"),
+                [p.get("buff_order_id") for p in pending if p.get("buff_order_id")],
+            )
+        except httpx.RequestError as exc:
+            reason = "TLS 连接被提前关闭" if "UNEXPECTED_EOF" in str(exc) or "TLS" in str(exc) else type(exc).__name__
+            raise RuntimeError(
+                "收货对账失败：BUFF 购买历史 GET buff.163.com/api/market/buy_order/history "
+                f"连接异常（{reason}），本轮未应用收货匹配。"
+            ) from None
         # An older paid order may have been interrupted before the immediate
         # fallback. Its own durable send claim still prevents any replay.
         from app.services.buff_offer_support import try_send_buyer_offer
@@ -154,8 +174,10 @@ def reconcile_receipts_once(buff_client, scan_inventory=scan_cs2_inventory):
             ok, items, inventory_error = scan_inventory()
             if ok:
                 inventory = items
+        diagnostics = {}
         received, closed = build_reconciliation_plan(
             purchases, orders, inventory or [], (get_steam_credentials() or {}).get("steam_id"),
+            diagnostics=diagnostics,
         )
         _archive_closed(closed)  # Keep a durable audit before removing failed holdings.
         n_closed = sum(db_apply_receipt_reconciliation(x["purchase"], closed=True) for x in closed)
@@ -165,4 +187,5 @@ def reconcile_receipts_once(buff_client, scan_inventory=scan_cs2_inventory):
             log(f"[收货对账] 已补记到账 {n_received} 件，已归档失败/退款 {n_closed} 笔，剩余待收货 {remaining} 件",
                 "info", category="receive")
         return {"ok": True, "received": n_received, "closed": n_closed,
-                "pending": remaining, "inventory": inventory, "inventory_error": inventory_error}
+                "pending": remaining, "inventory": inventory, "inventory_error": inventory_error,
+                "unmatched_reasons": diagnostics}

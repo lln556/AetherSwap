@@ -668,11 +668,27 @@ class BuffBuyer:
         if not wanted:
             return found
         for page in range(1, 11):
-            response = self._make_request(
-                "GET", API_HISTORY,
-                params={"game": game, "page_num": str(page), "page_size": "30"},
-                headers={"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"},
-            )
+            for attempt in range(2):
+                try:
+                    response = self._make_request(
+                        "GET", API_HISTORY,
+                        params={"game": game, "page_num": str(page), "page_size": "30"},
+                        headers={"Referer": f"https://buff.163.com/market/buy_order/history?game={game}"},
+                    )
+                    break
+                except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                    # Only this idempotent history GET is retried, through the
+                    # normal account slot again. Never replay checkout writes.
+                    reason = "TLS 连接被提前关闭" if "UNEXPECTED_EOF" in str(exc) else type(exc).__name__
+                    if attempt:
+                        raise type(exc)(
+                            f"BUFF 购买历史 GET /api/market/buy_order/history 第{page}页连接失败"
+                            f"（{reason}；已重试1次），本轮收货核对未完成"
+                        ) from None
+                    logger.warning(
+                        "BUFF 购买历史 GET /api/market/buy_order/history 第%d页连接中断（%s），按账号限速重试一次",
+                        page, reason,
+                    )
             data = response.get("data")
             if response.get("code") != "OK" or not isinstance(data, dict):
                 break

@@ -119,3 +119,15 @@ def test_raw_inventory_properties_stay_bound_to_the_exact_asset_and_context():
         def get(self, *_a, **_k): return Response()
     assets, _ = _fetch_full_context(Session(), "buyer", 730, 16)
     assert assets[0]["asset_properties"] == [{"propertyid": 1, "int_value": "653"}]
+
+
+def test_nonunique_case_identity_is_reported_without_claiming_same_name_inventory():
+    purchase, order, item = sample()
+    purchase['name'] = order['_market_hash_name'] = item['market_hash_name'] = 'Fracture Case'
+    order['asset_info']['paintwear'] = ''
+    order['asset_info']['info'] = {}
+    item.pop('paintseed'); item.pop('paintwear')
+    reasons = {}
+    received, closed = receipt.build_reconciliation_plan([purchase], [order], [item], 'buyer', diagnostics=reasons)
+    assert received == [] and closed == []
+    assert reasons == {'missing_item_fingerprint': 1}

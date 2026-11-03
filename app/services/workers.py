@@ -305,6 +305,7 @@ def receive_worker() -> None:
 
     buff_client = None
     last_inventory_check = 0.0
+    last_unmatched_summary = None
     try:
         while not is_shutting_down():
             try:
@@ -325,6 +326,15 @@ def receive_worker() -> None:
                 )
                 if result.get("inventory_refreshed"):
                     last_inventory_check = time.monotonic()
+                unmatched = result.get("unmatched_reasons") or {}
+                summary = tuple(sorted(unmatched.items()))
+                if summary and summary != last_unmatched_summary:
+                    labels = {"missing_item_fingerprint": "缺少物品唯一特征（磨损/模板等）",
+                              "no_matching_inventory_asset": "库存尚无唯一匹配资产",
+                              "ambiguous_inventory_assets": "库存匹配存在歧义"}
+                    detail = "；".join(f"{labels.get(reason, '匹配依据不足')}：{count} 笔" for reason, count in summary)
+                    log(f"[收货对账] 已完成订单暂无法自动归属：{detail}。保留待收货，不按同名物品猜测到账。", "warn", category="receive")
+                last_unmatched_summary = summary
                 if result.get("received", 0) > 0:
                     log(f"receive_worker: 本轮确认到账 {result['received']} 件", "info", category="receive")
             except BuffRateLimited as e:
