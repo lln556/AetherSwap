@@ -459,7 +459,8 @@ def db_update_purchase_by_id(db_id: int, data: dict) -> bool:
         sync_manual_sale(session, row, data)
         session.commit()
         return True
-def db_apply_receipt_reconciliation(expected: dict, *, assetid: str = "", closed: bool = False) -> bool:
+def db_apply_receipt_reconciliation(expected: dict, *, assetid: str = "", closed: bool = False,
+                                    receipt_evidence: dict | None = None) -> bool:
     """Apply only to the still-pending, unchanged order used by the audit."""
     with get_session() as session:
         row = session.get(Purchase, expected.get("_db_id"))
@@ -467,7 +468,11 @@ def db_apply_receipt_reconciliation(expected: dict, *, assetid: str = "", closed
                 or row.sale_price or row.sold_at
                 or row.buff_order_id != expected.get("buff_order_id")
                 or row.goods_id != expected.get("goods_id")
-                or row.price != expected.get("price") or row.name != expected.get("name")):
+                or row.price != expected.get("price") or row.name != expected.get("name")
+                or str(row.account_id or "") != str(expected.get("account_id") or "")):
+            return False
+        if receipt_evidence and (str(receipt_evidence.get("assetid")) != str(assetid)
+                or row.account_id and str(receipt_evidence.get("steam_id")) != row.account_id):
             return False
         if closed:
             from app.trading_ledger import add_event
@@ -482,6 +487,11 @@ def db_apply_receipt_reconciliation(expected: dict, *, assetid: str = "", closed
             session.add(row)
             from app.trading_ledger import audit_purchase
             audit_purchase(session, row, before)
+            if receipt_evidence:
+                from app.trading_ledger import add_event
+                fields = ("steam_id", "trade_id", "time_init", "old_assetid", "assetid", "contextid", "classid", "appid", "amount")
+                add_event(session, row.id, "receipt_verified", "已通过 Steam 交易资产映射核实收货",
+                          source="steam_trade_status", details={k: receipt_evidence[k] for k in fields})
         session.commit()
         return True
 

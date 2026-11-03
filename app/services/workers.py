@@ -331,7 +331,10 @@ def receive_worker() -> None:
                 if summary and summary != last_unmatched_summary:
                     labels = {"missing_item_fingerprint": "缺少物品唯一特征（磨损/模板等）",
                               "no_matching_inventory_asset": "库存尚无唯一匹配资产",
-                              "ambiguous_inventory_assets": "库存匹配存在歧义"}
+                              "ambiguous_inventory_assets": "库存匹配存在歧义",
+                              "steam_trade_protected": "Steam 交易仍在保护期，等待结算后核实资产映射",
+                              "steam_asset_mapping_unavailable": "Steam 尚未提供可核实的新旧资产映射",
+                              "steam_trade_history_unavailable": "Steam 交易记录暂不可读，稍后自动重试"}
                     detail = "；".join(f"{labels.get(reason, '匹配依据不足')}：{count} 笔" for reason, count in summary)
                     log(f"[收货对账] 已完成订单暂无法自动归属：{detail}。保留待收货，不按同名物品猜测到账。", "warn", category="receive")
                 last_unmatched_summary = summary
