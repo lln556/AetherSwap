@@ -99,6 +99,7 @@ const dashboardStages = {
   BUFF_AUTH_EXPIRED: ["需要重新登录 BUFF", "请更新 BUFF 登录状态后继续。"],
   BUFF_VERIFICATION_REQUIRED: ["需要完成 BUFF 验证", "请在 BUFF 完成安全验证后继续。"],
   BUFF_RATE_LIMITED: ["BUFF 请求受限", "请查看调试日志中的冷却与恢复提示。"],
+  BUFF_RATE_LIMIT_WAIT: ["等待 BUFF 冷却", "冷却结束后会自动重新筛选，并重新核对下单条件。"],
   BUFF_COOLING_DOWN: ["BUFF 冷却中", "请查看调试日志，并核对未完成订单。"],
   BUFF_REQUEST_BLOCKED: ["BUFF 请求已暂停", "请查看调试日志中的处理提示。"],
   BUFF_WRITE_RESULT_UNKNOWN: ["需要核对订单", "下单结果尚未确认，请先检查 BUFF 订单。"],
@@ -133,7 +134,7 @@ function renderDashboardProgress(d) {
   set("task-stage", title);
   set("task-hint", hint);
   const state = el("task-state");
-  const waiting = ["WAITING_RETRY", "TIME_LIMIT_WAIT", "NETWORK_OFFLINE", "STEAM_COOLDOWN"].includes(step);
+  const waiting = ["WAITING_RETRY", "TIME_LIMIT_WAIT", "NETWORK_OFFLINE", "STEAM_COOLDOWN", "BUFF_RATE_LIMIT_WAIT"].includes(step);
   if (state) {
     state.textContent = raw === "error" ? "需要处理" : raw === "stopped" ? "已停止" :
       raw === "running" ? (waiting ? "自动等待" : "运行中") : "未运行";
@@ -161,6 +162,7 @@ function renderDashboardProgress(d) {
   const clean = text => String(text || "").replace(/^\(\d+\/\d+\)\s*/, "");
   let item = clean(d.progress_item);
   if (step === "WAITING_RETRY") item = item.replace(/^Retry in (\d+)s$/, "本轮结束后等待 $1 秒再搜索");
+  if (step === "BUFF_RATE_LIMIT_WAIT") item = item.replace(/^Retry in (\d+)s$/, "本次限流冷却 $1 秒后自动重新搜索");
   if (step === "TIME_LIMIT_WAIT") item = item.replace("; Allowed ", "；允许运行时段 ");
   const current = el("task-current-row");
   const next = el("task-next-row");

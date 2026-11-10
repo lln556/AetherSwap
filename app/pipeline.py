@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 import uuid
@@ -168,13 +169,17 @@ def _process_deals_for_target(
 
         ctx.set_status("running", "CHECKING_STABILITY", progress_total=n_filtered, progress_done=0, progress_item="")
         cfg = {**cfg, "_decision_accumulated_spend": acc}
-        chosen, new_stability_failed = pick_stable_item(
-            filtered, cfg, steam_client, analyzer, ctx.is_stop_requested,
-            log_fn=ctx.log,
-            exclude_goods_ids=failed_goods_ids | skipped_this_round | stability_failed_this_round,
-            buff_client=buyer,
-            **({"is_policy_current": policy_current} if getattr(ctx, "buy_policy", None) else {}),
-        )
+        try:
+            chosen, new_stability_failed = pick_stable_item(
+                filtered, cfg, steam_client, analyzer, ctx.is_stop_requested,
+                log_fn=ctx.log,
+                exclude_goods_ids=failed_goods_ids | skipped_this_round | stability_failed_this_round,
+                buff_client=buyer,
+                **({"is_policy_current": policy_current} if getattr(ctx, "buy_policy", None) else {}),
+            )
+        except BuffRateLimited as exc:
+            # Return the completed spend before cooling down and rescanning.
+            return acc, bought, exc
         stability_failed_this_round |= new_stability_failed
         if not policy_current():
             return acc, bought, POLICY_CHANGED
@@ -219,6 +224,8 @@ def _process_deals_for_target(
                 getattr(exc, "committed_amount", 0.0) or 0.0
             )
             if committed_amount <= 0:
+                if isinstance(exc, BuffRateLimited):
+                    return acc, bought, exc
                 raise
             committed_orders = max(
                 1,
@@ -467,6 +474,8 @@ def _run_pipeline(config: dict) -> None:
                 continue
             if stopped is TIME_WINDOW_CLOSED:
                 continue
+            if isinstance(stopped, BuffRateLimited):
+                raise stopped
             if stopped:
                 return
 
@@ -530,6 +539,17 @@ def _run_pipeline(config: dict) -> None:
             ctx.set_status("error", "BUFF_AUTH_EXPIRED")
             return
         except BuffRateLimited as e:
+            if get_unresolved_checkout() is None:
+                delay = max(1, math.ceil(e.retry_after))
+                ctx.log(
+                    f"BUFF 请求已限流，等待 {delay} 秒冷却后自动重新筛选；"
+                    f"已购金额 {acc:.2f} 保留。{e}",
+                    "warn",
+                    category="buff",
+                )
+                if ctx.wait_retry(delay, step="BUFF_RATE_LIMIT_WAIT", interrupt_on_policy_change=False):
+                    return
+                continue
             ctx.log(
                 f"Buff 请求已被限流，账号请求熔断已开启: {e}",
                 "error",

@@ -21,16 +21,16 @@ class PipelineContext:
     def is_stop_requested(self) -> bool:
         return self.state.is_stop_requested()
 
-    def wait_retry(self, secs: int) -> bool:
+    def wait_retry(self, secs: int, *, step: str = "WAITING_RETRY", interrupt_on_policy_change: bool = True) -> bool:
         if self.is_stop_requested():
             self.set_status("stopped", "已停止")
             return True
-        self.set_status("running", "WAITING_RETRY", progress_item=f"Retry in {secs}s")
+        self.set_status("running", step, progress_item=f"Retry in {secs}s")
         for _ in range(secs):
             if self.is_stop_requested():
                 self.set_status("stopped", "已停止")
                 return True
-            if not self.is_policy_current():
+            if interrupt_on_policy_change and not self.is_policy_current():
                 return False
             time.sleep(1)
         return False

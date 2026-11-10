@@ -145,6 +145,19 @@ def test_buff_session_entry_suppresses_automatic_legacy_modal(auth_prompt_page, 
     assert errors == []
 
 
+def test_buff_rate_limit_is_displayed_as_automatic_wait(auth_prompt_page):
+    page, errors = auth_prompt_page(status_payloads=[{
+        "status": "running", "step": "BUFF_RATE_LIMIT_WAIT",
+        "progress_item": "Retry in 300s", "pipeline_active": True,
+    }])
+    page.evaluate("_refreshStatusOnce()")
+    assert page.locator("#task-stage").inner_text() == "等待 BUFF 冷却"
+    assert page.locator("#task-state").inner_text() == "自动等待"
+    assert "冷却结束后会自动重新筛选" in page.locator("#task-hint").inner_text()
+    assert "300 秒后自动重新搜索" in page.locator("#task-current-item").inner_text()
+    assert errors == []
+
+
 def test_steam_expired_prompts_once_per_event_and_account_change(auth_prompt_page):
     expired = {
         "status": "error",
