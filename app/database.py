@@ -323,8 +323,22 @@ def db_append_purchase(p: dict) -> None:
         session.add(row)
         session.flush()
         from app.trading_ledger import audit_purchase
-        audit_purchase(session, row, None)
+        audit_purchase(session, row, None, account_id=_purchase_account(record))
         session.commit()
+
+
+def _purchase_account(record: dict) -> str:
+    """The Steam account a new purchase is bound to.
+
+    An explicit ``account_id`` on the record wins.  Otherwise it is resolved
+    once, here, at record time rather than read from ambient state later, so a
+    credential switch during the buy cannot rebind the item afterwards.
+    """
+    explicit = str(record.get("account_id") or "").strip()
+    if explicit:
+        return explicit
+    from app.config_loader import get_steam_credentials
+    return str(get_steam_credentials().get("steam_id") or "")
 def db_get_purchases() -> list:
     with get_session() as session:
         rows = session.exec(select(Purchase).where(Purchase.archived_at == None).order_by(Purchase.id)).all()

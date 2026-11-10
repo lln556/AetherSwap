@@ -29,12 +29,17 @@ def add_event(session, purchase_id, kind, message, *, key=None, at=None,
                           details=json.dumps(details or {}, ensure_ascii=False, sort_keys=True)))
 
 
-def audit_purchase(session, row, before, *, legacy=False):
-    """Called before the same DB transaction commits the purchase mutation."""
+def audit_purchase(session, row, before, *, legacy=False, account_id=None):
+    """Called before the same DB transaction commits the purchase mutation.
+
+    ``account_id`` is the Steam account this purchase belongs to.  It is an
+    input, never read from the ambient credentials here: the credentials can
+    have switched since the buy, and binding then would attach the item to the
+    wrong account (which the receipt audit later refuses to reconcile).
+    """
     now = time.time()
-    if not row.account_id and not legacy and before is None:
-        from app.config_loader import get_steam_credentials
-        row.account_id = str(get_steam_credentials().get("steam_id") or "")
+    if not row.account_id and not legacy and before is None and account_id:
+        row.account_id = str(account_id)
     after = row.model_dump()
     if before is None:
         add_event(session, row.id, "purchased", "已记录购买", key=f"purchase:{row.id}",

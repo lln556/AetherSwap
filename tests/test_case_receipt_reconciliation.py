@@ -88,6 +88,9 @@ def test_receipt_mapping_audit_and_purchase_update_commit_together(monkeypatch):
     from sqlalchemy.pool import StaticPool
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
     monkeypatch.setattr(db, '_engine', engine); SQLModel.metadata.create_all(engine)
+    # The purchase is bound to the account that bought it, recorded at buy
+    # time.  State it explicitly so the test needs no live Steam session.
+    monkeypatch.setattr(db, '_purchase_account', lambda record: 'buyer')
     p, o, i, e = case(); db.db_append_purchase(p)
     p = db.db_get_purchases()[0]
     assert db.db_apply_receipt_reconciliation(p, assetid='200', receipt_evidence=e)
@@ -180,3 +183,33 @@ def test_database_rejects_plan_when_purchase_account_changed(monkeypatch):
         session.add(row); session.commit()
     assert not db.db_apply_receipt_reconciliation(p, assetid='200', receipt_evidence=e)
     assert db.db_get_purchases()[0]['pending_receipt'] is True
+
+
+def test_purchase_account_is_resolved_once_at_record_time(monkeypatch):
+    """An explicit account wins; otherwise it is read once, when recorded."""
+    from app import database as db
+    from sqlmodel import SQLModel, create_engine
+    from sqlalchemy.pool import StaticPool
+    engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    monkeypatch.setattr(db, '_engine', engine); SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr('app.config_loader.get_steam_credentials', lambda: {'steam_id': 'ambient'})
+    db.db_append_purchase({'name': 'A', 'price': 1, 'at': 100})
+    db.db_append_purchase({'name': 'B', 'price': 1, 'at': 100, 'account_id': 'explicit'})
+    rows = db.db_get_purchases()
+    assert [r['account_id'] for r in rows] == ['ambient', 'explicit']
+
+
+def test_audit_purchase_does_not_bind_account_from_credentials(monkeypatch):
+    from app.trading_ledger import audit_purchase
+    from app import database as db
+    from sqlmodel import SQLModel, create_engine, select
+    from sqlalchemy.pool import StaticPool
+    engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
+    monkeypatch.setattr(db, '_engine', engine); SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr('app.config_loader.get_steam_credentials', lambda: {'steam_id': 'someone-else'})
+    with db.get_session() as s:
+        row = db._purchase_from_dict({'name': 'Item', 'price': 1, 'at': 100})
+        s.add(row); s.flush()
+        audit_purchase(s, row, None)          # no account_id supplied
+        assert row.account_id == ''           # stays unbound; nothing invented
+        s.rollback()

@@ -562,3 +562,49 @@ def test_relisting_requires_the_exact_sellable_asset(ledger, monkeypatch):
     resume_jobs({}, cred, {})
     post.assert_not_called()
     with ledger.get_session() as s: assert s.get(RepriceJob, '1').status == 'needs_review'
+
+
+def test_settlement_records_provable_local_sale_day(ledger):
+    from app.trading_ledger import record_settlements
+    from app.trading_models import MarketListing, TradeSettlement
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    local = ZoneInfo("Asia/Shanghai")
+    submitted = datetime(2026, 11, 10, 9, 13, tzinfo=local).timestamp()
+    ledger.db_append_purchase({"name": "Item", "price": 2.12, "at": submitted, "assetid": "a"})
+    with ledger.get_session() as s:
+        s.add(MarketListing(purchase_id=1, account_id="account", assetid="a",
+                            submitted_at=submitted, status="active"))
+        s.commit()
+    row = {"external_id": "history_1", "assetid": "a", "proceeds_minor": 282, "currency": "CNY",
+           "sold_day": "2026-11-09", "date_label": "Sold: 9 Nov"}
+    assert record_settlements([row], "account") == 1
+    with ledger.get_session() as s:
+        sale = s.get(TradeSettlement, 1)
+        # Steam reported the Pacific day; the sale provably happened here today.
+        assert sale.sold_day == "2026-11-09"
+        assert sale.sold_day_local == datetime.now(local).date().isoformat()
+
+
+def test_today_summary_counts_the_local_sale_day(ledger):
+    from app.trading_ledger import record_settlements, trading_overview
+    from app.trading_models import MarketListing, TradeSettlement
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    local = ZoneInfo("Asia/Shanghai")
+    submitted = datetime.now(local).replace(hour=0, minute=5, second=0, microsecond=0).timestamp()
+    ledger.db_append_purchase({"name": "Item", "price": 2.12, "at": submitted, "assetid": "a"})
+    with ledger.get_session() as s:
+        s.add(MarketListing(purchase_id=1, account_id="account", assetid="a",
+                            submitted_at=submitted, status="active"))
+        s.commit()
+    record_settlements([{"external_id": "history_1", "assetid": "a", "proceeds_minor": 282,
+                         "currency": "CNY", "sold_day": "2026-01-01", "date_label": "Sold: 1 Jan"}], "account")
+    with ledger.get_session() as s:
+        sale = s.get(TradeSettlement, 1)
+        sale.sold_day_local = datetime.now(local).date().isoformat()
+        s.add(sale)
+        s.commit()
+    summary = trading_overview()["summary"]
+    assert summary["today_sold"] == 1
+    assert summary["today_proceeds_minor"] == 282
