@@ -139,6 +139,7 @@ def init_db() -> None:
         for table, columns in {
             "repricejob": (("consecutive_failures", "INTEGER NOT NULL DEFAULT 0"), ("last_quoted_at", "DOUBLE PRECISION NOT NULL DEFAULT 0")),
             "tradingpolicy": (("mutation_retry_at", "DOUBLE PRECISION NOT NULL DEFAULT 0"), ("mutation_error", "TEXT NOT NULL DEFAULT ''")),
+            "tradesettlement": (("sold_day_local", "TEXT"),),
         }.items():
             existing = {c["name"] for c in inspect(conn).get_columns(table)}
             for column, sql_type in columns:

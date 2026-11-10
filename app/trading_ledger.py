@@ -8,6 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 from sqlmodel import select
 from app.trading_models import MarketListing, RepriceJob, TradeEvent, TradeSettlement, TradingPolicy
+from utils.sale_day import local_day_bounds, unique_local_day
 
 OPEN_JOBS = {"planned", "removing", "awaiting_inventory", "ready", "submitting", "confirming", "needs_review"}
 OPEN_LISTINGS = {"submitted", "pending_confirmation", "active", "unknown", "repricing"}
@@ -93,6 +94,29 @@ def bootstrap_ledger():
         if not s.get(TradingPolicy, 1):
             s.add(TradingPolicy())
         s.commit()
+    backfill_sold_day_local()
+
+
+def backfill_sold_day_local():
+    """Derive the local sale day for settlements recorded before it existed."""
+    from app.database import Purchase, get_session
+    with get_session() as s:
+        rows = s.exec(select(TradeSettlement).where(
+            TradeSettlement.sold_day.is_not(None),
+            TradeSettlement.sold_day_local.is_(None),
+        )).all()
+        for settlement in rows:
+            latest = s.exec(select(MarketListing).where(MarketListing.purchase_id == settlement.purchase_id)
+                            .order_by(MarketListing.submitted_at.desc())).first()
+            purchase = s.get(Purchase, settlement.purchase_id)
+            settlement.sold_day_local = unique_local_day(
+                settlement.sold_day,
+                submitted_at=latest.submitted_at if latest else (purchase.at if purchase else None),
+                detected_at=settlement.detected_at,
+            )
+            s.add(settlement)
+        if rows:
+            s.commit()
 
 
 def get_policy():
@@ -212,6 +236,16 @@ def record_settlements(records, account_id):
             if rec["currency"] == "CNY":
                 p.sale_price = round(rec["proceeds_minor"] / 100 * 1.15, 2)
             p.sold_at = p.sold_at or now
+            # A sorted re-read can return old rows whose listing we still hold
+            # as open.  Read the bounds before closing anything so the local
+            # day is derived from what we observed, not from this detection.
+            latest = s.exec(select(MarketListing).where(MarketListing.purchase_id == p.id)
+                            .order_by(MarketListing.submitted_at.desc())).first()
+            settlement.sold_day_local = unique_local_day(
+                settlement.sold_day,
+                submitted_at=latest.submitted_at if latest else p.at,
+                detected_at=settlement.detected_at,
+            )
             s.add(p)
             s.add(settlement)
             for listing in s.exec(select(MarketListing).where(MarketListing.purchase_id == p.id)).all():
@@ -225,7 +259,9 @@ def record_settlements(records, account_id):
                 s.add(job)
             add_event(s, p.id, "sold", "Steam 已确认成交", key="sale:" + rec["external_id"],
                       precision=settlement.time_precision, source="steam_history",
-                      details={"proceeds_minor": rec["proceeds_minor"], "currency": rec["currency"], "date_label": settlement.date_label})
+                      details={"proceeds_minor": rec["proceeds_minor"], "currency": rec["currency"],
+                               "date_label": settlement.date_label, "sold_day": settlement.sold_day,
+                               "sold_day_local": settlement.sold_day_local})
             count += 1
         s.commit()
     return count
@@ -368,10 +404,25 @@ def dashboard_overview():
         }
 
 
+def _sold_day_on_or_after(settlement, cutoff_date):
+    """Keep ambiguous sales when a day range is requested.
+
+    A sale whose local day could not be proven still happened; dropping it
+    would hide a real record.  Keep it when its latest possible local day
+    reaches the range, and drop it only when even that is older.
+    """
+    bounds = local_day_bounds(settlement.sold_day, detected_at=settlement.detected_at)
+    last = bounds[1] if bounds else None
+    if last is None:
+        return True
+    return last >= cutoff_date.isoformat()
+
+
 def trading_overview(days=0, status="", query="", page=1, page_size=50):
     from app.database import Purchase, get_session
     today = datetime.now(TZ).date()
     cutoff = datetime.combine(today - timedelta(days=max(days - 1, 0)), datetime.min.time(), TZ).timestamp() if days else 0
+    cutoff_date = datetime.fromtimestamp(cutoff, TZ).date() if days else None
     with get_session() as s:
         purchases = s.exec(select(Purchase).order_by(Purchase.at.desc())).all()
         settlements = {r.purchase_id: r for r in s.exec(select(TradeSettlement)).all()}
@@ -394,7 +445,7 @@ def trading_overview(days=0, status="", query="", page=1, page_size=50):
             if p.archive_reason != "order_closed" and p.at and datetime.fromtimestamp(p.at, TZ).date() == today:
                 summary["today_bought"] += 1
                 summary["today_cost_minor"] += minor(p.price)
-            if settlement and settlement.sold_day == today.isoformat():
+            if settlement and settlement.sold_day_local == today.isoformat():
                 summary["today_sold"] += 1
                 if settlement.currency == "CNY" and settlement.proceeds_minor is not None:
                     summary["today_proceeds_minor"] += settlement.proceeds_minor
@@ -406,13 +457,16 @@ def trading_overview(days=0, status="", query="", page=1, page_size=50):
                 summary["attention"] += 1
             matches_query = not query or query.casefold() in p.name.casefold() or query in str(p.assetid or "")
             if matches_query:
-                if settlement and (not days or (settlement.sold_day and settlement.sold_day >= datetime.fromtimestamp(cutoff, TZ).date().isoformat())):
+                if settlement and (not days or _sold_day_on_or_after(settlement, cutoff_date)):
                     sold_rows.append(row)
                 if not settlement and (listing and listing.status in OPEN_LISTINGS or job):
                     listed_rows.append(row)
                 if p.at >= cutoff and (not status or state == status):
                     items.append(row)
-        sold_rows.sort(key=lambda r: (r["settlement"].get("sold_day") or "", r["settlement"]["detected_at"]), reverse=True)
+        # Ambiguous days keep Steam's label as the sort key; it is the only
+        # ordering evidence those rows have.
+        sold_rows.sort(key=lambda r: (r["settlement"].get("sold_day_local") or r["settlement"].get("sold_day") or "",
+                                      r["settlement"]["detected_at"]), reverse=True)
         start = (page - 1) * page_size
         return {"items": items[start:start + page_size], "total": len(items), "page": page, "page_size": page_size,
                 "listings": listed_rows, "settlements": sold_rows[start:start + page_size], "settlements_total": len(sold_rows),

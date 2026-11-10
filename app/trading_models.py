@@ -50,7 +50,11 @@ class TradeSettlement(SQLModel, table=True):
     currency: str = "CNY"
     amount_source: str = "estimated_legacy"
     sold_at: Optional[float] = None
+    # Steam's own (Pacific-time) date label, kept exactly as reported.
     sold_day: Optional[str] = Field(default=None, index=True)
+    # The local calendar day the sale provably happened on.  Derived from the
+    # label plus our own observed bounds, so it stays empty when ambiguous.
+    sold_day_local: Optional[str] = Field(default=None, index=True)
     date_label: str = ""
     time_precision: str = "unknown"
     detected_at: float = Field(default_factory=time.time)

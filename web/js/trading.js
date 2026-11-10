@@ -16,11 +16,22 @@
     return `${date(l.next_evaluation_at)}<small class="muted">${esc(l.last_reason || (!policy.enabled ? "自动调价未开启" : l.next_evaluation_at*1000 <= Date.now() ? "已到期，等待评估" : "尚未到评估时间"))}</small>`;
   };
   const detailButton = r => `<button class="btn btn-sm btn-secondary" data-trading-detail="${r.id}">时间线</button>`;
+  const saleDay = s => {
+    const local = s.sold_day_local;
+    const steamLabel = esc(s.sold_day || s.date_label || "");
+    // Steam 的日期标签按太平洋时区计算，这里展示本地日历日，并保留原始标签。
+    const raw = local || steamLabel || "成交日期未知";
+    const note = s.time_precision !== "day" ? "时间待核实"
+      : local ? `仅日期 · Steam 标为 ${steamLabel}`
+              : `仅日期 · Steam 标为 ${steamLabel}，本地日期跨两天`;
+    return {raw, note};
+  };
   const saleRow = r => {
     const s = r.settlement, net = s.proceeds_minor;
     const actual = ["steam_history", "user_reported"].includes(s.amount_source);
     const profit = s.currency === "CNY" && net != null ? money(net-r.cost_minor) : "—";
-    return `<tr><td>${esc(s.sold_day || s.date_label || "成交日期未知")}<small class="muted">${s.time_precision === "day" ? "仅日期" : "时间待核实"}</small></td>${itemCell(r)}<td>${money(r.cost_minor)}</td><td>${money(net,s.currency)}${actual ? "" : '<small class="muted">历史估算，待核实</small>'}</td><td>${profit}</td><td>${s.amount_source === "steam_history" ? "Steam 成交历史" : s.amount_source === "user_reported" ? "用户记账" : "旧记录迁移"}<small class="muted">发现于 ${date(s.detected_at)}</small></td><td>${detailButton(r)}</td></tr>`;
+    const day = saleDay(s);
+    return `<tr><td>${esc(day.raw)}<small class="muted">${day.note}</small></td>${itemCell(r)}<td>${money(r.cost_minor)}</td><td>${money(net,s.currency)}${actual ? "" : '<small class="muted">历史估算，待核实</small>'}</td><td>${profit}</td><td>${s.amount_source === "steam_history" ? "Steam 成交历史" : s.amount_source === "user_reported" ? "用户记账" : "旧记录迁移"}<small class="muted">发现于 ${date(s.detected_at)}</small></td><td>${detailButton(r)}</td></tr>`;
   };
   function showPolicy(p) {
     el("trading-policy-state").textContent = p.enabled ? "· 已启用，只降不涨" : "· 未启用";
@@ -100,6 +111,7 @@
         if(dt.old_buyer_minor!=null)parts.push(`${ev.kind === "reprice_completed" ? "挂价已调整" : "调价目标"}：${money(dt.old_buyer_minor)} → ${money(dt.new_buyer_minor ?? dt.target_buyer_minor)}`);
         if(dt.proceeds_minor!=null)parts.push("实际到账 "+money(dt.proceeds_minor,dt.currency));
         if(dt.date_label)parts.push(dt.date_label+"（Steam 日期）");
+        if(dt.sold_day_local)parts.push("本地成交日 "+dt.sold_day_local);
         if(dt.reason && dt.reason !== message)parts.push(dt.reason);
         if(dt.request_sent === false)parts.push("本次未向 Steam 提交撤单请求");
         if(dt.retry_at)parts.push("下次重试不早于 "+date(dt.retry_at));
