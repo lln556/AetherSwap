@@ -39,6 +39,11 @@
 > 请注意，本程序并非专门的套利工具，也不是万能的无风险低价获取余额的神器。自动购买的饰品在经历 7 天（或数天）的交易冷却期后，其市场表现大部分情况下会趋于您所期望的余额价格。但这并非绝对保证，7 天冷却期结束后的实际折扣比例**有可能上升，也有可能下降**。
 > **如果您的目的是在短时间内快速获取余额，本工具并不适合您。**
 
+> [!IMPORTANT]
+> **📌 关于本仓库**
+> 本仓库由 `lln556` 独立维护，源自 [VexedWilosn/AetherSwap](https://github.com/VexedWilosn/AetherSwap) 但已大幅重构：交易账本、策略中心、会话保活、自动调价等模块均经过重写，与上游共享的文件基本都已改动。
+> 上游自 2026-09 起基本停止更新。**请勿预期可以与上游直接合并**，如有需要请逐项核对行为而非 merge。安装与部署请以本仓库为准。
+
 ---
 
 ## ✨ 核心功能
@@ -150,7 +155,7 @@
 **第 1 步：克隆项目**
 
 ```bash
-git clone https://github.com/VexedWilosn/AetherSwap.git
+git clone https://github.com/lln556/AetherSwap.git
 cd AetherSwap
 ```
 
@@ -208,7 +213,7 @@ set AETHERSWAP_AGREE_DISCLAIMER=1
 
 ```bash
 # 1. 克隆项目并进入目录
-git clone https://github.com/VexedWilosn/AetherSwap.git
+git clone https://github.com/lln556/AetherSwap.git
 cd AetherSwap
 
 # 2. 准备环境变量（可选，Docker Compose 会自动读取 .env）
@@ -554,11 +559,13 @@ Chrome 扩展可从卡片中的安装指南下载，解压后在 `chrome://exten
 
 欢迎任何形式的贡献！请遵循以下流程：
 
-1. **Fork** 本仓库
+1. **Fork** 本仓库（注意：是本仓库，不是上游 `VexedWilosn/AetherSwap`；两者已大幅分叉）
 2. 基于 `main` 创建你的特性分支：`git checkout -b feature/my-awesome-feature`
 3. 提交你的更改：`git commit -m 'feat: add some awesome feature'`
 4. 推送到远端：`git push origin feature/my-awesome-feature`
 5. 发起一个 **Pull Request**
+
+修改代码前请先运行测试（`python -m pytest tests/`），交易相关逻辑的改动需要附带回归测试。
 
 提交 Bug 报告或功能建议，请尽量附上完整日志。
 
