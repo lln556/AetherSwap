@@ -586,6 +586,23 @@ body {
   transform: scale(0.96);
 }
 
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.btn:disabled::after {
+  opacity: 0;
+}
+
+.btn:disabled:hover,
+.btn:disabled:active {
+  transform: none;
+  box-shadow: none;
+}
+
 .btn-primary {
   background: var(--primary);
   color: var(--primary-text);
@@ -595,6 +612,11 @@ body {
 .btn-primary:hover {
   background: var(--primary-hover);
   box-shadow: 0 4px 16px var(--glow-primary), var(--primary-shadow);
+}
+
+.btn-primary:disabled:hover {
+  background: var(--primary);
+  box-shadow: none;
 }
 
 .btn-hover-anchor {
@@ -639,6 +661,11 @@ body {
 .btn-secondary:hover {
   background: var(--bg-input);
   border-color: var(--text-muted);
+}
+
+.btn-secondary:disabled:hover {
+  background: var(--bg-surface);
+  border-color: var(--border-color);
 }
 
 .btn-ghost {

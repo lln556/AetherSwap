@@ -20,6 +20,14 @@ def send_pushplus(token: str, title: str, content: str, template: str = "html") 
         return False
 _last_manual_notify_time: dict = {}
 _last_manual_notify_lock = threading.Lock()  
+
+
+def reset_manual_notify_cooldown(platform: str) -> None:
+    """Clear the manual intervention alert cooldown after a platform recovers."""
+    with _last_manual_notify_lock:
+        _last_manual_notify_time.pop(platform, None)
+
+
 def notify_manual_intervention_required(platform: str, reason: str) -> bool:
     """
     Sends a PushPlus notification when manual intervention is required (e.g., login expired).

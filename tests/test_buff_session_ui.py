@@ -1122,3 +1122,44 @@ def test_old_extension_is_identified_before_cookie_import(page_factory):
     assert '旧版扩展' in text
     assert '重新加载' in text
     assert not any(r['path'].endswith('/session/import') for r in requests)
+
+
+def test_disabled_replacement_buttons_have_visual_cue_reason_and_recover_when_unblocked(page_factory):
+    blocked_reason = "BUFF 流水线正在运行，凭证已冻结"
+    blocked = _session(
+        "expired",
+        checked_at=1_780_000_000,
+        message="BUFF 登录已失效",
+        can_replace=False,
+        replace_block_reason=blocked_reason,
+    )
+    unblocked = _session(
+        "expired",
+        checked_at=1_780_000_000,
+        message="BUFF 登录已失效",
+        can_replace=True,
+        replace_block_reason="",
+    )
+    page, _, errors, _ = page_factory(session=blocked)
+
+    assert page.locator("#buff-replace-protection").get_attribute("data-blocked") == "true"
+    for button_id in ("btn-buff-import", "btn-buff-manual"):
+        btn = page.locator(f"#{button_id}")
+        assert btn.is_disabled()
+        assert btn.get_attribute("title") == blocked_reason
+        styles = btn.evaluate("node => { const s = getComputedStyle(node); return { cursor: s.cursor, opacity: parseFloat(s.opacity) }; }")
+        assert styles["cursor"] == "not-allowed"
+        assert styles["opacity"] < 0.7
+
+    page.evaluate("session => BuffSession.renderSession(session)", unblocked)
+    assert page.locator("#buff-replace-protection").get_attribute("data-blocked") == "false"
+    for button_id in ("btn-buff-import", "btn-buff-manual"):
+        btn = page.locator(f"#{button_id}")
+        assert not btn.is_disabled()
+        assert btn.get_attribute("title") == ""
+
+    page.locator("#btn-buff-manual").click()
+    assert page.locator("#buff-manual-dialog").is_visible()
+    page.locator("#btn-buff-manual-cancel").click()
+    assert page.locator("#buff-manual-dialog").is_hidden()
+    assert errors == []

@@ -181,6 +181,11 @@
   min-height: 38px;
 }
 
+.buff-session-actions .btn:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
 .buff-session-protection {
   display: flex;
   align-items: center;
@@ -191,6 +196,12 @@
   background: color-mix(in srgb, var(--bg-input) 72%, transparent);
   color: var(--text-secondary);
   font-size: 12px;
+}
+
+.buff-session-protection[data-blocked="true"] {
+  border-top-color: color-mix(in srgb, var(--warning) 38%, var(--border-color));
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-surface));
+  color: var(--text-main);
 }
 
 .buff-session-protection-mark {
@@ -205,6 +216,10 @@
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 700;
+}
+
+.buff-session-protection[data-blocked="false"] .buff-session-protection-mark {
+  color: var(--text-muted);
 }
 
 .buff-session-protection strong {

@@ -19,6 +19,7 @@ from app.trading_ledger import bootstrap_ledger
 bootstrap_ledger()
 from app.services.trading_worker import trading_worker
 from app.services.workers import (
+    buff_session_monitor_worker,
     exchange_rate_worker,
     holdings_report_worker,
     listing_check_worker,
@@ -46,6 +47,7 @@ def _start_background_workers() -> None:
         exchange_rate_worker,
         holdings_report_worker,
         session_keepalive_worker,
+        buff_session_monitor_worker,
         steam_session_worker,
     ):
         q.submit(fn, name=fn.__name__, max_retries=3, retry_base_delay=5.0)

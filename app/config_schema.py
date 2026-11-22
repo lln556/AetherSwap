@@ -98,6 +98,7 @@ DEFAULTS = {
         "exchange_rate_refresh_hours": 24,
         "buff_session_keepalive_enabled": False,
         "session_keepalive_hours": 4.0,
+        "buff_session_check_interval_minutes": 60,
         "steam_session_keepalive_minutes": 30,
         # The web UI records the browser clock zone here.  Keeping both an
         # IANA name and an offset lets containers/Windows hosts without a
@@ -200,6 +201,19 @@ def _validate_ranges(cfg: dict) -> dict:
         if 0 < v < 600:
             warnings.warn(f"[config] inventory.refresh_seconds={v} 过短，已修正为600秒")
             inv["refresh_seconds"] = 600
+
+    buff_check_minutes = system.get("buff_session_check_interval_minutes")
+    if isinstance(buff_check_minutes, (int, float)) and not isinstance(buff_check_minutes, bool):
+        if buff_check_minutes < 0:
+            warnings.warn(
+                f"[config] system.buff_session_check_interval_minutes={buff_check_minutes} 不能为负数，已修正为0"
+            )
+            system["buff_session_check_interval_minutes"] = 0
+        elif 0 < buff_check_minutes < 15:
+            warnings.warn(
+                f"[config] system.buff_session_check_interval_minutes={buff_check_minutes} 过短，已修正为15分钟"
+            )
+            system["buff_session_check_interval_minutes"] = 15
 
     timezone_name = system.get("timezone")
     system["timezone"] = (

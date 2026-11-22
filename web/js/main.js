@@ -1063,7 +1063,7 @@ async function init() {
 function setupButtonInteractions() {
   document.addEventListener('mousemove', (e) => {
     const btn = e.target.closest('.btn');
-    if (btn) {
+    if (btn && !btn.disabled) {
       const rect = btn.getBoundingClientRect();
       const x = ((e.clientX - rect.left) / rect.width * 100).toFixed(0);
       const y = ((e.clientY - rect.top) / rect.height * 100).toFixed(0);

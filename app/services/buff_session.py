@@ -3,9 +3,11 @@ import copy
 import hashlib
 from contextlib import contextmanager
 import json
+import math
 import threading
 import time
 from pathlib import Path
+from typing import Optional
 
 from app import accounts
 from app.config_loader import get_buff_credentials
@@ -15,6 +17,15 @@ from utils.json_store import atomic_write_json, load_json
 STATUS_PATH = Path(__file__).resolve().parents[2] / 'config' / 'buff_session_status.json'
 _operation_lock = threading.Lock()
 VALID_STATUS_SECONDS = 30 * 60
+_AUTH_FAILURE_STATUSES = frozenset({'expired', 'verification', 'account_mismatch'})
+_AUTO_CHECK_BLOCKED_STEPS = frozenset({
+    'CHECKOUT_PENDING',
+    'BUFF_WRITE_RESULT_UNKNOWN',
+    'BUFF_POST_COMMIT_WRITE_UNKNOWN',
+    'BUFF_ORDER_CREATED_PENDING',
+    'BUFF_COOLING_DOWN',
+    'PIPELINE_UNEXPECTED_ERROR',
+})
 
 
 def _identity(credentials, account):
@@ -69,6 +80,22 @@ def _auth_flags(flags):
     return {key: bool(flags.get(key)) for key in ('buff_auth_expired', 'buff_verification_required')}
 
 
+def _notify_buff_auth_issue(status: str, message: str) -> None:
+    if status not in _AUTH_FAILURE_STATUSES:
+        return
+    try:
+        from app.notify import notify_manual_intervention_required
+
+        notify_manual_intervention_required('Buff', message)
+    except Exception as exc:
+        try:
+            from app.state import log
+
+            log(f'buff_session: 发送告警通知失败 {exc}', 'warn', category='buff')
+        except Exception:
+            pass
+
+
 def _remember(credentials, account, status, message, retry_after=None):
     from app.state import get_status, set_buff_auth_expired, set_buff_verification_required
     if status == 'expired':
@@ -78,11 +105,110 @@ def _remember(credentials, account, status, message, retry_after=None):
     elif status == 'valid':
         set_buff_auth_expired(False)
         set_buff_verification_required(False)
+        try:
+            from app.notify import reset_manual_notify_cooldown
+
+            reset_manual_notify_cooldown('Buff')
+        except Exception:
+            pass
     saved = {'identity': _identity(credentials, account), 'status': status, 'checked_at': time.time(),
              'message': message, 'observed_auth_flags': _auth_flags(get_status() or {})}
     if retry_after is not None:
         saved['retry_after'] = max(0, retry_after)
     atomic_write_json(STATUS_PATH, saved, indent=2)
+
+
+def restore_persisted_auth_flags() -> Optional[str]:
+    """Restore persisted expired/verification state across restarts without probing BUFF."""
+    credentials, account = get_buff_credentials(), _account()
+    configured = bool(str(credentials.get('cookies') or '').strip())
+    if not configured:
+        return None
+    saved = load_json(STATUS_PATH, default={}) or {}
+    if not isinstance(saved, dict) or saved.get('identity') != _identity(credentials, account):
+        return None
+    saved_status = saved.get('status')
+    from app.state import set_buff_auth_expired, set_buff_verification_required
+
+    if saved_status == 'expired':
+        set_buff_auth_expired(True)
+        return 'expired'
+    if saved_status == 'verification':
+        set_buff_verification_required(True, str(saved.get('message') or 'BUFF 需要安全验证'))
+        return 'verification'
+    return None
+
+
+def should_auto_check_session(
+    interval_seconds: float,
+    *,
+    now: Optional[float] = None,
+) -> tuple[bool, str, float]:
+    """Decide whether the background monitor may execute a single read-only BUFF probe."""
+    interval = float(interval_seconds)
+    credentials, account = get_buff_credentials(), _account()
+    if not bool(str(credentials.get('cookies') or '').strip()):
+        return False, 'unconfigured', interval
+    if not str(account.get('steam_id') or '').strip():
+        return False, 'missing_steam_id', 60.0
+
+    from app.pipeline import is_shutdown_pending
+    from app.services.buff_checkout_guard import get_unresolved_checkout
+    from app.state import (
+        get_pending_payment,
+        get_status,
+        set_buff_auth_expired,
+        set_buff_verification_required,
+    )
+
+    status = get_status() or {}
+    step = str(status.get('step') or '')
+    if (
+        is_shutdown_pending()
+        or get_unresolved_checkout() is not None
+        or get_pending_payment()
+        or step in _AUTO_CHECK_BLOCKED_STEPS
+    ):
+        return False, 'checkout_busy', 60.0
+    if status.get('buff_auth_expired'):
+        return False, 'already_expired', min(300.0, interval)
+    if status.get('buff_verification_required'):
+        return False, 'already_verification', min(300.0, interval)
+
+    from buff import BuffRateLimited, BuffRequestBlocked, get_global_policy
+    from buff.request_policy import account_fingerprint
+
+    try:
+        get_global_policy().raise_if_blocked(account_fingerprint({}, account_id='default'))
+    except BuffRateLimited as exc:
+        return False, 'rate_limited', max(60.0, float(exc.retry_after) + 5.0)
+    except BuffRequestBlocked:
+        return False, 'circuit_blocked', min(300.0, interval)
+
+    saved = load_json(STATUS_PATH, default={}) or {}
+    if isinstance(saved, dict) and saved.get('identity') == _identity(credentials, account):
+        saved_status = saved.get('status')
+        if saved_status == 'expired':
+            set_buff_auth_expired(True)
+            return False, 'already_expired', min(300.0, interval)
+        if saved_status == 'verification':
+            set_buff_verification_required(True, str(saved.get('message') or 'BUFF 需要安全验证'))
+            return False, 'already_verification', min(300.0, interval)
+        if saved_status == 'account_mismatch':
+            return False, 'already_account_mismatch', min(300.0, interval)
+        if saved_status == 'valid':
+            checked_at = saved.get('checked_at')
+            now_ts = time.time() if now is None else float(now)
+            if (
+                not isinstance(checked_at, bool)
+                and isinstance(checked_at, (int, float))
+                and math.isfinite(float(checked_at))
+                and (now_ts - float(checked_at)) < interval
+            ):
+                remaining = max(60.0, interval - (now_ts - float(checked_at)))
+                return False, 'fresh', remaining
+
+    return True, 'due', 0.0
 
 
 class _ProbePolicy:
@@ -126,7 +252,7 @@ def _outcome(exc):
     return 'error', 'BUFF 登录检测失败：网络或服务暂不可用，请稍后重试', None
 
 
-def check_session():
+def check_session(*, notify_on_failure: bool = False):
     if not _operation_lock.acquire(blocking=False):
         return {'ok': False, 'code': 'busy', 'error': '正在检测或更新 BUFF 会话，请稍后查看结果', 'session': session_status()}
     auth_lock = get_buff_auth_lock()
@@ -149,9 +275,17 @@ def check_session():
             status, message, retry = _outcome(exc)
         if _identity(credentials, account) != _identity(get_buff_credentials(), _account()):
             return {'ok': False, 'code': 'context_changed', 'error': '检测期间账号或凭据已变化，请重新检测', 'session': session_status()}
+        save_failed = False
         try:
             _remember(credentials, account, status, message, retry)
         except Exception:
+            save_failed = True
+        if notify_on_failure and status in _AUTH_FAILURE_STATUSES:
+            from app.state import log
+
+            log(f'buff_session: 自动检测发现 {message}', 'warn', category='buff')
+            _notify_buff_auth_issue(status, message)
+        if save_failed:
             return {'ok': False, 'code': 'status_save_failed', 'error': '检测结果无法保存，请稍后重试', 'session': session_status()}
         return {'ok': status == 'valid', 'session': session_status(), **({'error': message, 'code': status} if status != 'valid' else {})}
     finally:

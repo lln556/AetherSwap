@@ -97,8 +97,8 @@ def test_queue_shutdown_interrupts_retry_backoff(lifecycle):
 
 @pytest.mark.parametrize('worker_name', [
     'receive_worker', 'listing_check_worker', 'holdings_report_worker',
-    'exchange_rate_worker', 'session_keepalive_worker', 'steam_session_worker',
-    'sync_account_region_worker',
+    'exchange_rate_worker', 'session_keepalive_worker', 'buff_session_monitor_worker',
+    'steam_session_worker', 'sync_account_region_worker',
 ])
 def test_workers_do_not_start_new_round_after_shutdown(monkeypatch, lifecycle, worker_name):
     from app.services import workers

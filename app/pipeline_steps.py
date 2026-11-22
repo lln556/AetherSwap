@@ -742,6 +742,7 @@ def pick_stable_item(
     exclude_goods_ids: Optional[set] = None,
     buff_client: Optional[Any] = None,
     is_policy_current: Optional[Callable[[], bool]] = None,
+    is_auth_blocked: Optional[Callable[[], bool]] = None,
 ) -> Tuple[Optional[Dict[str, Any]], Set[int]]:
     # 遍历候选饰品，返回第一个通过所有检测的
     # 检测顺序: Buff价格预检 → Steam卖单 → 卖压 → 最高折扣 → 历史稳定性
@@ -771,6 +772,8 @@ def pick_stable_item(
         if is_policy_current is not None and not is_policy_current():
             return None, stability_failed
         if is_stop_requested():
+            return None, stability_failed
+        if is_auth_blocked is not None and is_auth_blocked():
             return None, stability_failed
         gid = item.get("goods_id")
         if gid is not None and gid in excluded:

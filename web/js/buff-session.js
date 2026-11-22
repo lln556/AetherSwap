@@ -409,20 +409,34 @@
     },
 
     syncReplacementButtons() {
-      const canReplace = !!this.session?.can_replace;
+      const current = this.session;
+      const canReplace = !!current?.can_replace;
       const browserSupported = this.browserImportSupported();
       const importButton = el("btn-buff-import");
       const manualButton = el("btn-buff-manual");
+      const blockReason = current?.replace_block_reason || "当前条件下不能替换 BUFF 会话。";
       if (importButton && !this.pendingExtension) {
         importButton.disabled = !canReplace || !browserSupported;
-        importButton.title = browserSupported ? "" : "从浏览器导入仅支持桌面 Chrome；手机请使用手动填写。";
+        importButton.textContent = browserSupported ? "从浏览器导入" : "浏览器导入仅桌面";
+        importButton.title = !browserSupported
+          ? "从浏览器导入仅支持桌面 Chrome；手机请使用手动填写。"
+          : (!canReplace ? blockReason : "");
       }
-      if (manualButton) manualButton.disabled = !canReplace || !!this.pendingExtension;
-      const reason = el("buff-replace-reason");
-      if (reason && this.session) {
-        reason.textContent = canReplace
-          ? "当前未阻止替换；导入仍需服务端再次验证。"
-          : this.session.replace_block_reason || "当前条件下不能替换 BUFF 会话。";
+      if (manualButton) {
+        manualButton.disabled = !canReplace || !!this.pendingExtension;
+        manualButton.title = canReplace ? "" : blockReason;
+      }
+      if (current) {
+        const protection = el("buff-replace-protection");
+        if (protection) {
+          protection.dataset.blocked = canReplace ? "false" : "true";
+        }
+        const reason = el("buff-replace-reason");
+        if (reason) {
+          reason.textContent = canReplace
+            ? "当前未阻止替换；导入仍需服务端再次验证。"
+            : blockReason;
+        }
       }
     },
 
@@ -525,7 +539,6 @@
       const badge = el("buff-session-badge");
       const checked = el("buff-session-checked-at");
       const retry = el("buff-session-retry");
-      const reason = el("buff-replace-reason");
       if (badge) {
         badge.textContent = status.badge;
         badge.dataset.status = current.status || "error";
@@ -539,36 +552,31 @@
         const value = retry.querySelector("dd");
         if (value && showRetry) value.textContent = `约 ${Math.ceil(retrySeconds)} 秒后可再次检测；请勿连续重试。`;
       }
-      if (reason) {
-        reason.textContent = current.can_replace
-          ? "当前未阻止替换；导入仍需服务端再次验证。"
-          : current.replace_block_reason || "当前条件下不能替换 BUFF 会话。";
-      }
-      const importButton = el("btn-buff-import");
-      const manualButton = el("btn-buff-manual");
-      if (importButton) {
-        const browserSupported = this.browserImportSupported();
-        importButton.disabled = !current.can_replace || !browserSupported;
-        importButton.textContent = browserSupported ? "从浏览器导入" : "浏览器导入仅桌面";
-        importButton.title = browserSupported ? "" : "从浏览器导入仅支持桌面 Chrome；手机请使用手动填写。";
-      }
-      if (manualButton) manualButton.disabled = !current.can_replace;
+      this.syncReplacementButtons();
     },
 
     renderUnavailable(message) {
       const badge = el("buff-session-badge");
       const output = el("buff-session-message");
+      const protection = el("buff-replace-protection");
       const reason = el("buff-replace-reason");
       if (badge) {
         badge.textContent = "状态暂不可用";
         badge.dataset.status = "error";
       }
       if (output && !this.actionNotice) output.textContent = message;
+      if (protection) protection.dataset.blocked = "true";
       if (reason) reason.textContent = "替换保护状态未知，已禁用导入入口；检测仍可单独使用。";
       const importButton = el("btn-buff-import");
       const manualButton = el("btn-buff-manual");
-      if (importButton) importButton.disabled = true;
-      if (manualButton) manualButton.disabled = true;
+      if (importButton) {
+        importButton.disabled = true;
+        importButton.title = "替换保护状态未知，请刷新页面重试。";
+      }
+      if (manualButton) {
+        manualButton.disabled = true;
+        manualButton.title = "替换保护状态未知，请刷新页面重试。";
+      }
     },
   };
 

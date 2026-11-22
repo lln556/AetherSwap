@@ -346,11 +346,29 @@ def receive_worker() -> None:
                     return
             except BuffVerificationRequired as e:
                 set_buff_verification_required(True, str(e))
+                try:
+                    from app.notify import notify_manual_intervention_required
+
+                    notify_manual_intervention_required(
+                        "Buff",
+                        str(e) or "Buff 需要完成安全验证，请在浏览器验证后重新导入会话。",
+                    )
+                except Exception:
+                    pass
                 log(f"receive_worker: Buff 需要安全验证: {e}", "warn", category="receive")
                 if wait_for_shutdown(60):
                     return
             except BuffAuthExpired:
                 set_buff_auth_expired(True)
+                try:
+                    from app.notify import notify_manual_intervention_required
+
+                    notify_manual_intervention_required(
+                        "Buff",
+                        "Buff 登录状态已失效，请在界面重新导入会话。",
+                    )
+                except Exception:
+                    pass
                 log("receive_worker: Buff 登录已失效，暂停待收货查询", "warn", category="receive")
                 if wait_for_shutdown(60):
                     return
@@ -599,6 +617,82 @@ def session_keepalive_worker() -> None:
             if is_shutdown_error(e):
                 return
             log(f"keepalive: worker 异常 {e}, 15 分钟后重试", "error", category="keepalive")
+            if wait_for_shutdown(900):
+                return
+
+
+def buff_session_monitor_worker() -> None:
+    """Periodically check whether the configured BUFF session is still accepted."""
+    from app.services.buff_session import (
+        check_session,
+        restore_persisted_auth_flags,
+        should_auto_check_session,
+    )
+
+    if is_shutting_down():
+        return
+    try:
+        restore_persisted_auth_flags()
+    except Exception as exc:
+        if is_shutdown_error(exc):
+            return
+        log(f"buff_monitor: 恢复持久化会话状态失败: {exc}", "warn", category="buff")
+
+    first_round = True
+    while not is_shutting_down():
+        try:
+            cfg = load_app_config_validated()
+            minutes = float(
+                (cfg.get("system") or {}).get("buff_session_check_interval_minutes", 60) or 0
+            )
+            if minutes <= 0:
+                if wait_for_shutdown(300):
+                    return
+                continue
+            interval = max(15 * 60.0, minutes * 60.0)
+            if first_round:
+                first_round = False
+                if wait_for_shutdown(30):
+                    return
+                cfg = load_app_config_validated()
+                minutes = float(
+                    (cfg.get("system") or {}).get("buff_session_check_interval_minutes", 60) or 0
+                )
+                if minutes <= 0:
+                    continue
+                interval = max(15 * 60.0, minutes * 60.0)
+
+            should_run, _reason, wait_hint = should_auto_check_session(interval)
+            if not should_run:
+                if wait_for_shutdown(min(300.0, max(30.0, float(wait_hint or 60.0)))):
+                    return
+                continue
+
+            result = check_session(notify_on_failure=True)
+            code = str(result.get("code") or "")
+            if result.get("ok"):
+                log("buff_monitor: BUFF 会话自动只读检测有效", "debug", category="buff")
+                sleep_seconds = min(300.0, interval)
+            elif code == "busy":
+                sleep_seconds = 60.0
+            elif code == "rate_limited":
+                retry_after = float((result.get("session") or {}).get("retry_after") or 60)
+                sleep_seconds = max(60.0, min(interval, retry_after + 5.0))
+            elif code in {"expired", "verification", "account_mismatch"}:
+                sleep_seconds = min(300.0, interval)
+            else:
+                log(
+                    f"buff_monitor: BUFF 自动检测未完成（{result.get('error') or code or '未知原因'}），稍后重试",
+                    "warn",
+                    category="buff",
+                )
+                sleep_seconds = min(900.0, interval)
+            if wait_for_shutdown(sleep_seconds):
+                return
+        except Exception as exc:
+            if is_shutdown_error(exc):
+                return
+            log(f"buff_monitor: worker 异常 {type(exc).__name__}: {exc}，15 分钟后重试", "warn", category="buff")
             if wait_for_shutdown(900):
                 return
 

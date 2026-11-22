@@ -171,6 +171,8 @@ async function loadConfig() {
   if (gBuffKeepalive) gBuffKeepalive.checked = sys.buff_session_keepalive_enabled === true;
   const gKeepaliveHours = el("cfg-session-keepalive-hours");
   if (gKeepaliveHours) gKeepaliveHours.value = sys.session_keepalive_hours ?? 4;
+  const gBuffCheckMinutes = el("cfg-buff-session-check-interval-minutes");
+  if (gBuffCheckMinutes) gBuffCheckMinutes.value = sys.buff_session_check_interval_minutes ?? 60;
   const gUiScale = el("cfg-ui_scale");
   if (gUiScale) {
     gUiScale.value = sys.ui_scale || "0.7";
@@ -299,6 +301,7 @@ function formToConfig() {
       exchange_rate_refresh_hours: el("cfg-exchange-refresh-hours") ? parseFloat(el("cfg-exchange-refresh-hours").value) || undefined : undefined,
       buff_session_keepalive_enabled: !!el("cfg-buff-session-keepalive-enabled")?.checked,
       session_keepalive_hours: readNumberInput("cfg-session-keepalive-hours"),
+      buff_session_check_interval_minutes: readIntInput("cfg-buff-session-check-interval-minutes"),
       timezone: browserTimezone.name,
       timezone_offset_minutes: browserTimezone.offsetMinutes,
       ui_scale: el("cfg-ui_scale") ? el("cfg-ui_scale").value : undefined,

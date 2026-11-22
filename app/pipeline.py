@@ -21,6 +21,7 @@ from app.pipeline_steps import (
     PurchaseOrderCreatedPending,
     PurchaseWriteResultUnknown,
     TIME_WINDOW_CLOSED,
+    _supports_keyword_argument,
     filter_iflow_rows,
     lock_and_confirm_payment,
     pick_stable_item,
@@ -125,6 +126,26 @@ def _fetch_and_filter_deals(ctx: PipelineContext, cfg: dict, retry_interval: int
     return filtered, False
 
 
+def _halt_if_buff_auth_blocked(ctx: PipelineContext) -> bool:
+    checker = getattr(ctx, "buff_auth_block_reason", None)
+    blocked = checker() if callable(checker) else None
+    if blocked is None:
+        return False
+    step_code, reason = blocked
+    ctx.log(reason, "error", category="buff")
+    ctx.set_status("error", step_code)
+    return True
+
+
+def _notify_buff_auth_required(reason: str) -> None:
+    try:
+        from app.notify import notify_manual_intervention_required
+
+        notify_manual_intervention_required("Buff", reason)
+    except Exception:
+        pass
+
+
 def _process_deals_for_target(
     ctx: PipelineContext,
     filtered: list,
@@ -163,19 +184,29 @@ def _process_deals_for_target(
             ctx.log("用户请求停止", "warn", category="buff")
             ctx.set_status("stopped", "已停止")
             return acc, bought, True
+        if _halt_if_buff_auth_blocked(ctx):
+            return acc, bought, True
         if not time_window_is_open():
             ctx.log("购买时间窗已关闭，暂停候选分析与下单", "info", category="pipeline")
             return acc, bought, TIME_WINDOW_CLOSED
 
         ctx.set_status("running", "CHECKING_STABILITY", progress_total=n_filtered, progress_done=0, progress_item="")
         cfg = {**cfg, "_decision_accumulated_spend": acc}
+        pick_kwargs = {
+            "log_fn": ctx.log,
+            "exclude_goods_ids": failed_goods_ids | skipped_this_round | stability_failed_this_round,
+            "buff_client": buyer,
+        }
+        if getattr(ctx, "buy_policy", None):
+            pick_kwargs["is_policy_current"] = policy_current
+        if _supports_keyword_argument(pick_stable_item, "is_auth_blocked"):
+            auth_checker = getattr(ctx, "buff_auth_block_reason", None)
+            if callable(auth_checker):
+                pick_kwargs["is_auth_blocked"] = lambda: auth_checker() is not None
         try:
             chosen, new_stability_failed = pick_stable_item(
                 filtered, cfg, steam_client, analyzer, ctx.is_stop_requested,
-                log_fn=ctx.log,
-                exclude_goods_ids=failed_goods_ids | skipped_this_round | stability_failed_this_round,
-                buff_client=buyer,
-                **({"is_policy_current": policy_current} if getattr(ctx, "buy_policy", None) else {}),
+                **pick_kwargs,
             )
         except BuffRateLimited as exc:
             # Return the completed spend before cooling down and rescanning.
@@ -187,6 +218,8 @@ def _process_deals_for_target(
         if ctx.is_stop_requested():
             ctx.set_status("stopped", "已停止")
             return acc, bought, True
+        if _halt_if_buff_auth_blocked(ctx):
+            return acc, bought, True
         if chosen is None:
             break
         if acc >= target:
@@ -194,6 +227,8 @@ def _process_deals_for_target(
         if not time_window_is_open():
             ctx.log("候选分析完成时购买时间窗已关闭，本件不下单", "info", category="pipeline")
             return acc, bought, TIME_WINDOW_CLOSED
+        if _halt_if_buff_auth_blocked(ctx):
+            return acc, bought, True
 
         ctx.log(f"购买本件: {chosen['name']} goods_id={chosen['goods_id']} 参考价={chosen.get('min_price')}", "info", category="buff")
 
@@ -247,9 +282,13 @@ def _process_deals_for_target(
                 ctx.set_status("error", "BUFF_RATE_LIMITED")
             elif isinstance(exc, BuffVerificationRequired):
                 ctx.state.set_buff_verification_required(True, str(exc))
+                _notify_buff_auth_required(
+                    str(exc) or "Buff 需要刷新页面状态或完成人机验证，请核对已成交订单后重新导入会话。"
+                )
                 ctx.set_status("error", "BUFF_VERIFICATION_REQUIRED")
             elif isinstance(exc, BuffAuthExpired):
                 ctx.state.set_buff_auth_expired(True)
+                _notify_buff_auth_required("Buff 登录已失效，请核对已成交订单并重新导入会话。")
                 ctx.set_status("error", "BUFF_AUTH_EXPIRED")
             elif isinstance(exc, BuffRequestBlocked):
                 ctx.set_status("error", "BUFF_REQUEST_BLOCKED")
@@ -391,6 +430,8 @@ def _run_pipeline(config: dict) -> None:
             ctx.log("用户请求停止", "warn")
             ctx.set_status("stopped", "已停止")
             return
+        if _halt_if_buff_auth_blocked(ctx):
+            return
 
         cfg, policy_updated = ctx.buy_policy.refresh(cfg)
         if policy_updated:
@@ -447,6 +488,8 @@ def _run_pipeline(config: dict) -> None:
 
             if ctx.is_stop_requested():
                 ctx.set_status("stopped", "已停止")
+                return
+            if _halt_if_buff_auth_blocked(ctx):
                 return
             if not filtered:
                 if ctx.wait_retry(retry_interval):
@@ -535,6 +578,7 @@ def _run_pipeline(config: dict) -> None:
             return
         except BuffAuthExpired:
             ctx.state.set_buff_auth_expired(True)
+            _notify_buff_auth_required("Buff 登录已过期，请在界面重新导入会话。")
             ctx.log("Buff 登录已过期，请在界面重新登录", "error", category="buff")
             ctx.set_status("error", "BUFF_AUTH_EXPIRED")
             return
@@ -560,6 +604,7 @@ def _run_pipeline(config: dict) -> None:
         except BuffVerificationRequired as e:
             reason = str(e) or "Buff 需要刷新页面或完成人机验证"
             ctx.state.set_buff_verification_required(True, reason)
+            _notify_buff_auth_required(reason)
             ctx.log(f"Buff 需要刷新页面状态或完成人机验证: {reason}", "error", category="buff")
             ctx.set_status("error", "BUFF_VERIFICATION_REQUIRED")
             return
