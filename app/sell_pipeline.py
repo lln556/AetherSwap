@@ -284,9 +284,16 @@ def _load_rate_map() -> dict:
     return {}
 
 
-def _record_listing_success(ctx, aid: str, name: str, list_price: float, listing_delay: float) -> None:
+def _record_listing_success(ctx, aid: str, name: str, list_price: float, listing_delay: float,
+                            already_listed: bool = False) -> None:
     """Append sale record, mark purchase as listed, and sleep the listing delay."""
-    append_sale({"name": name, "goods_id": 0, "price": list_price, "at": time.time(), "assetid": aid or ""})
+    get_sales = getattr(ctx.state, "get_sales", None)
+    existing_assetids = {
+        str(s.get("assetid") or "")
+        for s in (get_sales() if callable(get_sales) else [])
+    }
+    if not already_listed and (not aid or str(aid) not in existing_assetids):
+        append_sale({"name": name, "goods_id": 0, "price": list_price, "at": time.time(), "assetid": aid or ""})
     if aid:
         purchases = ctx.state.get_purchases()
         for i, p in enumerate(purchases):
@@ -809,7 +816,8 @@ def _submit_listings(
                 listed += 1
                 entry["submitted"] = True
                 ctx.log(f"[出售] 上架请求已接受 assetid={aid} {name} 价格={list_price:.2f}，正在核实在售/待确认状态 ({reason})", "info", category="steam")
-                _record_listing_success(ctx, aid, name, list_price, listing_delay)
+                _record_listing_success(ctx, aid, name, list_price, listing_delay,
+                                        "already have a listing" in msg_lower)
                 continue
 
             if "previous action completes" in msg_lower or "until your previous" in msg_lower:
@@ -832,7 +840,8 @@ def _submit_listings(
                         listed += 1
                         entry["submitted"] = True
                         ctx.log(f"[出售] 上架请求已接受 assetid={aid} {name} 价格={list_price:.2f}，正在核实在售/待确认状态 ({reason}) [重试成功]", "info", category="steam")
-                        _record_listing_success(ctx, aid, name, list_price, listing_delay)
+                        _record_listing_success(ctx, aid, name, list_price, listing_delay,
+                                                "already have a listing" in msg2)
                         continue
 
             response_preview = (

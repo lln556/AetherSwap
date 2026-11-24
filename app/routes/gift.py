@@ -11,10 +11,16 @@ from app.accounts import get_current_account, update_account
 from app.services.account_region import _region_from_settlement_currency
 from app.services.steam_auth import steam_id_from_cookie_str
 router = APIRouter()
+_GIFT_TASK_CAP = 50
 _gift_tasks: dict[str, dict] = {}
 _task_lock = threading.Lock()
 def _new_task(task_id: str):
     with _task_lock:
+        while len(_gift_tasks) >= _GIFT_TASK_CAP and task_id not in _gift_tasks:
+            oldest = next(iter(_gift_tasks), None)
+            if oldest is None:
+                break
+            _gift_tasks.pop(oldest, None)
         _gift_tasks[task_id] = {
             "id": task_id,
             "status": "pending",   
@@ -128,14 +134,32 @@ def api_gift_send(body: GiftBody):
             t = _gift_tasks.get(task_id)
             if t:
                 t["status"] = "running"
-        gen = gift_engine.run_gift_flow(
-            cookies_raw=cookies_raw,
-            friend_steamid=body.friend_steamid,
-            item_id=body.item_id,
-            item_type=body.item_type,
-        )
-        for step in gen:
-            _append_progress(task_id, step)
+        try:
+            gen = gift_engine.run_gift_flow(
+                cookies_raw=cookies_raw,
+                friend_steamid=body.friend_steamid,
+                item_id=body.item_id,
+                item_type=body.item_type,
+            )
+            saw_done = False
+            for step in gen:
+                if isinstance(step, dict) and step.get("done"):
+                    saw_done = True
+                _append_progress(task_id, step)
+            if not saw_done:
+                _append_progress(task_id, {
+                    "step": "error",
+                    "message": "赠礼流程未正常结束",
+                    "ok": False,
+                    "done": True,
+                })
+        except Exception as exc:
+            _append_progress(task_id, {
+                "step": "error",
+                "message": f"赠礼流程异常: {exc}",
+                "ok": False,
+                "done": True,
+            })
     t = threading.Thread(target=_run, daemon=True)
     t.start()
     return {"ok": True, "task_id": task_id}
@@ -155,18 +179,5 @@ def api_gift_balance():
         info = gift_engine.get_wallet_balance(cookies_raw)
         _sync_wallet_info_to_current_account(info)
         return {"ok": True, **info}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-@router.get("/api/gift/debug-config")
-def api_gift_debug_config():
-    """临时调试：查看 Steam store_user_config 的原始字段"""
-    cookies_raw = _get_cookies_raw()
-    err = _check_cookies(cookies_raw)
-    if err:
-        return err
-    try:
-        _, country_code, config_data = gift_engine.get_base_auth_status(cookies_raw)
-        wallet_fields = {k: v for k, v in config_data.items() if "wallet" in k.lower() or "balance" in k.lower() or "currency" in k.lower()}
-        return {"ok": True, "country_code": country_code, "wallet_fields": wallet_fields, "all_keys": list(config_data.keys())}
     except Exception as e:
         return {"ok": False, "error": str(e)}

@@ -1,12 +1,12 @@
-
 let holdingsMultiSelectMode = false;
-let historyMultiSelectMode = false;
 let lastEnrichTime = 0;
 let lastResellRatio = 0.85;
 let lastEnrichData = null;
+
 function marketPriceCoverageLabel(label, known, total) {
   return `${label}（${known === total ? `${total}件` : `${known}/${total}件`}）`;
 }
+
 function missingMarketPriceNote(purchaseCount, currentCount, total, comparableCount) {
   const notes = [];
   if (purchaseCount < total) notes.push(`缺少 ${total - purchaseCount} 件购入市场价`);
@@ -14,8 +14,14 @@ function missingMarketPriceNote(purchaseCount, currentCount, total, comparableCo
   if (!notes.length) return "";
   return `<span class="summary-note">${notes.join("；")}。市场变动仅比较两种价格都有记录的 ${comparableCount} 件。</span>`;
 }
+
 function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, multiSelectMode = false) {
   const ratio = Math.max(0.01, Math.min(1, Number(resellRatio) || 0.85));
+  if (!list.length) {
+    const colSpan = isPurchase ? (multiSelectMode ? 14 : 13) : 5;
+    tbody.innerHTML = `<tr><td colspan="${colSpan}" class="table-empty-cell">暂无持有饰品记录</td></tr>`;
+    return;
+  }
   const rowHtmls = [];
   for (const t of list) {
     const at = t.at ? new Date(t.at * 1000) : null;
@@ -30,7 +36,7 @@ function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, mult
         ? `<button type="button" class="btn btn-sm btn-edit tx-btn-edit" data-type="${escapeHtml(type)}" data-idx="${idx}">编辑</button>`
         : `<button type="button" class="btn btn-sm btn-edit tx-btn-edit" data-type="${escapeHtml(type)}" data-idx="${idx}">编辑</button> <button type="button" class="btn btn-sm btn-primary tx-btn-sell" data-type="${escapeHtml(type)}" data-idx="${idx}">售出</button> <button type="button" class="btn btn-sm btn-danger-outline tx-btn-del" data-type="${escapeHtml(type)}" data-idx="${idx}" data-db-id="${Number(t.db_id) || 0}">删除</button>`)
       : `<button type="button" class="btn btn-sm btn-edit tx-btn-edit" data-type="${escapeHtml(type)}" data-idx="${idx}">编辑</button> <button type="button" class="btn btn-sm btn-danger-outline tx-btn-del" data-type="${escapeHtml(type)}" data-idx="${idx}" data-db-id="${Number(t.db_id) || 0}">删除</button>`;
-    const checkCell = isPurchase && multiSelectMode ? `<td class="holding-select-cell"><input type="checkbox" class="holding-checkbox" data-idx="${idx}" data-db-id="${Number(t.db_id) || 0}" /></td>` : "";
+    const checkCell = isPurchase && multiSelectMode ? `<td class="holding-select-cell"><input type="checkbox" class="holding-checkbox" data-idx="${idx}" data-db-id="${Number(t.db_id) || 0}" aria-label="选择 ${escapeHtml(nameText)}" /></td>` : "";
     const priceCell = `<td class="mono">${escapeHtml(Number(t.price).toFixed(2))}</td>`;
     if (isPurchase) {
       const mp = t.market_price != null ? Number(t.market_price).toFixed(2) : "未记录";
@@ -79,10 +85,10 @@ function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, mult
           toast("已删除");
           refreshTransactions();
         } else {
-          toast("删除失败", r.error || "");
+          toast("删除失败", r.error || "", 3500, "error");
         }
       } catch (e) {
-        toast("删除失败", e.message || "");
+        toast("删除失败", e.message || "", 3500, "error");
       }
     });
   });
@@ -112,10 +118,11 @@ function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, mult
         else if (t.listing) listingEl.value = "1";
         else listingEl.value = "0";
       }
-      el("edit-tx-overlay").dataset.editType = type;
-      el("edit-tx-overlay").dataset.editIdx = String(idx);
-      el("edit-tx-overlay").dataset.editDbId = String(Number(t.db_id) || 0);
-      el("edit-tx-overlay").classList.remove("hidden");
+      const ov = el("edit-tx-overlay");
+      ov.dataset.editType = type;
+      ov.dataset.editIdx = String(idx);
+      ov.dataset.editDbId = String(Number(t.db_id) || 0);
+      openNativeDialog(ov);
     });
   });
   tbody.querySelectorAll(".tx-btn-sell").forEach(btn => {
@@ -125,189 +132,23 @@ function renderTxTable(tbody, list, isPurchase = false, resellRatio = 0.85, mult
       if (!t) return;
       const nameEl = el("sell-tx-item-name");
       if (nameEl) nameEl.textContent = t.name || "—";
-      el("sell-tx-overlay").dataset.sellIdx = String(idx);
-      el("sell-tx-overlay").dataset.sellDbId = String(Number(t.db_id) || 0);
+      const ov = el("sell-tx-overlay");
+      ov.dataset.sellIdx = String(idx);
+      ov.dataset.sellDbId = String(Number(t.db_id) || 0);
+      delete ov.dataset.sellIdxList;
       const priceEl = el("sell-tx-price");
       if (priceEl) priceEl.value = "";
-      el("sell-tx-overlay").classList.remove("hidden");
+      openNativeDialog(ov);
       if (priceEl) priceEl.focus();
     });
   });
 }
-function renderPurchaseHistoryTable(tbody, list, resellRatio = 0.85, multiSelectMode = false) {
-  const ratio = Math.max(0.01, Math.min(1, Number(resellRatio) || 0.85));
-  const sorted = list.slice().sort((a, b) => (b.at || 0) - (a.at || 0));
-  const rowHtmls = [];
-  for (const t of sorted) {
-    const at = t.at ? new Date(t.at * 1000) : null;
-    const timeStr = at ? formatDateTime(at) : "—";
-    const nameText = (t.name || "—").toString();
-    const metaLine = buildItemMetaLine(t.item_type, t.exterior, t.paintwear);
-    const nameCell = `<td>${escapeHtml(nameText)}${metaLine ? `<div class="item-sub">${escapeHtml(metaLine)}</div>` : ""}</td>`;
-    const idx = t.idx;
-    const checkCell = multiSelectMode ? `<td class="holding-select-cell"><input type="checkbox" class="history-checkbox" data-idx="${idx}" data-db-id="${Number(t.db_id) || 0}" /></td>` : "";
-    const cost = Number(t.price) || 0;
-    const mp = t.market_price != null ? Number(t.market_price).toFixed(2) : "未记录";
-    const sold = t.sale_price != null && Number(t.sale_price) > 0;
-    const listingError = t.listing_status === "error";
-    const pendingConfirmation = t.listing && t.listing_status === "pending_confirmation";
-    const submitted = t.listing && t.listing_status === "submitted";
-    const statusStr = t.pending_receipt ? "待收货" : sold ? "已出售" : listingError ? "ERROR" : pendingConfirmation ? "待 Steam 确认" : submitted ? "上架状态待核实" : t.listing ? "出售中" : "持有中";
-    const statusCellClass = t.pending_receipt || pendingConfirmation || submitted ? "status-pending" : sold ? "status-sold" : listingError ? "status-error" : t.listing ? "status-listing" : "status-holding";
-    const salePriceStr = sold ? Number(t.sale_price).toFixed(2) : "—";
-    let discountRatioStr = "—", cashProfitStr = "—", selfUseStr = "—", discountRatioClass = "";
-    if (sold) {
-      const afterTax = Number(t.sale_price) / 1.15;
-      discountRatioStr = afterTax > 0 && cost > 0 ? (cost / afterTax).toFixed(4) : "—";
-      discountRatioClass = discountRatioStr !== "—" ? (parseFloat(discountRatioStr) > ratio ? "text-bad" : "text-ok") : "";
-      const cashProfit = afterTax > 0 && cost >= 0 ? afterTax * ratio - cost : 0;
-      const selfUse = afterTax - cost;
-      cashProfitStr = (cashProfit >= 0 ? "+" : "") + cashProfit.toFixed(2);
-      selfUseStr = (selfUse >= 0 ? "+" : "") + selfUse.toFixed(2);
-    }
-    const cashClass = sold && parseFloat(cashProfitStr) !== 0 ? (parseFloat(cashProfitStr) > 0 ? "text-ok" : "text-bad") : "";
-    const selfUseClass = sold && parseFloat(selfUseStr) !== 0 ? (parseFloat(selfUseStr) > 0 ? "text-ok" : "text-bad") : "";
-    let deviationCell = "<td></td>";
-    if (sold) {
-      const marketAtBuy = t.market_price != null ? Number(t.market_price) : 0;
-      const saleP = Number(t.sale_price) || 0;
-      if (marketAtBuy > 0) {
-        const diff = saleP - marketAtBuy;
-        const pct = ((diff / marketAtBuy) * 100).toFixed(2) + "%";
-        const devClass = diff > 0 ? "text-ok" : diff < 0 ? "text-bad" : "";
-        deviationCell = `<td class="mono ${devClass}">${diff >= 0 ? "+" : ""}${diff.toFixed(2)} (${diff >= 0 ? "+" : ""}${pct})</td>`;
-      } else {
-        deviationCell = `<td class="mono">—</td>`;
-      }
-    } else {
-      deviationCell = `<td class="mono">—</td>`;
-    }
-    const dbId = Number(t.db_id) || 0;
-    const confirmBtn = !multiSelectMode && (pendingConfirmation || submitted) ? `<button type="button" class="btn btn-sm btn-primary ph-btn-confirm" data-idx="${idx}" data-db-id="${dbId}">${pendingConfirmation ? "确认上架" : "核实状态"}</button> ` : "";
-    const delistBtn = !multiSelectMode && t.listing ? `<button type="button" class="btn btn-sm btn-warning-outline ph-btn-delist" data-type="purchase" data-idx="${idx}" data-db-id="${dbId}">下架</button> ` : "";
-    const actHtml = !multiSelectMode ? (confirmBtn + delistBtn + `<button type="button" class="btn btn-sm btn-danger-outline ph-btn-del" data-type="purchase" data-idx="${idx}" data-db-id="${dbId}">删除</button>`) : "";
-    const assetidStr = t.assetid ?? "—";
-    rowHtmls.push(`<tr>${checkCell}${itemThumbCellHtml(t.icon_url)}<td class="mono">${escapeHtml(timeStr)}</td>${nameCell}<td class="mono">${escapeHtml(assetidStr)}</td><td class="mono">${escapeHtml(Number(t.price).toFixed(2))}</td><td class="mono">${escapeHtml(mp)}</td><td class="status-cell ${statusCellClass}">${escapeHtml(statusStr)}</td><td class="mono">${escapeHtml(salePriceStr)}</td><td class="mono ${discountRatioClass}">${escapeHtml(discountRatioStr)}</td><td class="mono ${cashClass}">${escapeHtml(cashProfitStr)}</td><td class="mono ${selfUseClass}">${escapeHtml(selfUseStr)}</td>${deviationCell}<td class="tx-actions">${actHtml}</td></tr>`);
-  }
-  tbody.innerHTML = rowHtmls.join("");
-  tbody.querySelectorAll(".ph-btn-confirm").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        const idx = parseInt(btn.dataset.idx, 10);
-        const dbId = parseInt(btn.dataset.dbId, 10) || 0;
-        const query = dbId ? "?" + new URLSearchParams({ db_id: dbId }) : "";
-        const r = await fetchJson(API + "/purchase/" + idx + "/confirm_listing" + query, { method: "POST" });
-        toast(r.ok ? (r.status === "active" ? "已正式在售" : "状态已核实") : "确认失败", r.message || r.error || "");
-        refreshTransactions();
-      } catch (e) {
-        toast("确认失败", e.message || "请求异常");
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  });
-  tbody.querySelectorAll(".ph-btn-delist").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      if (!(await appConfirm("确定下架该饰品？系统会核实返回库存后的资产 ID。重新上架可能需要 Steam 确认。", { title: "下架饰品", confirmText: "下架" }))) return;
-      const idx = parseInt(btn.dataset.idx, 10);
-      btn.disabled = true;
-      toast("下架中", "请稍候…");
-      try {
-        const dbId = parseInt(btn.dataset.dbId, 10) || 0;
-        const query = dbId ? "?" + new URLSearchParams({ db_id: dbId }) : "";
-        const r = await fetchJson(API + "/purchase/" + idx + "/delist" + query, { method: "POST" });
-        if (r.ok) {
-          const assetDetail = r.assetid != null && r.assetid !== "" ? "库存 assetid: " + r.assetid : "库存 assetid 待同步，请使用「同步售出/持有」补全";
-          const detail = [assetDetail, r.warning || r.message || ""].filter(Boolean).join("；");
-          toast("下架成功", detail);
-          refreshTransactions();
-          refreshStatus();
-        } else {
-          toast("下架失败", r.error || "接口未返回 error 字段");
-        }
-      } catch (e) {
-        toast("下架失败", e.message || "请求异常");
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  });
-  tbody.querySelectorAll(".ph-btn-del").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      if (!(await appConfirm("确定归档这条记录？交易中心将保留历史。删除后将从持有饰品与操作记录中同时移除。", { title: "删除持有记录", danger: true, confirmText: "删除" }))) return;
-      const idx = parseInt(btn.dataset.idx, 10);
-      try {
-        const dbId = parseInt(btn.dataset.dbId, 10) || 0;
-        const params = { type: "purchase", idx };
-        if (dbId) params.db_id = dbId;
-        const r = await fetchJson(API + "/transaction?" + new URLSearchParams(params), { method: "DELETE" });
-        if (r.ok) {
-          toast("已删除");
-          refreshTransactions();
-        } else {
-          toast("删除失败", r.error || "");
-        }
-      } catch (e) {
-        toast("删除失败", e.message || "");
-      }
-    });
-  });
-}
-function applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, resellRatio = 0.85) {
+
+function applyTransactionsToUI(all, summaryEl, tbodyP, resellRatio = 0.85) {
   const purchases = all.filter((t) => t.type === "purchase");
   const holdings = purchases.filter((t) => !(t.sale_price != null && Number(t.sale_price) > 0));
-  const sales = all.filter((t) => t.type === "sale");
   const ratio = Math.max(0.01, Math.min(1, Number(resellRatio) || 0.85));
   if (tbodyP) renderTxTable(tbodyP, holdings, true, ratio, holdingsMultiSelectMode);
-  if (tbodyHistory) renderPurchaseHistoryTable(tbodyHistory, purchases, ratio, historyMultiSelectMode);
-  syncHistoryMultiSelectUI();
-  const historySummaryEl = el("purchase-history-summary");
-  if (historySummaryEl && purchases.length) {
-    const totalPrice = purchases.reduce((s, t) => s + (Number(t.price) || 0), 0);
-    const totalMp = purchases.reduce((s, t) => s + (t.market_price != null ? Number(t.market_price) : 0), 0);
-    const purchaseMarketCount = purchases.filter(t => t.market_price != null).length;
-    const totalSalePrice = purchases.reduce((s, t) => s + (t.sale_price != null && Number(t.sale_price) > 0 ? Number(t.sale_price) : 0), 0);
-    const totalAfterTax = totalSalePrice > 0 ? totalSalePrice / 1.15 : null;
-    const soldItems = purchases.filter((t) => t.sale_price != null && Number(t.sale_price) > 0);
-    let ratioSum = 0, ratioCount = 0, totalCashProfit = 0, totalSelfUseProfit = 0;
-    soldItems.forEach((t) => {
-      const afterTax = Number(t.sale_price) / 1.15;
-      const cost = Number(t.price) || 0;
-      if (afterTax > 0 && cost > 0) { ratioSum += cost / afterTax; ratioCount += 1; }
-      totalCashProfit += afterTax * ratio - cost;
-      totalSelfUseProfit += afterTax - cost;
-    });
-    const discountRatio = ratioCount > 0 ? (ratioSum / ratioCount).toFixed(4) : "—";
-    const discountRatioClass = discountRatio !== "—" ? (parseFloat(discountRatio) > ratio ? "text-bad" : "text-ok") : "";
-    const cashProfitVal = soldItems.length > 0 ? totalCashProfit : null;
-    const selfUseProfitVal = soldItems.length > 0 ? totalSelfUseProfit : null;
-    const profitClass = cashProfitVal != null && cashProfitVal > 0 ? "text-ok" : cashProfitVal != null && cashProfitVal < 0 ? "text-bad" : "";
-    const selfUseClass = selfUseProfitVal != null && selfUseProfitVal > 0 ? "text-ok" : selfUseProfitVal != null && selfUseProfitVal < 0 ? "text-bad" : "";
-    const soldMp = purchases.reduce((s, t) => s + (t.sale_price != null && Number(t.sale_price) > 0 && t.market_price != null ? Number(t.market_price) : 0), 0);
-    const totalDeviation = totalSalePrice > 0 && soldMp > 0 ? totalSalePrice - soldMp : null;
-    const totalDeviationPct = totalDeviation != null && soldMp > 0 ? ((totalDeviation / soldMp) * 100).toFixed(2) + "%" : "—";
-    const deviationClass = totalDeviation != null && totalDeviation > 0 ? "text-ok" : totalDeviation != null && totalDeviation < 0 ? "text-bad" : "";
-    const deviationStr = totalDeviation != null ? `${totalDeviation >= 0 ? "+" : ""}${totalDeviation.toFixed(2)} (${totalDeviation >= 0 ? "+" : ""}${totalDeviationPct})` : "—";
-    const salePriceStr = totalSalePrice > 0 ? totalSalePrice.toFixed(2) : "—";
-    const afterTaxStr = totalAfterTax != null ? totalAfterTax.toFixed(2) : "—";
-    const cashProfitStr = cashProfitVal != null ? (cashProfitVal >= 0 ? "+" : "") + cashProfitVal.toFixed(2) : "—";
-    const selfUseProfitStr = selfUseProfitVal != null ? (selfUseProfitVal >= 0 ? "+" : "") + selfUseProfitVal.toFixed(2) : "—";
-    historySummaryEl.innerHTML = [
-      `<span class="summary-stat"><span class="summary-label">总购入价</span><span class="summary-value mono">${totalPrice.toFixed(2)}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">${marketPriceCoverageLabel("总购入市场价", purchaseMarketCount, purchases.length)}</span><span class="summary-value mono">${purchaseMarketCount ? totalMp.toFixed(2) : "—"}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总出售价</span><span class="summary-value mono">${salePriceStr}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总税后价格</span><span class="summary-value mono">${afterTaxStr}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">实际折扣比率</span><span class="summary-value mono ${discountRatioClass}">${discountRatio}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总变现收益</span><span class="summary-value mono ${profitClass}">${cashProfitStr}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总自用收益</span><span class="summary-value mono ${selfUseClass}">${selfUseProfitStr}</span></span>`,
-      `<span class="summary-stat"><span class="summary-label">总价格偏离度</span><span class="summary-value mono ${deviationClass}">${deviationStr}</span></span>`,
-    ].join("");
-    historySummaryEl.style.display = "";
-  } else if (historySummaryEl) {
-    historySummaryEl.textContent = "";
-    historySummaryEl.style.display = "none";
-  }
   if (summaryEl && holdings.length) {
     const totalPrice = holdings.reduce((s, t) => s + (Number(t.price) || 0), 0);
     const totalMp = holdings.reduce((s, t) => s + (t.market_price != null ? Number(t.market_price) : 0), 0);
@@ -362,16 +203,15 @@ function applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, res
       `<span class="summary-stat"><span class="summary-label">总市场变动（${marketChangeTotals.count}件）</span><span class="summary-value mono ${plClass}">${plStr}</span></span>`,
       missingMarketPriceNote(purchaseMarketCount, currentMarketCount, holdings.length, marketChangeTotals.count),
     ].join("");
+    summaryEl.style.display = "";
   } else if (summaryEl) {
     summaryEl.textContent = "";
     summaryEl.style.display = "none";
   }
-  if (summaryEl && holdings.length) summaryEl.style.display = "";
-  if (summaryEl && !holdings.length) summaryEl.style.display = "none";
-  if (tbodyS) renderTxTable(tbodyS, sales, false);
   refreshAnalytics(purchases, ratio);
   syncHoldingsMultiSelectUI();
 }
+
 function syncHoldingsMultiSelectUI() {
   const selectTh = el("holding-select-th");
   const batchBar = el("holdings-batch-actions");
@@ -386,29 +226,15 @@ function syncHoldingsMultiSelectUI() {
     if (multiselectBtn) multiselectBtn.textContent = "多选";
   }
 }
-function syncHistoryMultiSelectUI() {
-  const selectTh = el("history-select-th");
-  const batchBar = el("history-batch-actions");
-  const multiselectBtn = el("btn-history-multiselect");
-  if (historyMultiSelectMode) {
-    if (selectTh) selectTh.classList.remove("hidden");
-    if (batchBar) { batchBar.classList.remove("hidden"); batchBar.style.display = "flex"; }
-    if (multiselectBtn) multiselectBtn.textContent = "取消多选";
-  } else {
-    if (selectTh) selectTh.classList.add("hidden");
-    if (batchBar) { batchBar.classList.add("hidden"); batchBar.style.display = "none"; }
-    if (multiselectBtn) multiselectBtn.textContent = "多选";
-  }
-}
+
 function getCurrentPriceRefreshMinutes() {
   return Math.max(1, parseInt(el("cfg-current-price-refresh-minutes")?.value, 10) || 10);
 }
+
 async function refreshTransactions() {
   const tbodyP = document.querySelector("#transactions-table-purchases tbody");
-  const tbodyS = document.querySelector("#transactions-table-sales tbody");
-  const tbodyHistory = document.querySelector("#transactions-table-purchase-history tbody");
   const summaryEl = el("purchases-summary");
-  if (!tbodyP && !tbodyS && !tbodyHistory) return;
+  if (!tbodyP) return;
   try {
     const d = await fetchJson(API + "/transactions?enrich_current_price=0");
     const all = d.transactions || [];
@@ -419,16 +245,15 @@ async function refreshTransactions() {
     }
     lastEnrichData = all;
     lastResellRatio = d.resell_ratio;
-    applyTransactionsToUI(all, summaryEl, tbodyP, tbodyS, tbodyHistory, lastResellRatio);
+    applyTransactionsToUI(all, summaryEl, tbodyP, lastResellRatio);
   } catch (e) {
-    toast("加载操作记录失败", e.message || "");
+    toast("加载操作记录失败", e.message || "", 3500, "error");
   }
 }
+
 function renderTransactionsFromCache() {
   const tbodyP = document.querySelector("#transactions-table-purchases tbody");
-  const tbodyS = document.querySelector("#transactions-table-sales tbody");
-  const tbodyHistory = document.querySelector("#transactions-table-purchase-history tbody");
-  if (!lastEnrichData || (!tbodyP && !tbodyS && !tbodyHistory)) return;
+  if (!lastEnrichData || !tbodyP) return;
   const summaryEl = el("purchases-summary");
-  applyTransactionsToUI(lastEnrichData, summaryEl, tbodyP, tbodyS, tbodyHistory, lastResellRatio);
+  applyTransactionsToUI(lastEnrichData, summaryEl, tbodyP, lastResellRatio);
 }

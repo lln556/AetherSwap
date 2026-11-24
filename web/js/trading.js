@@ -46,11 +46,19 @@
   }
   window.refreshTrading = async function () {
     const seq = ++requestSeq;
+    const salesOnly = !!document.querySelector("#panel-sales.active") && !document.querySelector("#panel-purchase-history.active");
     const view = el("trading-view")?.value || "purchases";
-    const params = new URLSearchParams({days:el("trading-days")?.value || "0", status:el("trading-status")?.value || "", query:el("trading-query")?.value || "", page, page_size:50});
+    const params = salesOnly
+      ? new URLSearchParams({ page_size: 50 })
+      : new URLSearchParams({days:el("trading-days")?.value || "0", status:el("trading-status")?.value || "", query:el("trading-query")?.value || "", page, page_size:50});
     try {
       const d = await fetchJson(API + "/trading?" + params);
       if (seq !== requestSeq) return;
+      if (salesOnly) {
+        const salesBody = el("trading-sales-body");
+        if (salesBody) salesBody.innerHTML = (d.settlements || []).map(saleRow).join("") || '<tr><td colspan="7" class="trading-empty">暂无成交记录</td></tr>';
+        return;
+      }
       showPolicy(d.policy);
       const s=d.summary;
       el("trading-summary").innerHTML = [["今日购买",`${s.today_bought} 件`,money(s.today_cost_minor)],["今日成交",`${s.today_sold} 件`,money(s.today_proceeds_minor)+" 到账"],["当前在售",`${s.active} 件`,"已核实正式挂单"],["调价处理中",`${s.repricing} 件`,"撤单 / 返库 / 重新上架"],["需要关注",`${s.pending_confirmation+s.attention} 件`,`${s.pending_confirmation} 件待确认 · ${s.attention} 件待核实`]].map(([a,b,c])=>`<article><span class="muted">${a}</span><strong>${b}</strong><small class="muted">${c}</small></article>`).join("");
@@ -67,7 +75,7 @@
         total=d.total;
         rows=d.items.map(r=>`<tr><td>${date(r.purchased_at)}</td>${itemCell(r)}<td>${money(r.cost_minor)}</td><td><span class="trading-badge ${esc(r.state)}">${labels[r.state] || esc(r.state)}</span></td><td>${r.settlement ? money(r.settlement.proceeds_minor,r.settlement.currency)+" 到账" : r.listing ? money(r.listing.buyer_minor,r.listing.currency)+" 挂价" : "—"}<small class="muted">${r.listing_count} 次上架记录</small></td><td>${detailButton(r)}</td></tr>`);
       }
-      el("trading-head").innerHTML = "<tr>"+head.map(x=>`<th>${x}</th>`).join("")+"</tr>";
+      el("trading-head").innerHTML = "<tr>"+head.map(x=>`<th scope="col">${x}</th>`).join("")+"</tr>";
       el("trading-body").innerHTML = rows.join("") || `<tr><td colspan="${head.length}" class="trading-empty">当前条件下没有记录</td></tr>`;
       el("trading-filter-note").textContent = view === "listings" ? "展示全部当前挂单，不受购买日期筛选影响。价格为最近一次 Steam 核实结果。" : `${view === "settlements" ? "按成交日期筛选，日期未知的旧记录仅在“全部”中显示" : "按实际购买时间筛选"} · 北京时间自然日`;
       el("trading-status").disabled = view !== "purchases";
@@ -75,11 +83,7 @@
       el("trading-page").textContent = `第 ${page} / ${Math.max(1,Math.ceil(total/50))} 页 · ${total} 条`;
       el("trading-prev").disabled = page <= 1;
       el("trading-next").disabled = page*50 >= total;
-      if(document.querySelector("#panel-sales.active")) {
-        const all=await fetchJson(API+"/trading?page_size=50");
-        el("trading-sales-body").innerHTML=all.settlements.map(saleRow).join("") || '<tr><td colspan="7" class="trading-empty">暂无成交记录</td></tr>';
-      }
-    } catch(e) { toast("交易记录加载失败", e.message || "请求失败"); }
+    } catch(e) { toast("交易记录加载失败", e.message || "请求失败", 3500, "error"); }
   };
   for (const id of ["trading-view","trading-days","trading-status"]) el(id)?.addEventListener("change",()=>{page=1;refreshTrading();});
   let searchTimer;

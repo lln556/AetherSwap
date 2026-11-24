@@ -254,6 +254,100 @@ def test_get_wallet_balance_returns_wallet_country(monkeypatch):
     assert wallet["country_code"] == "CN"
 
 
+def _make_ssr_market_page(wallet_data: dict, *, logged_in: bool = True) -> str:
+    import json
+
+    query_data = json.dumps({
+        "mutations": [],
+        "queries": [
+            {
+                "queryKey": ["CurrentUserWalletDetails", 123456],
+                "state": {"data": wallet_data},
+            }
+        ],
+    })
+    ssr = json.dumps({
+        "route": "/market/",
+        "UserConfig": {"logged_in": logged_in, "steamid": "76561198000000000" if logged_in else "0"},
+        "renderContext": {"queryData": query_data},
+    })
+    return f'<!DOCTYPE html><html><head><script type="application/json" id="valve-ssr-data">{ssr}</script></head></html>'
+
+
+def test_get_wallet_balance_parses_steam_market_ssr_payload(monkeypatch):
+    from app import gift_engine
+    import utils.proxy_manager as proxy_manager
+
+    page = _make_ssr_market_page({
+        "has_wallet": True,
+        "user_country_code": "CN",
+        "wallet_country_code": "CN",
+        "balance": "2154",
+        "delayed_balance": "100",
+        "currency_code": 23,
+    })
+
+    monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: _ProxyManager())
+    monkeypatch.setattr(gift_engine.http, "get", lambda *args, **kwargs: _Response(page))
+
+    wallet = gift_engine.get_wallet_balance("steamLoginSecure=x")
+
+    assert wallet["balance_raw"] == 2254
+    assert wallet["balance_display"] == "¥22.54"
+    assert wallet["currency_code"] == "CNY"
+    assert wallet["currency_id"] == 23
+    assert wallet["wallet_country"] == "CN"
+    assert wallet["country_code"] == "CN"
+
+
+def test_get_wallet_balance_ignores_logged_out_ssr_payload(monkeypatch):
+    from app import gift_engine
+    import utils.proxy_manager as proxy_manager
+
+    page = _make_ssr_market_page({
+        "has_wallet": True,
+        "wallet_country_code": "US",
+        "balance": "0",
+        "delayed_balance": "0",
+        "currency_code": 1,
+    }, logged_in=False)
+
+    monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: _ProxyManager())
+    monkeypatch.setattr(gift_engine.http, "get", lambda *args, **kwargs: _Response(page))
+    monkeypatch.setattr(gift_engine, "get_base_auth_status", lambda cookies: ("", "US", {}))
+
+    try:
+        gift_engine.get_wallet_balance("steamLoginSecure=x")
+    except RuntimeError as exc:
+        assert "市场页未返回有效的钱包数据" in str(exc)
+    else:
+        raise AssertionError("logged-out SSR payload must not be trusted")
+
+
+def test_get_wallet_balance_ssr_rejects_unknown_currency_id(monkeypatch):
+    from app import gift_engine
+    import utils.proxy_manager as proxy_manager
+
+    page = _make_ssr_market_page({
+        "has_wallet": True,
+        "wallet_country_code": "CN",
+        "balance": "500",
+        "delayed_balance": "0",
+        "currency_code": 999,
+    })
+
+    monkeypatch.setattr(proxy_manager, "get_proxy_manager", lambda: _ProxyManager())
+    monkeypatch.setattr(gift_engine.http, "get", lambda *args, **kwargs: _Response(page))
+    monkeypatch.setattr(gift_engine, "get_base_auth_status", lambda cookies: ("", "CN", {}))
+
+    try:
+        gift_engine.get_wallet_balance("steamLoginSecure=x")
+    except RuntimeError as exc:
+        assert "未知 Steam 钱包币种 ID: 999" in str(exc)
+    else:
+        raise AssertionError("unknown SSR wallet currency must raise")
+
+
 def test_get_wallet_balance_fallback_returns_currency_for_zero_balance(monkeypatch):
     from app import gift_engine
     import utils.proxy_manager as proxy_manager

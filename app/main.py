@@ -79,11 +79,26 @@ def __getattr__(name: str):
     raise AttributeError(name)
 
 
+def _warn_remote_bind_without_auth(bind_host: str) -> None:
+    if bind_host in {"127.0.0.1", "localhost", "::1"}:
+        return
+    from app.api_auth import allow_unauthenticated_remote, credentials_from_env
+    if credentials_from_env() is not None or allow_unauthenticated_remote():
+        return
+    print(
+        "安全警告: 服务绑定在非回环地址 "
+        f"{bind_host}，且未配置 AETHERSWAP_AUTH_PASS。"
+        "远程 /api/* 请求将被拒绝，直到设置访问密码。"
+    )
+
+
 def run_server(host: str | None = None, port: int | None = None) -> None:
     profile = get_runtime_profile()
+    bind_host = host or get_bind_host(profile)
+    _warn_remote_bind_without_auth(bind_host)
     uvicorn.run(
         "app.api:app",
-        host=host or get_bind_host(profile),
+        host=bind_host,
         port=port or get_port(),
         log_level="warning",
     )

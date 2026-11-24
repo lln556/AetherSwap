@@ -168,7 +168,7 @@ def _build_valid_proxies() -> list:
         steam_test = "https://store.steampowered.com/api/appdetails?appids=10&cc=us&filters=basic"
         start = time.time()
         try:
-            resp = http.get(steam_test, proxies=proxy_dict, timeout=min(timeout, 8), verify=False)
+            resp = http.get(steam_test, proxies=proxy_dict, timeout=min(timeout, 8))
             if resp.status_code == 200:
                 return (proxy_dict, time.time() - start)
         except Exception:
@@ -191,7 +191,7 @@ def _fetch_with_proxy(url: str, valid_proxies: list, max_retries: int = 5):
     for attempt in range(max_retries):
         proxy = random.choice(valid_proxies) if valid_proxies else None
         try:
-            resp = http.get(url, proxies=proxy, headers=headers, timeout=8, verify=False)
+            resp = http.get(url, proxies=proxy, headers=headers, timeout=8)
             if resp.status_code == 200:
                 return resp.json()
             elif resp.status_code == 429:

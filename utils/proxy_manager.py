@@ -6,9 +6,12 @@ import httpx
   2 = 完全走代理池
   3 = 关闭代理（只走本机）
 """
+import ipaddress
 import random
+import socket
 import threading
 import time
+from urllib.parse import urlparse
 from utils import http_client as http
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -43,6 +46,65 @@ def _pm_log(msg: str) -> None:
         app_log(msg, "debug", category="proxy")
     except Exception:
         pass
+def _parse_ip(value: str):
+    text = (value or "").strip().rstrip(".").lower()
+    if text.startswith("[") and "]" in text:
+        text = text[1:text.index("]")]
+    text = text.split("%", 1)[0]
+    try:
+        return ipaddress.ip_address(text)
+    except ValueError:
+        return None
+
+
+def _blocked_test_ip(ip) -> bool:
+    # IPv4-mapped IPv6 (::ffff:x.x.x.x) is marked reserved by Python; judge the embedded IPv4.
+    mapped = getattr(ip, "ipv4_mapped", None)
+    if mapped is not None:
+        ip = mapped
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
+def _blocked_proxy_test_name(host: str) -> bool:
+    name = host.rstrip(".").lower()
+    if name in {"localhost", "local", "internal", "metadata.google.internal"}:
+        return True
+    return name.endswith(".localhost") or name.endswith(".local") or name.endswith(".internal")
+
+
+def validate_proxy_test_url(url: str) -> tuple[bool, str]:
+    parsed = urlparse((url or "").strip())
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False, "代理测试地址必须是带主机名的 http 或 https URL"
+    if _blocked_proxy_test_name(host):
+        return False, f"代理测试地址不允许访问本机或内部域名: {host}"
+    literal = _parse_ip(host)
+    if literal is not None:
+        if _blocked_test_ip(literal):
+            return False, f"代理测试地址不允许访问内网、回环或保留地址: {host}"
+        return True, ""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        # Offline lookups must not reject a public hostname.
+        return True, ""
+    for info in infos:
+        sockaddr = info[4] if len(info) > 4 else ()
+        ip_text = sockaddr[0] if sockaddr else ""
+        ip = _parse_ip(ip_text)
+        if ip is not None and _blocked_test_ip(ip):
+            return False, f"代理测试地址解析到内网、回环或保留地址: {host} -> {ip_text}"
+    return True, ""
+
+
 def test_one_proxy(proxy_cfg: dict, test_url: str, timeout: int) -> dict:
     proxy_url = _build_proxy_url(proxy_cfg)
     proxies = {"http": proxy_url, "https": proxy_url}
@@ -54,9 +116,13 @@ def test_one_proxy(proxy_cfg: dict, test_url: str, timeout: int) -> dict:
         "latency_ms": 0,
         "error": None,
     }
+    allowed, reason = validate_proxy_test_url(test_url)
+    if not allowed:
+        result["error"] = reason
+        return result
     start = time.time()
     try:
-        resp = http.get(test_url, proxies=proxies, timeout=timeout)
+        resp = http.get(test_url, proxies=proxies, timeout=timeout, follow_redirects=False)
         latency = (time.time() - start) * 1000
         if resp.status_code == 200:
             result["status"] = "ok"

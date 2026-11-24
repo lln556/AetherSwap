@@ -35,6 +35,8 @@ def test_static_route_blocks_path_traversal(tmp_path, monkeypatch):
     assert Path(response.path) == index
     assert Path(response.path) != secret
     assert response.headers["cache-control"] == "no-cache"
+    assert "script-src 'self'" in response.headers["content-security-policy"]
+    assert "object-src 'none'" in response.headers["content-security-policy"]
 
 
 def test_versioned_settings_assets_and_uncached_api_fetches():
@@ -47,8 +49,8 @@ def test_versioned_settings_assets_and_uncached_api_fetches():
         encoding="utf-8"
     )
 
-    assert '<script src="/js/settings.js?v=3"></script>' in index_html
-    assert '<script src="/js/main.js?v=8"></script>' in index_html
+    assert '<script src="/js/settings.js?v=4"></script>' in index_html
+    assert '<script src="/js/main.js?v=9"></script>' in index_html
     assert 'cache: opts.cache ?? "no-store"' in utils_js
     save_start = settings_js.index("async function saveConfigFromForm()")
     save_end = settings_js.index("async function startPipeline()", save_start)
@@ -57,3 +59,15 @@ def test_versioned_settings_assets_and_uncached_api_fetches():
         "await fetchJson"
     )
     assert 'fetchJson(API + "/config");' not in save_source
+
+
+def test_web_ui_has_no_inline_scripts_or_event_handlers():
+    import re
+
+    root = Path(__file__).resolve().parent.parent
+    index_html = (root / "web" / "index.html").read_text(encoding="utf-8")
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", index_html, re.IGNORECASE)
+    assert not re.search(r"\bon(?:click|error|load|change|input|submit)=", index_html, re.IGNORECASE)
+    for js_file in (root / "web" / "js").glob("*.js"):
+        source = js_file.read_text(encoding="utf-8")
+        assert not re.search(r"\bon(?:click|error)=", source, re.IGNORECASE), f"inline handler in {js_file.name}"

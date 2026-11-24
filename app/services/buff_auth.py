@@ -94,15 +94,20 @@ def buff_credential_replacement_block_reason() -> str:
             )
         status = get_status() or {}
         step = str(status.get("step") or "")
-        if (
-            status.get("status") == "running"
-            or is_pipeline_running()
-            or get_pending_payment()
-            or step in _CHECKOUT_CREDENTIAL_FREEZE_STEPS
-        ):
+        if get_pending_payment():
             return (
-                "BUFF 流水线正在运行，或存在待付款/待对账订单，凭证已冻结；"
-                "请先停止流水线并完成或人工核对当前订单。"
+                "存在待付款订单，BUFF 凭证已冻结；"
+                "请先完成或放弃当前待支付订单后再替换登录。"
+            )
+        if step in _CHECKOUT_CREDENTIAL_FREEZE_STEPS:
+            return (
+                "存在待对账或未完成结账订单，BUFF 凭证已冻结；"
+                "请先停止流水线并在 BUFF 订单页核对当前订单。"
+            )
+        if status.get("status") == "running" or is_pipeline_running():
+            return (
+                "买入流水线正在运行，凭证已冻结（正常运行保护，无需操作；"
+                "如需更换 BUFF 登录，请先停止任务）。"
             )
     except Exception as exc:
         log(

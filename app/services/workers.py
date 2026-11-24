@@ -427,7 +427,10 @@ def listing_check_worker() -> None:
                 log(f"[listing_check] 本地 {len(listing_idx)} 条在售, Steam 活跃 {len(active_ids)}, 可能已售 {len(not_in_active)} 条", "debug", category="steam")
             if not not_in_active:
                 continue
-            ok2, sold_map, _ = fetch_my_history_sold(cookies, debug_fn=debug_fn)
+            ok2, sold_map, history_error = fetch_my_history_sold(cookies, debug_fn=debug_fn)
+            if not ok2:
+                log(f"[listing_check] 成交历史读取失败，暂不标记出售状态: {history_error}", "warn", category="steam")
+                continue
             seen_aids = set()
             sold_updates = 0
             for _i, p in not_in_active:
@@ -436,7 +439,7 @@ def listing_check_worker() -> None:
                     continue
                 seen_aids.add(aid)
                 db_id = p.get("_db_id")
-                sale_price_rounded = round(sold_map[aid], 2) if (ok2 and aid in sold_map) else None
+                sale_price_rounded = round(sold_map[aid], 2) if aid in sold_map else None
                 if db_id:
                     if sale_price_rounded is not None:
                         sold_at = time.time()

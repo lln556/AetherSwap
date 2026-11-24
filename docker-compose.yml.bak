@@ -1,0 +1,37 @@
+services:
+  aetherswap:
+    build: .
+    image: aetherswap:latest
+    container_name: aetherswap
+    ports:
+      - "${AETHERSWAP_HOST_PORT:-28472}:28472"
+    volumes:
+      - ./config:/app/config
+      - ./log:/app/log
+    environment:
+      AETHERSWAP_MODE: ${AETHERSWAP_MODE:-server}
+      AETHERSWAP_AGREE_DISCLAIMER: ${AETHERSWAP_AGREE_DISCLAIMER:-1}
+      AETHERSWAP_HOST: "0.0.0.0"
+      AETHERSWAP_PORT: "28472"
+      AETHERSWAP_HEADLESS: ${AETHERSWAP_HEADLESS:-}
+      AETHERSWAP_MANUAL_LOGIN_ONLY: ${AETHERSWAP_MANUAL_LOGIN_ONLY:-}
+      AETHERSWAP_AUTH_USER: ${AETHERSWAP_AUTH_USER:-}
+      AETHERSWAP_AUTH_PASS: ${AETHERSWAP_AUTH_PASS:-}
+      AETHERSWAP_DATABASE_URL: ${AETHERSWAP_DATABASE_URL:-}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+    restart: unless-stopped
+    stop_grace_period: 120s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import httpx; httpx.get('http://127.0.0.1:28472/api/runtime', trust_env=False, timeout=5).raise_for_status()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

@@ -1,4 +1,3 @@
-
 ; (function () {
     'use strict';
     let allFriends = [];
@@ -37,18 +36,13 @@
     const elProgressResMsg = el('gift-progress-result-msg');
     const elProgressClose = el('btn-gift-progress-close');
     function showToast(msg, type = 'info') {
-        if (window.showToast) { window.showToast(msg, type); return; }
-        const host = el('toast-host');
-        if (!host) return;
-        const node = document.createElement('div');
-        node.className = `toast toast-${type}`;
-        node.textContent = msg;
-        host.appendChild(node);
-        setTimeout(() => node.remove(), 3500);
+        if (typeof toast === 'function') {
+            toast(msg, '', 3500, type);
+        }
     }
-    function setHidden(el, hidden) {
-        if (!el) return;
-        el.classList.toggle('hidden', hidden);
+    function setHidden(node, hidden) {
+        if (!node) return;
+        node.classList.toggle('hidden', hidden);
     }
     function updateSendButton() {
         const ready = selectedFriend && selectedEdition;
@@ -82,7 +76,7 @@
                 elBalance.textContent = '获取失败';
                 elBalanceWrap.className = 'gift-wallet-wrap gift-wallet-error';
             }
-        } catch (e) {
+        } catch {
             elBalance.textContent = '网络错误';
             elBalanceWrap.className = 'gift-wallet-wrap gift-wallet-error';
         }
@@ -91,34 +85,35 @@
         btn.addEventListener('click', () => fetchBalance());
     });
     function renderFriends(list) {
-        elFriendsGrid.innerHTML = '';
+        elFriendsGrid.replaceChildren();
         if (!list || list.length === 0) {
             setHidden(elFriendsEmpty, false);
             return;
         }
         setHidden(elFriendsEmpty, true);
         list.forEach(friend => {
-            const card = document.createElement('div');
+            const card = document.createElement('button');
+            card.type = 'button';
             card.className = 'gift-friend-card';
             card.dataset.steamid = friend.steamid;
-            if (selectedFriend && selectedFriend.steamid === friend.steamid) {
-                card.classList.add('selected');
-            }
+            const isSelected = !!(selectedFriend && selectedFriend.steamid === friend.steamid);
+            card.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+            if (isSelected) card.classList.add('selected');
             const hasAvatar = friend.avatar && friend.avatar.length > 10;
             card.innerHTML = `
         <div class="gift-friend-avatar">
           ${hasAvatar
-                    ? `<img src="${escapeHtml(friend.avatar)}" alt="${escapeHtml(friend.name)}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">`
+                    ? `<img src="${escapeHtml(friend.avatar)}" alt="" loading="lazy" data-img-fallback="next">`
                     : ''}
           <div class="gift-friend-avatar-fallback" style="${hasAvatar ? 'display:none' : ''}">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
           </div>
         </div>
         <div class="gift-friend-info">
           <div class="gift-friend-name" title="${escapeHtml(friend.name)}">${escapeHtml(friend.name)}</div>
           <div class="gift-friend-id">${escapeHtml(friend.steamid)}</div>
         </div>
-        <div class="gift-friend-check">
+        <div class="gift-friend-check" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" width="14" height="14"><polyline points="20 6 9 17 4 12"></polyline></svg>
         </div>
       `;
@@ -129,7 +124,9 @@
     function selectFriend(friend) {
         selectedFriend = friend;
         document.querySelectorAll('.gift-friend-card').forEach(c => {
-            c.classList.toggle('selected', c.dataset.steamid === friend.steamid);
+            const active = c.dataset.steamid === friend.steamid;
+            c.classList.toggle('selected', active);
+            c.setAttribute('aria-pressed', active ? 'true' : 'false');
         });
         setHidden(elSelectedFriend, false);
         elSelName.textContent = friend.name;
@@ -147,7 +144,10 @@
     elClearFriend && elClearFriend.addEventListener('click', () => {
         selectedFriend = null;
         setHidden(elSelectedFriend, true);
-        document.querySelectorAll('.gift-friend-card').forEach(c => c.classList.remove('selected'));
+        document.querySelectorAll('.gift-friend-card').forEach(c => {
+            c.classList.remove('selected');
+            c.setAttribute('aria-pressed', 'false');
+        });
         updateSendButton();
     });
     elFriendSearch && elFriendSearch.addEventListener('input', () => {
@@ -160,7 +160,7 @@
     elFetchFriends && elFetchFriends.addEventListener('click', async () => {
         setHidden(elFriendsLoading, false);
         setHidden(elFriendsEmpty, true);
-        elFriendsGrid.innerHTML = '';
+        elFriendsGrid.replaceChildren();
         elFetchFriends.disabled = true;
         try {
             const res = await fetch('/api/gift/friends');
@@ -188,7 +188,7 @@
         }
     });
     function renderEditions(editions) {
-        elEditionsList.innerHTML = '';
+        elEditionsList.replaceChildren();
         selectedEdition = null;
         updateSendButton();
         if (!editions || editions.length === 0) {
@@ -196,8 +196,10 @@
             return;
         }
         editions.forEach((ed, idx) => {
-            const item = document.createElement('div');
+            const item = document.createElement('button');
+            item.type = 'button';
             item.className = 'gift-edition-item';
+            item.setAttribute('aria-pressed', 'false');
             let priceHtml = '';
             if (ed.price) {
                 const hasDiscount = ed.discount_pct && ed.discount_pct !== '0%';
@@ -213,7 +215,7 @@
                 }
             }
             item.innerHTML = `
-        <div class="gift-edition-radio">
+        <div class="gift-edition-radio" aria-hidden="true">
           <div class="gift-edition-dot"></div>
         </div>
         <div class="gift-edition-details">
@@ -221,11 +223,15 @@
           <div class="gift-edition-meta">${ed.type === 'bundleid' ? '捆绑包' : '标准包'} · ID: ${escapeHtml(ed.id)}</div>
         </div>
         ${priceHtml}
-        <svg class="gift-edition-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" width="16" height="16"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        <svg class="gift-edition-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" width="16" height="16" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>
       `;
             item.addEventListener('click', () => {
-                document.querySelectorAll('.gift-edition-item').forEach(i => i.classList.remove('selected'));
+                document.querySelectorAll('.gift-edition-item').forEach(i => {
+                    i.classList.remove('selected');
+                    i.setAttribute('aria-pressed', 'false');
+                });
                 item.classList.add('selected');
+                item.setAttribute('aria-pressed', 'true');
                 selectedEdition = ed;
                 updateSendButton();
             });
@@ -242,7 +248,7 @@
         }
         setHidden(elEditionsLoading, false);
         setHidden(elGamePreview, true);
-        elEditionsList.innerHTML = '';
+        elEditionsList.replaceChildren();
         selectedEdition = null;
         elFetchEditions.disabled = true;
         try {
@@ -283,13 +289,13 @@
         '执行最终结账',
     ];
     function initProgressSteps() {
-        elProgressSteps.innerHTML = '';
+        elProgressSteps.replaceChildren();
         STEP_LABELS.forEach((label, i) => {
             const step = document.createElement('div');
             step.className = 'gift-progress-step';
             step.id = `gift-step-${i}`;
             step.innerHTML = `
-        <div class="gift-step-icon gift-step-icon--wait">
+        <div class="gift-step-icon gift-step-icon--wait" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><circle cx="12" cy="12" r="10"></circle></svg>
         </div>
         <div class="gift-step-label">${label}</div>
@@ -323,36 +329,38 @@
                 const data = await res.json();
                 if (!data.ok) return;
                 const task = data.task;
-                const progress = task.progress || [];
-                progress.forEach((p, idx) => {
+                const progress = Array.isArray(task.progress) ? task.progress : [];
+                progress.forEach((p) => {
                     const stepN = p.step;
-                    for (let i = lastStep + 1; i < stepN; i++) {
-                        updateStep(i, '', 'ok');
+                    if (typeof stepN === 'number') {
+                        for (let i = lastStep + 1; i < stepN; i++) {
+                            updateStep(i, '', 'ok');
+                        }
+                        if (p.done) {
+                            updateStep(stepN, p.msg || p.message || '', p.ok ? 'ok' : 'error');
+                        } else {
+                            updateStep(stepN, p.msg || p.message || '', 'running');
+                        }
+                        lastStep = stepN;
                     }
-                    if (p.done) {
-                        updateStep(stepN, p.msg, p.ok ? 'ok' : 'error');
-                    } else {
-                        updateStep(stepN, p.msg, 'running');
-                    }
-                    lastStep = stepN;
                 });
                 if (task.status === 'done' || task.status === 'error') {
                     clearInterval(pollTimer);
                     pollTimer = null;
-                    const last = progress[progress.length - 1];
+                    const last = progress.at(-1) || task.result || {};
+                    const succeeded = task.status === 'done' && last.ok !== false;
+                    const finalMsg = last.msg || last.message || (succeeded ? '赠礼已完成' : '赠礼流程异常中断');
                     setHidden(elProgressSpinner, true);
-                    elProgressTitle.textContent = last.ok ? '赠礼完成！' : '赠礼失败';
+                    elProgressTitle.textContent = succeeded ? '赠礼完成' : '赠礼失败';
                     setHidden(elProgressResult, false);
-                    elProgressResIcon.innerHTML = last.ok
-                        ? '<span style="font-size:2rem">✓</span>'
-                        : '<span style="font-size:2rem">❌</span>';
-                    elProgressResMsg.textContent = last.msg;
-                    elProgressResMsg.className = `gift-result-msg ${last.ok ? 'gift-result-msg--ok' : 'gift-result-msg--error'}`;
+                    elProgressResIcon.textContent = succeeded ? '✓' : '×';
+                    elProgressResMsg.textContent = finalMsg;
+                    elProgressResMsg.className = `gift-result-msg ${succeeded ? 'gift-result-msg--ok' : 'gift-result-msg--error'}`;
                     elSendBtn.disabled = false;
-                    if (last.ok) showToast('赠礼成功', 'success');
-                    else showToast('赠礼失败: ' + last.msg, 'error');
+                    if (succeeded) showToast('赠礼成功', 'success');
+                    else showToast('赠礼失败: ' + finalMsg, 'error');
                 }
-            } catch (e) { }
+            } catch { }
         }, 1000);
     }
     elSendBtn && elSendBtn.addEventListener('click', async () => {
@@ -366,7 +374,7 @@
                 const balanceNum = noDiv ? walletInfo.balance_raw : walletInfo.balance_raw / 100.0;
                 if (priceNum > balanceNum) {
                     showToast(
-                        `❌ 余额不足！当前钱包 ${walletInfo.balance_display}，商品售价 ${selectedEdition.price}`,
+                        `余额不足：当前钱包 ${walletInfo.balance_display}，商品售价 ${selectedEdition.price}`,
                         'error'
                     );
                     return;
@@ -414,5 +422,4 @@
     elRefreshBalance && elRefreshBalance.addEventListener('click', () => fetchBalance());
     setHidden(elFriendsEmpty, false);
     updateSendButton();
-    fetchBalance();
 })();

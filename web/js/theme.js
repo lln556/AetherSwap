@@ -1,16 +1,35 @@
 const Theme = {
+  _storageKey: "color-scheme",
+  _legacyKey: "theme",
   get() {
-    return localStorage.getItem("theme") || "system";
+    try {
+      const stored = localStorage.getItem(this._storageKey) || localStorage.getItem(this._legacyKey);
+      if (stored === "light" || stored === "dark") return stored;
+    } catch {
+    }
+    return "system";
   },
   set(mode) {
-    localStorage.setItem("theme", mode);
-    this.apply(mode);
+    const normalized = mode === "light" || mode === "dark" ? mode : "system";
+    try {
+      if (normalized === "system") {
+        localStorage.removeItem(this._storageKey);
+        localStorage.removeItem(this._legacyKey);
+      } else {
+        localStorage.setItem(this._storageKey, normalized);
+        localStorage.removeItem(this._legacyKey);
+      }
+    } catch {
+    }
+    this.apply(normalized);
   },
   apply(mode) {
-    const root = document.documentElement;
+    const normalized = mode === "light" || mode === "dark" ? mode : "system";
+    const meta = document.querySelector('meta[name="color-scheme"]');
+    if (meta) meta.content = normalized === "system" ? "light dark" : normalized;
     const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const m = mode === "system" ? (prefersDark ? "dark" : "light") : mode;
-    root.dataset.theme = m;
+    const resolved = normalized === "system" ? (prefersDark ? "dark" : "light") : normalized;
+    document.documentElement.dataset.theme = resolved;
   },
   cycle() {
     const cur = this.get();
@@ -18,4 +37,12 @@ const Theme = {
     this.set(next);
     toast("主题已切换", next === "system" ? "跟随系统" : next === "dark" ? "深色" : "浅色");
   },
+  syncAcrossTabs() {
+    window.addEventListener("storage", (e) => {
+      if (e.key === this._storageKey || e.key === this._legacyKey || e.key === null) {
+        this.apply(this.get());
+      }
+    });
+  },
 };
+Theme.syncAcrossTabs();

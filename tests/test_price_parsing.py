@@ -2,7 +2,11 @@
 
 import pytest
 
-from utils.money import currency_code_from_price_text, parse_price_text
+from utils.money import (
+    currency_code_from_price_text,
+    parse_price_text,
+    parse_steam_listing_prices,
+)
 
 
 @pytest.mark.parametrize("raw,expected", [
@@ -14,12 +18,27 @@ from utils.money import currency_code_from_price_text, parse_price_text
     ("R$ 12,50", 12.5),
     ("3.18", 3.18),
     ("  9,98  ", 9.98),
+    ("\u00a5 1.15 (\u00a5 1.00)", 1.15),
+    ("$0.03 ($0.01)", 0.03),
+    ("1,15 \u20ac (1,00 \u20ac)", 1.15),
     ("", None),
     ("abc", None),
     ("\u00a5", None),
 ])
 def test_parse_price_text(raw, expected):
     assert parse_price_text(raw) == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("\u00a5 1.15 (\u00a5 1.00)", (1.15, 1.00)),
+    ("$0.03 ($0.01)", (0.03, 0.01)),
+    ("1,15 \u20ac (1,00 \u20ac)", (1.15, 1.00)),
+    ("\u00a5 8.21", (None, 8.21)),
+    ("abc", (None, None)),
+    ("", (None, None)),
+])
+def test_parse_steam_listing_prices(raw, expected):
+    assert parse_steam_listing_prices(raw) == expected
 
 
 @pytest.mark.parametrize("raw,code", [

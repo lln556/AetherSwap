@@ -1,18 +1,49 @@
-::-webkit-scrollbar {
-  width: 8px; height: 8px;
+:root,
+.panel,
+.nav-menu,
+.console-body,
+.table-container,
+.app-modal-message,
+.app-modal-content,
+dialog {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
-::-webkit-scrollbar-track {
-  background: transparent;
+
+@supports not (scrollbar-color: auto) {
+  :root,
+  .panel,
+  .nav-menu,
+  .console-body,
+  .table-container,
+  .app-modal-message,
+  .app-modal-content,
+  dialog {
+    scrollbar-width: auto;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
 }
-::-webkit-scrollbar-thumb {
-  background: rgba(0,0,0,0.15); border-radius: 4px; border: 2px solid transparent; background-clip: padding-box;
+
+dialog:modal {
+  overscroll-behavior: contain;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(0,0,0,0.3) content-box; border: 0;
-}
-[data-theme="dark"] ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.15);
-}
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.3) content-box; border: 0;
+
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
 }

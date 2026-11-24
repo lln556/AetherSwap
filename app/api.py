@@ -6,12 +6,22 @@ intentionally kept minimal.
 """
 import sys
 import asyncio
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
+from ipaddress import ip_address
 from fastapi import BackgroundTasks, FastAPI, Request
 from fastapi.responses import JSONResponse
-from app.api_auth import basic_header_matches, credentials_from_env, requires_auth
+from app.api_auth import (
+    EXEMPT_PATHS,
+    allow_unauthenticated_remote,
+    basic_header_matches,
+    credentials_from_env,
+    is_loopback_client,
+    remote_access_blocked,
+    requires_auth,
+)
 from app.database import init_db, migrate_from_json
 init_db()
 migrate_from_json()
@@ -22,7 +32,6 @@ from app.services.workers import (
     buff_session_monitor_worker,
     exchange_rate_worker,
     holdings_report_worker,
-    listing_check_worker,
     receive_worker,
     sync_account_region_worker,
     session_keepalive_worker,
@@ -74,21 +83,88 @@ async def _lifespan(application: FastAPI):
     finally:
         await asyncio.to_thread(_stop_background_workers)
 app = FastAPI(title="aetherswap", lifespan=_lifespan)
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "SAMEORIGIN",
+}
+_REMOTE_BLOCKED_ERROR = "拒绝未认证的远程访问：请设置 AETHERSWAP_AUTH_PASS，或仅在本机回环地址访问"
+_FORWARDED_FOR_RE = re.compile(r'(?i)(?:^|[;,])\s*for=\s*("[^"]+"|[^\s;,]+)')
+
+
+def _apply_security_headers(response):
+    for key, value in _SECURITY_HEADERS.items():
+        response.headers[key] = value
+    return response
+
+
+def _forwarded_host(value: str) -> str:
+    text = value.strip().strip('"')
+    if text.startswith("[") and "]" in text:
+        return text[1:text.index("]")]
+    if text.count(":") == 1:
+        host, port = text.rsplit(":", 1)
+        if port.isdigit():
+            return host
+    return text
+
+
+def _has_non_loopback_forwarded_ip(request: Request) -> bool:
+    """True when a proxy header names a real non-loopback client IP.
+
+    Forwarded addresses are never trusted to *allow* access. A loopback
+    peer plus a public X-Forwarded-For still means the API is exposed.
+    """
+    hosts = []
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        hosts.extend(part.strip() for part in forwarded_for.split(",") if part.strip())
+    forwarded = request.headers.get("forwarded")
+    if forwarded:
+        hosts.extend(match.group(1) for match in _FORWARDED_FOR_RE.finditer(forwarded))
+    for raw in hosts:
+        host = _forwarded_host(raw)
+        if is_loopback_client(host):
+            continue
+        candidate = host.split("%", 1)[0]
+        try:
+            ip_address(candidate)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def _remote_access_forbidden(request: Request, creds) -> bool:
+    client_host = request.client.host if request.client else None
+    if remote_access_blocked(request.url.path, client_host, creds):
+        return True
+    if creds is not None or allow_unauthenticated_remote():
+        return False
+    path = str(request.url.path or "")
+    if not path.startswith("/api") or path in EXEMPT_PATHS:
+        return False
+    return _has_non_loopback_forwarded_ip(request)
 
 
 @app.middleware("http")
 async def _require_api_auth(request: Request, call_next):
     """HTTP Basic gate for /api/*; /api/runtime stays open for health checks."""
     creds = credentials_from_env()
+    if _remote_access_forbidden(request, creds):
+        return _apply_security_headers(JSONResponse(
+            {"ok": False, "error": _REMOTE_BLOCKED_ERROR},
+            status_code=403,
+        ))
     if requires_auth(request.url.path, creds) and not basic_header_matches(
         request.headers.get("authorization", ""), creds
     ):
-        return JSONResponse(
+        return _apply_security_headers(JSONResponse(
             {"ok": False, "error": "未授权：请在浏览器登录框中输入访问密码"},
             status_code=401,
             headers={"WWW-Authenticate": 'Basic realm="AetherSwap"'},
-        )
-    return await call_next(request)
+        ))
+    return _apply_security_headers(await call_next(request))
 @app.get("/api/runtime")
 def api_runtime():
     return {"ok": True, "runtime": get_runtime_profile().as_dict()}

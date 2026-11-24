@@ -1,15 +1,16 @@
 """Status, log, plan, and payment-related routes."""
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter
 from app.config_loader import load_app_config_validated
 from app.state import (
     clear_log,
+    clear_pending_payment_if_matches,
     confirm_payment,
     get_log,
     get_pending_payment,
     get_plan,
     get_status,
-    set_pending_payment,
 )
 from config import get_buff, get_steam
 from pydantic import BaseModel
@@ -21,6 +22,7 @@ from utils.time import (
 router = APIRouter()
 class ConfirmBody(BaseModel):
     ok: bool
+    generation: Optional[int] = None
 @router.get("/api/status")
 def api_status():
     from app.accounts import get_current_account
@@ -79,6 +81,6 @@ def api_pending_payment():
     return {"pending": get_pending_payment()}
 @router.post("/api/confirm_payment")
 def api_confirm_payment(body: ConfirmBody):
-    confirm_payment(body.ok)
-    set_pending_payment(None)
+    confirm_payment(body.ok, generation=body.generation)
+    clear_pending_payment_if_matches(body.generation)
     return {"ok": True}

@@ -29,7 +29,7 @@ def _cookies_to_dict(cookies) -> dict:
 def _get_mylistings_api(session) -> Optional[Dict[str, Dict[str, Any]]]:
     params = {"norender": "1", "start": "0", "count": "100"}
     try:
-        r = session.get(MYLISTINGS_API_URL, params=params, verify=False, timeout=TIMEOUT)
+        r = session.get(MYLISTINGS_API_URL, params=params, timeout=TIMEOUT)
     except Exception:
         return None
     if r.status_code != 200:
@@ -151,7 +151,7 @@ def _get_assetids_by_class_instance(
             params = {"l": "english", "count": 2000, "_": int(time.time() * 1000)}
             if last_assetid:
                 params["start_assetid"] = last_assetid
-            r = session.get(url, params=params, verify=False, timeout=20)
+            r = session.get(url, params=params, timeout=20)
             if r.status_code != 200:
                 diagnostics.update(http_status=r.status_code, reason=f"库存接口 HTTP {r.status_code}", retry_after=_retry_after(r))
                 return None
@@ -229,7 +229,6 @@ def delist_item(assetid: str, name: str, log_fn: Optional[Callable[[str, str], N
         session = http.Client()
         session.headers.update(headers)
         session.cookies.update(c)
-        session.verify = False
         asset_info = _get_mylistings_api(session)
         listing_id = None
         classid, instanceid = None, None

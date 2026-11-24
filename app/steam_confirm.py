@@ -26,7 +26,6 @@ class SteamConfirmer:
         self.steam_id = str(steam_id or "").strip()
         self.device_id = urllib.parse.unquote((device_id or "").strip()) or generate_device_id(self.steam_id)
         self.session = http.Client()
-        self.session.verify = False
         if isinstance(cookies, str):
             ck_dict = _cookies_to_dict(cookies)
         else:

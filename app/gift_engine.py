@@ -3,6 +3,7 @@ import html
 import json
 import re
 import time
+from typing import Optional
 from utils import http_client as http
 from bs4 import BeautifulSoup
 from steam.session import parse_cookies
@@ -30,7 +31,7 @@ def get_friend_list(cookies_raw: str, my_steamid: str) -> list:
             )
             resp = http.get(
                 url, params={"ajax": "1"}, cookies=cookies,
-                headers=_HEADERS, proxies=proxies, verify=False, timeout=15
+                headers=_HEADERS, proxies=proxies, timeout=15
             )
             resp.raise_for_status()
             break
@@ -172,7 +173,7 @@ def get_base_auth_status(cookies_raw: str, *, require_country: bool = False):
     pm = get_proxy_manager()
     try:
         proxies = pm.get_proxies_for_request()
-        resp = http.get(url, cookies=cookies, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
+        resp = http.get(url, cookies=cookies, headers=_HEADERS, proxies=proxies, timeout=15)
         page_text = resp.text or ""
         jwt_token = ""
         config_data = _extract_store_user_config(page_text)
@@ -186,6 +187,86 @@ def get_base_auth_status(cookies_raw: str, *, require_country: bool = False):
         return jwt_token, country_code, config_data
     except Exception as e:
         raise RuntimeError(f"获取底层鉴权失败: {e}") from e
+_SSR_DATA_RE = re.compile(
+    r'<script\b[^>]*\bid=["\']valve-ssr-data["\'][^>]*>(.*?)</script>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _extract_market_ssr_wallet(page_text: str) -> Optional[dict]:
+    match = _SSR_DATA_RE.search(page_text or "")
+    if not match:
+        return None
+    try:
+        ssr = json.loads(match.group(1))
+    except Exception:
+        return None
+    if not isinstance(ssr, dict):
+        return None
+    user_cfg = ssr.get("UserConfig")
+    if isinstance(user_cfg, dict) and user_cfg.get("logged_in") is False:
+        return None
+    render_ctx = ssr.get("renderContext")
+    if not isinstance(render_ctx, dict):
+        return None
+    query_data_raw = render_ctx.get("queryData")
+    if isinstance(query_data_raw, str):
+        try:
+            query_data = json.loads(query_data_raw)
+        except Exception:
+            return None
+    elif isinstance(query_data_raw, dict):
+        query_data = query_data_raw
+    else:
+        return None
+    queries = query_data.get("queries")
+    if not isinstance(queries, list):
+        return None
+    for entry in queries:
+        if not isinstance(entry, dict):
+            continue
+        qkey = entry.get("queryKey")
+        if not (isinstance(qkey, list) and qkey and qkey[0] == "CurrentUserWalletDetails"):
+            continue
+        state = entry.get("state")
+        data = state.get("data") if isinstance(state, dict) else None
+        if not isinstance(data, dict):
+            continue
+        if data.get("has_wallet") is False:
+            return None
+        if data.get("has_wallet") is True or ("currency_code" in data and "balance" in data):
+            return {
+                "wallet_balance": int(data.get("balance") or 0),
+                "wallet_delayed_balance": int(data.get("delayed_balance") or 0),
+                "wallet_currency": int(data.get("currency_code") or 0),
+                "wallet_country": data.get("wallet_country_code") or data.get("user_country_code") or "",
+            }
+    return None
+
+
+def _build_wallet_result(balance_raw: int, delayed_raw: int, currency_id: int, wallet_country: str) -> dict:
+    currency_info = _CURRENCY_MAP.get(currency_id)
+    if not currency_info:
+        raise RuntimeError(f"未知 Steam 钱包币种 ID: {currency_id}")
+    total_raw = balance_raw + delayed_raw
+    code, symbol = currency_info
+    display = (
+        f"{symbol}{total_raw:,}"
+        if currency_id in _NO_DIVIDE_CURRENCIES
+        else f"{symbol}{total_raw / 100.0:.2f}"
+    )
+    normalized_country = _normalize_country_code(wallet_country)
+    return {
+        "balance_raw": total_raw,
+        "balance_display": display,
+        "currency_code": code,
+        "currency_symbol": symbol,
+        "currency_id": currency_id,
+        "wallet_country": normalized_country,
+        "country_code": normalized_country,
+    }
+
+
 def get_wallet_balance(cookies_raw: str) -> dict:
     cookies = _build_cookies(cookies_raw)
     from utils.proxy_manager import get_proxy_manager, mask_proxy_url
@@ -199,41 +280,29 @@ def get_wallet_balance(cookies_raw: str) -> dict:
             cookies=cookies,
             headers={**_HEADERS, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
             proxies=proxies,
-            verify=False,
             timeout=15,
         )
         if resp.status_code != 200:
             failures.append(f"市场页 HTTP {resp.status_code}")
-        m = (re.search(r'g_rgWalletInfo\s*=\s*(\{[^;]+\})', resp.text)
-             if resp.status_code == 200 else None)
-        if m:
-            wallet = json.loads(m.group(1))
-            if wallet.get("success") == 1 or "wallet_balance" in wallet:
-                balance_raw  = int(wallet.get("wallet_balance", 0))
-                delayed_raw  = int(wallet.get("wallet_delayed_balance", 0))
-                total_raw    = balance_raw + delayed_raw
-                currency_id  = int(wallet.get("wallet_currency", 0))
-                wallet_country = _normalize_country_code(wallet.get("wallet_country"))
-                currency_info = _CURRENCY_MAP.get(currency_id)
-                if not currency_info:
-                    if currency_id > 0:
-                        unknown_currency_id = currency_id
-                    raise RuntimeError(f"未知 Steam 钱包币种 ID: {currency_id}")
-                code, symbol = currency_info
-                display = (
-                    f"{symbol}{total_raw:,}"
-                    if currency_id in _NO_DIVIDE_CURRENCIES
-                    else f"{symbol}{total_raw / 100.0:.2f}"
-                )
-                return {
-                    "balance_raw": total_raw,
-                    "balance_display": display,
-                    "currency_code": code,
-                    "currency_symbol": symbol,
-                    "currency_id": currency_id,
-                    "wallet_country": wallet_country,
-                    "country_code": wallet_country,
-                }
+        wallet = None
+        if resp.status_code == 200:
+            m = re.search(r'g_rgWalletInfo\s*=\s*(\{[^;]+\})', resp.text)
+            if m:
+                parsed = json.loads(m.group(1))
+                if parsed.get("success") == 1 or "wallet_balance" in parsed:
+                    wallet = parsed
+            if wallet is None:
+                wallet = _extract_market_ssr_wallet(resp.text)
+        if wallet is not None:
+            currency_id = int(wallet.get("wallet_currency", 0))
+            if currency_id > 0 and currency_id not in _CURRENCY_MAP:
+                unknown_currency_id = currency_id
+            return _build_wallet_result(
+                int(wallet.get("wallet_balance", 0)),
+                int(wallet.get("wallet_delayed_balance", 0)),
+                currency_id,
+                wallet.get("wallet_country") or "",
+            )
         if resp.status_code == 200:
             failures.append("市场页未返回有效的钱包数据")
     except Exception as exc:
@@ -245,39 +314,22 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                 "https://api.steampowered.com/IWalletService/GetWalletDetails/v1"
                 f"?access_token={jwt_token}"
             )
-            resp = http.get(api_url, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
+            resp = http.get(api_url, headers=_HEADERS, proxies=proxies, timeout=15)
             if resp.status_code == 200:
                 data = resp.json().get("response", {})
-                balance_raw  = int(data.get("balance", 0))
-                delayed_raw  = int(data.get("delayed_balance", 0))
-                total_raw    = balance_raw + delayed_raw
-                currency_id  = int(data.get("currency", 0))
-                wallet_country = _normalize_country_code(
-                    data.get("country")
-                    or data.get("wallet_country")
-                    or data.get("country_code")
-                )
+                currency_id = int(data.get("currency", 0))
                 if currency_id > 0:
-                    currency_info = _CURRENCY_MAP.get(currency_id)
-                    if not currency_info:
-                        if currency_id > 0:
-                            unknown_currency_id = currency_id
-                        raise RuntimeError(f"未知 Steam 钱包币种 ID: {currency_id}")
-                    code, symbol = currency_info
-                    display = (
-                        f"{symbol}{total_raw:,}"
-                        if currency_id in _NO_DIVIDE_CURRENCIES
-                        else f"{symbol}{total_raw / 100.0:.2f}"
+                    if currency_id not in _CURRENCY_MAP:
+                        unknown_currency_id = currency_id
+                    return _build_wallet_result(
+                        int(data.get("balance", 0)),
+                        int(data.get("delayed_balance", 0)),
+                        currency_id,
+                        data.get("country")
+                        or data.get("wallet_country")
+                        or data.get("country_code")
+                        or "",
                     )
-                    return {
-                        "balance_raw": total_raw,
-                        "balance_display": display,
-                        "currency_code": code,
-                        "currency_symbol": symbol,
-                        "currency_id": currency_id,
-                        "wallet_country": wallet_country,
-                        "country_code": wallet_country,
-                    }
                 failures.append("备用钱包接口未返回有效币种")
             else:
                 failures.append(f"备用钱包接口 HTTP {resp.status_code}")
@@ -300,7 +352,7 @@ def get_all_available_editions(app_id: str, cookies_raw: str) -> list:
     pm = get_proxy_manager()
     try:
         proxies = pm.get_proxies_for_request()
-        resp = http.get(url, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=15)
+        resp = http.get(url, headers=headers, cookies=cookies, proxies=proxies, timeout=15)
         soup = BeautifulSoup(resp.text, "html.parser")
         editions = []
         seen_ids = set()
@@ -409,7 +461,7 @@ def _grpc_request(jwt_token: str, endpoint: str, payload_b64: str) -> bool:
                 f"[gift_engine] gRPC {endpoint} attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            resp = http.post(url, headers=headers, proxies=proxies, files={"input_protobuf_encoded": (None, payload_b64)}, verify=False, timeout=15)
+            resp = http.post(url, headers=headers, proxies=proxies, files={"input_protobuf_encoded": (None, payload_b64)}, timeout=15)
             result = resp.headers.get('X-Eresult') == '1'
             _log(f"gRPC {endpoint} → X-Eresult={resp.headers.get('X-Eresult')} ok={result}", "debug", category="proxy")
             return result
@@ -434,7 +486,7 @@ def _get_cart_items(jwt_token: str) -> list:
                 f"[gift_engine] GetCart attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            resp = http.get(url, headers={"User-Agent": "Mozilla/5.0", "Origin": "https://store.steampowered.com"}, proxies=proxies, verify=False, timeout=15)
+            resp = http.get(url, headers={"User-Agent": "Mozilla/5.0", "Origin": "https://store.steampowered.com"}, proxies=proxies, timeout=15)
             if resp.status_code == 200:
                 data = resp.json().get("response", resp.json())
                 items = [str(item.get("line_item_id")) for item in data.get("cart", {}).get("line_items", [])]
@@ -556,7 +608,7 @@ def _do_checkout(cookies_raw: str, country_code: str, giftee_account_id: int = 0
             )
             init_res = http.post(
                 "https://checkout.steampowered.com/checkout/inittransaction/",
-                data=init_payload, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=15
+                data=init_payload, headers=headers, cookies=cookies, proxies=proxies, timeout=15
             )
             init_data = init_res.json()
             _log(f"inittransaction → success={init_data.get('success')} transid={init_data.get('transid')}", "debug", category="proxy")
@@ -571,7 +623,7 @@ def _do_checkout(cookies_raw: str, country_code: str, giftee_account_id: int = 0
                     "transid": transid, "CardCVV2": "",
                     "browserInfo": '{"language":"zh-CN","javaEnabled":"false","colorDepth":24,"screenHeight":1440,"screenWidth":2560}',
                 },
-                headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=20
+                headers=headers, cookies=cookies, proxies=proxies, timeout=20
             )
             fin_data = fin_res.json()
             _log(f"finalizetransaction → success={fin_data.get('success')}", "debug", category="proxy")
