@@ -5,8 +5,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 from fastapi import APIRouter
 from pydantic import BaseModel
-from app.config_loader import load_app_config_validated, save_app_config_validated
+from app.config_loader import (
+    load_app_config_validated,
+    redact_config_secrets,
+    restore_redacted_secrets,
+    save_app_config_validated,
+)
+from utils.proxy_manager import validate_proxy_test_url
 router = APIRouter()
+
+
+def _log_proxy_reload_failure(action: str, exc: Exception) -> None:
+    from app.state import log
+    log(
+        f"[proxy] {action}后重载失败: {type(exc).__name__}: {exc}",
+        "warn",
+        category="proxy",
+    )
 class ProxyEntry(BaseModel):
     host: str
     port: int
@@ -23,12 +38,18 @@ class ProxyPoolBody(BaseModel):
     proxy_pool: ProxyPoolConfig
 @router.get("/api/proxy/config")
 def api_get_proxy_config():
-    cfg = load_app_config_validated()
+    cfg = redact_config_secrets(load_app_config_validated())
     return {"proxy_pool": cfg.get("proxy_pool", {})}
 @router.post("/api/proxy/config")
 def api_save_proxy_config(body: ProxyPoolBody):
+    allowed, err = validate_proxy_test_url(body.proxy_pool.test_url)
+    if not allowed:
+        return {"ok": False, "error": err}
     cfg = load_app_config_validated()
-    new_pool = body.proxy_pool.dict()
+    new_pool = restore_redacted_secrets(
+        {"proxy_pool": body.proxy_pool.model_dump()},
+        cfg,
+    ).get("proxy_pool", {})
     cfg["proxy_pool"] = new_pool
     save_app_config_validated(cfg)
     try:
@@ -43,8 +64,8 @@ def api_save_proxy_config(body: ProxyPoolBody):
             "info",
             category="proxy",
         )
-    except Exception as e:
-        pass  
+    except Exception as exc:
+        _log_proxy_reload_failure("保存配置", exc)
     return {"ok": True}
 @router.post("/api/proxy/test")
 def api_test_proxies():
@@ -52,6 +73,9 @@ def api_test_proxies():
     pool_cfg = cfg.get("proxy_pool", {})
     proxies_list = pool_cfg.get("proxies", [])
     test_url = pool_cfg.get("test_url", "https://ipv4.webshare.io/")
+    allowed, err = validate_proxy_test_url(str(test_url or ""))
+    if not allowed:
+        return {"ok": False, "error": err, "results": []}
     timeout = int(pool_cfg.get("timeout_seconds", 10))
     from utils.proxy_manager import test_one_proxy
     if not proxies_list:
@@ -88,8 +112,8 @@ def api_clear_proxies():
     try:
         from utils.proxy_manager import get_proxy_manager
         get_proxy_manager().reload()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_proxy_reload_failure("清空代理", exc)
     return {"ok": True, "message": "代理列表已清空"}
 @router.post("/api/proxy/webshare")
 def api_fetch_webshare():
@@ -138,6 +162,6 @@ def api_fetch_webshare():
     try:
         from utils.proxy_manager import get_proxy_manager
         get_proxy_manager().reload()
-    except Exception:
-        pass
+    except Exception as exc:
+        _log_proxy_reload_failure("获取 Webshare 代理", exc)
     return {"ok": True, "count": len(fetched), "message": f"已成功获取并配置 {len(fetched)} 个代理"}

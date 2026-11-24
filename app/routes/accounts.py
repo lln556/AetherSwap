@@ -15,6 +15,13 @@ from app.services.steam_auth import verify_steam_auto_login
 from app.services.account_region import refresh_account_region_currency
 from app.state import log
 router = APIRouter()
+
+
+def _public_account(acc: dict) -> dict:
+    public = dict(acc)
+    public.pop("password", None)
+    public["has_password"] = bool((acc.get("password") or "").strip())
+    return public
 class AccountBody(BaseModel):
     username: str = ""
     password: str = ""
@@ -32,7 +39,7 @@ def api_list_accounts():
     accs = list_accounts()
     cid = get_current_account()
     current_id = cid.get("id") if cid else None
-    return {"accounts": accs, "current_id": current_id}
+    return {"accounts": [_public_account(acc) for acc in accs], "current_id": current_id}
 @router.post("/api/accounts")
 def api_add_account(body: AccountBody):
     acc = add_account(
@@ -42,7 +49,7 @@ def api_add_account(body: AccountBody):
         display_name=body.display_name,
         avatar_url=body.avatar_url,
     )
-    return {"ok": True, "account": acc}
+    return {"ok": True, "account": _public_account(acc)}
 @router.put("/api/accounts/{account_id}")
 def api_update_account(account_id: str, body: AccountUpdateBody):
     kwargs = {}
@@ -59,7 +66,7 @@ def api_update_account(account_id: str, body: AccountUpdateBody):
     acc = update_account(account_id, **kwargs) if kwargs else get_account(account_id)
     if not acc:
         return {"ok": False, "error": "账号不存在"}
-    return {"ok": True, "account": acc}
+    return {"ok": True, "account": _public_account(acc)}
 @router.delete("/api/accounts/{account_id}")
 def api_delete_account(account_id: str):
     ok = delete_account(account_id)

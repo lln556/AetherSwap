@@ -643,7 +643,7 @@ def fetch_item_orders_histogram(
         try:
             r = session.get(
                 url, params=params, headers=headers,
-                timeout=timeout, proxies=effective_proxies, verify=False,
+                timeout=timeout, proxies=effective_proxies,
             )
             if r.status_code == 200:
                 any_success = True

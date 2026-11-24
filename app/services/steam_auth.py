@@ -52,7 +52,6 @@ def _verify_steam_cookies_valid(cookie_str: str, steam_id: str = "") -> Optional
     if not cookie_steam_id or (steam_id and cookie_steam_id != steam_id):
         return False
     session = _http.Client()
-    session.verify = False
     session.cookies.update(cookie_dict)
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -132,7 +131,6 @@ def fetch_steam_profile_via_api(steam_id: str, cookies_str: str) -> tuple:
     display_name, avatar_url = "", ""
     session = _http.Client()
     try:
-        session.verify = False
         cookie_dict = {}
         for part in (cookies_str or "").split(";"):
             s = part.strip()
@@ -434,7 +432,7 @@ def _do_steampy_login_once(
         # login makes any request; its LoginExecutor then uses HTTPX as well.
         original_session = client._session
         cookie_jar = getattr(original_session.cookies, 'jar', original_session.cookies)
-        client._session = _http.Client(cookies=cookie_jar, verify=False,
+        client._session = _http.Client(cookies=cookie_jar,
                                        proxies=active_proxies, timeout=_STEAM_LOGIN_REQUEST_TIMEOUT)
         original_session.close()
         if getattr(client, 'market', None) is not None:

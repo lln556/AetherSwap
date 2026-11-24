@@ -30,7 +30,7 @@ def get_friend_list(cookies_raw: str, my_steamid: str) -> list:
             )
             resp = http.get(
                 url, params={"ajax": "1"}, cookies=cookies,
-                headers=_HEADERS, proxies=proxies, verify=False, timeout=15
+                headers=_HEADERS, proxies=proxies, timeout=15
             )
             resp.raise_for_status()
             break
@@ -172,7 +172,7 @@ def get_base_auth_status(cookies_raw: str, *, require_country: bool = False):
     pm = get_proxy_manager()
     try:
         proxies = pm.get_proxies_for_request()
-        resp = http.get(url, cookies=cookies, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
+        resp = http.get(url, cookies=cookies, headers=_HEADERS, proxies=proxies, timeout=15)
         page_text = resp.text or ""
         jwt_token = ""
         config_data = _extract_store_user_config(page_text)
@@ -199,7 +199,6 @@ def get_wallet_balance(cookies_raw: str) -> dict:
             cookies=cookies,
             headers={**_HEADERS, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
             proxies=proxies,
-            verify=False,
             timeout=15,
         )
         if resp.status_code != 200:
@@ -245,7 +244,7 @@ def get_wallet_balance(cookies_raw: str) -> dict:
                 "https://api.steampowered.com/IWalletService/GetWalletDetails/v1"
                 f"?access_token={jwt_token}"
             )
-            resp = http.get(api_url, headers=_HEADERS, proxies=proxies, verify=False, timeout=15)
+            resp = http.get(api_url, headers=_HEADERS, proxies=proxies, timeout=15)
             if resp.status_code == 200:
                 data = resp.json().get("response", {})
                 balance_raw  = int(data.get("balance", 0))
@@ -300,7 +299,7 @@ def get_all_available_editions(app_id: str, cookies_raw: str) -> list:
     pm = get_proxy_manager()
     try:
         proxies = pm.get_proxies_for_request()
-        resp = http.get(url, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=15)
+        resp = http.get(url, headers=headers, cookies=cookies, proxies=proxies, timeout=15)
         soup = BeautifulSoup(resp.text, "html.parser")
         editions = []
         seen_ids = set()
@@ -409,7 +408,7 @@ def _grpc_request(jwt_token: str, endpoint: str, payload_b64: str) -> bool:
                 f"[gift_engine] gRPC {endpoint} attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            resp = http.post(url, headers=headers, proxies=proxies, files={"input_protobuf_encoded": (None, payload_b64)}, verify=False, timeout=15)
+            resp = http.post(url, headers=headers, proxies=proxies, files={"input_protobuf_encoded": (None, payload_b64)}, timeout=15)
             result = resp.headers.get('X-Eresult') == '1'
             _log(f"gRPC {endpoint} → X-Eresult={resp.headers.get('X-Eresult')} ok={result}", "debug", category="proxy")
             return result
@@ -434,7 +433,7 @@ def _get_cart_items(jwt_token: str) -> list:
                 f"[gift_engine] GetCart attempt={attempt} proxy={'使用: ' + mask_proxy_url(proxies.get('http')) if proxies else '本机'}",
                 "debug", category="proxy"
             )
-            resp = http.get(url, headers={"User-Agent": "Mozilla/5.0", "Origin": "https://store.steampowered.com"}, proxies=proxies, verify=False, timeout=15)
+            resp = http.get(url, headers={"User-Agent": "Mozilla/5.0", "Origin": "https://store.steampowered.com"}, proxies=proxies, timeout=15)
             if resp.status_code == 200:
                 data = resp.json().get("response", resp.json())
                 items = [str(item.get("line_item_id")) for item in data.get("cart", {}).get("line_items", [])]
@@ -556,7 +555,7 @@ def _do_checkout(cookies_raw: str, country_code: str, giftee_account_id: int = 0
             )
             init_res = http.post(
                 "https://checkout.steampowered.com/checkout/inittransaction/",
-                data=init_payload, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=15
+                data=init_payload, headers=headers, cookies=cookies, proxies=proxies, timeout=15
             )
             init_data = init_res.json()
             _log(f"inittransaction → success={init_data.get('success')} transid={init_data.get('transid')}", "debug", category="proxy")
@@ -571,7 +570,7 @@ def _do_checkout(cookies_raw: str, country_code: str, giftee_account_id: int = 0
                     "transid": transid, "CardCVV2": "",
                     "browserInfo": '{"language":"zh-CN","javaEnabled":"false","colorDepth":24,"screenHeight":1440,"screenWidth":2560}',
                 },
-                headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=20
+                headers=headers, cookies=cookies, proxies=proxies, timeout=20
             )
             fin_data = fin_res.json()
             _log(f"finalizetransaction → success={fin_data.get('success')}", "debug", category="proxy")

@@ -8,11 +8,13 @@ from app.state import (
     get_log,
     get_purchases,
     get_sales,
+    log,
     replace_log,
     replace_transactions,
 )
 from app.config_loader import (
     load_app_config_validated,
+    redact_config_secrets,
     save_app_config_validated,
     update_app_config_validated,
 )
@@ -43,11 +45,11 @@ class ImportFullBody(BaseModel):
 @router.get("/api/config")
 def api_get_config(response: Response):
     response.headers["Cache-Control"] = "no-store"
-    return {"config": load_app_config_validated()}
+    return {"config": redact_config_secrets(load_app_config_validated())}
 @router.post("/api/config")
 def api_save_config(body: ConfigBody):
     saved = update_app_config_validated(body.config)
-    return {"ok": True, "config": saved}
+    return {"ok": True, "config": redact_config_secrets(saved)}
 def _api_data_init_unlocked():
     from app.state import clear_log
     from pathlib import Path
@@ -156,8 +158,16 @@ def _api_data_init_unlocked():
         engine = get_engine()
         SQLModel.metadata.drop_all(engine)
         init_db()
-    except Exception:
-        pass
+    except Exception as exc:
+        log(
+            f"清空数据库失败: {type(exc).__name__}: {exc}",
+            "error",
+            category="system",
+        )
+        return {
+            "ok": False,
+            "error": f"清空数据库失败: {type(exc).__name__}: {exc}",
+        }
 
     disclaimer_file = Path(".agreed_disclaimer")
     if disclaimer_file.exists():
@@ -167,11 +177,12 @@ def _api_data_init_unlocked():
             pass
 
     import os
+    import signal
     import threading
     def _shutdown():
         import time
         time.sleep(1.5)
-        os._exit(0)
+        os.kill(os.getpid(), signal.SIGINT)
     threading.Thread(target=_shutdown, daemon=True).start()
 
     return {"ok": True}

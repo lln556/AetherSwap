@@ -11,6 +11,79 @@ from config import (
     update_buff_credentials,
     update_steam_credentials,
 )
+REDACTED_SECRET = "••••••••"
+_SECRET_FIELDS = (
+    ("steam_guard", "shared_secret"),
+    ("steam_confirm", "identity_secret"),
+    ("steam_confirm", "device_id"),
+    ("notify", "pushplus_token"),
+    ("notify", "email_pass"),
+    ("proxy_pool", "webshare_api_key"),
+)
+
+
+def _proxy_identity(entry: dict) -> tuple:
+    host = entry.get("host")
+    port = entry.get("port")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        pass
+    return (host, port, entry.get("username") or "")
+
+
+def redact_config_secrets(cfg: dict) -> dict:
+    if not isinstance(cfg, dict):
+        return {}
+    redacted = copy.deepcopy(cfg)
+    if not redacted:
+        return redacted
+    for section, field in _SECRET_FIELDS:
+        block = redacted.get(section)
+        if not isinstance(block, dict):
+            continue
+        value = block.get(field)
+        if isinstance(value, str) and value != "":
+            block[field] = REDACTED_SECRET
+    pool = redacted.get("proxy_pool")
+    proxies = pool.get("proxies") if isinstance(pool, dict) else None
+    if isinstance(proxies, list):
+        for entry in proxies:
+            if not isinstance(entry, dict):
+                continue
+            password = entry.get("password")
+            if isinstance(password, str) and password != "":
+                entry["password"] = REDACTED_SECRET
+    return redacted
+
+
+def restore_redacted_secrets(patch: dict, stored: dict) -> dict:
+    if not isinstance(patch, dict):
+        return {}
+    restored = copy.deepcopy(patch)
+    source = stored if isinstance(stored, dict) else {}
+    for section, field in _SECRET_FIELDS:
+        block = restored.get(section)
+        if not isinstance(block, dict) or block.get(field) != REDACTED_SECRET:
+            continue
+        stored_block = source.get(section)
+        if isinstance(stored_block, dict) and field in stored_block:
+            block[field] = copy.deepcopy(stored_block.get(field))
+    pool = restored.get("proxy_pool")
+    proxies = pool.get("proxies") if isinstance(pool, dict) else None
+    if isinstance(proxies, list):
+        stored_pool = source.get("proxy_pool") if isinstance(source.get("proxy_pool"), dict) else {}
+        stored_proxies = stored_pool.get("proxies") if isinstance(stored_pool.get("proxies"), list) else []
+        by_identity = {}
+        for entry in stored_proxies:
+            if isinstance(entry, dict):
+                by_identity.setdefault(_proxy_identity(entry), entry.get("password", ""))
+        for entry in proxies:
+            if isinstance(entry, dict) and entry.get("password") == REDACTED_SECRET:
+                identity = _proxy_identity(entry)
+                if identity in by_identity:
+                    entry["password"] = by_identity[identity]
+    return restored
 _config_cache: dict = {}
 _config_cache_ts: float = 0.0
 _config_cache_revision = None
@@ -93,6 +166,7 @@ def update_app_config_validated(patch: dict) -> dict:
     """Atomically merge a partial update into the latest app configuration."""
     with _config_update_lock:
         current = load_app_config_validated()
-        updated = merge(current, patch if isinstance(patch, dict) else {})
+        incoming = restore_redacted_secrets(patch if isinstance(patch, dict) else {}, current)
+        updated = merge(current, incoming)
         save_app_config_validated(updated)
         return load_app_config_validated()

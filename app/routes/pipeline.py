@@ -1,6 +1,7 @@
 """Pipeline start/stop routes."""
 from fastapi import APIRouter
 from pydantic import BaseModel
+from app.config_loader import load_app_config_validated, restore_redacted_secrets
 from app.pipeline import get_pipeline_start_blocker, start_pipeline
 from app.state import request_stop, set_status, log
 router = APIRouter()
@@ -40,8 +41,9 @@ def api_pipeline_start(body: ConfigBody):
             "code": blocker.get("code"),
             "error": blocker.get("message"),
         }
+    effective_config = restore_redacted_secrets(body.config, load_app_config_validated())
     if not start_pipeline(
-        body.config,
+        effective_config,
         acknowledge_buff_reconciliation=body.acknowledge_buff_reconciliation,
         buff_reconciliation_intent_id=body.buff_reconciliation_intent_id,
     ):
