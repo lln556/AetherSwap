@@ -21,7 +21,7 @@ services:
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-}
-    restart: unless-stopped
+    restart: always
     stop_grace_period: 120s
     healthcheck:
       test:
