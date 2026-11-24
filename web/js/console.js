@@ -1,6 +1,7 @@
 const MAX_LOG_LINES = 2000;
 let logLines = [];
 let debugPaused = false;
+let logRefreshInFlight = false;
 let autoScroll = (localStorage.getItem('autoScroll') || '1') === '1';
 
 function hasLogFilter() {
@@ -45,13 +46,16 @@ function renderLogFull() {
 }
 
 async function refreshLog() {
-  if (debugPaused) return;
+  if (debugPaused || logRefreshInFlight) return;
   const out = el("log-output");
   if (!out) return;
+  logRefreshInFlight = true;
   const since = (out.dataset.lastIndex || "0") | 0;
   try {
     const d = await fetchJson(API + "/log?since=" + since);
-    const lines = d.lines || [];
+    const rawLines = d.lines || [];
+    const currentSince = (out.dataset.lastIndex || "0") | 0;
+    const lines = rawLines.filter((l) => !l.id || l.id > currentSince);
     if (!lines.length) return;
     lines.forEach((l) => {
       logLines.push({ t: l.t, level: l.level || "info", msg: l.msg || "", id: l.id });
@@ -60,7 +64,7 @@ async function refreshLog() {
     if (trimmed) {
       logLines = logLines.slice(-MAX_LOG_LINES);
     }
-    const nextSince = lines.length ? Math.max(...lines.map((l) => l.id || 0)) : since;
+    const nextSince = Math.max(currentSince, ...lines.map((l) => l.id || 0));
     out.dataset.lastIndex = String(nextSince);
     _updateBadge();
     if (hasLogFilter() || trimmed) {
@@ -79,6 +83,8 @@ async function refreshLog() {
       if (autoScroll) out.scrollTop = out.scrollHeight;
     }
   } catch {
+  } finally {
+    logRefreshInFlight = false;
   }
 }
 

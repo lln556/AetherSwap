@@ -117,7 +117,17 @@ function renderAccountDetail(acc, currentId) {
     try {
       const r = await fetchJson(API + "/accounts/" + id + "/verify", { method: "POST" });
       if (r.ok) {
-        toast(r.status === "session_valid" ? "当前登录有效" : "验证通过", r.message || "已自动登录");
+        const syncFailed = r.region_sync && r.region_sync.ok === false && !r.region_sync.skipped;
+        if (syncFailed) {
+          toast(
+            "登录有效，但结算币种同步失败",
+            r.region_sync.error || "自动出售安全许可仍处于暂停状态",
+            6000,
+            "warn",
+          );
+        } else {
+          toast(r.status === "session_valid" ? "当前登录有效" : "验证通过", r.message || "已自动登录");
+        }
         refreshAccounts();
       } else if (r.status === "need_2fa") {
         toast(r.message || "需要二次验证");
