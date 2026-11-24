@@ -159,7 +159,26 @@ def test_running_pipeline_freezes_manual_credential_replacement(monkeypatch):
     )
     monkeypatch.setattr(buff_auth, "get_pending_payment", lambda: None)
 
-    assert "流水线正在运行" in buff_auth.buff_credential_replacement_block_reason()
+    reason = buff_auth.buff_credential_replacement_block_reason()
+    assert "流水线正在运行" in reason
+    assert "无需操作" in reason
+    assert "待付款" not in reason
+    assert "待对账" not in reason
+
+
+def test_pending_payment_and_checkout_freeze_have_distinct_reasons(monkeypatch):
+    from app.services import buff_auth
+
+    monkeypatch.setattr(
+        buff_auth,
+        "get_status",
+        lambda: {"status": "running", "step": "CHECKOUT_PENDING"},
+    )
+    monkeypatch.setattr(buff_auth, "get_pending_payment", lambda: {"pay_url": "https://pay.test"})
+    assert "待付款订单" in buff_auth.buff_credential_replacement_block_reason()
+
+    monkeypatch.setattr(buff_auth, "get_pending_payment", lambda: None)
+    assert "待对账" in buff_auth.buff_credential_replacement_block_reason()
 
 
 def test_full_import_rejects_during_atomic_checkout_then_succeeds(monkeypatch):
