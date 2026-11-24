@@ -144,11 +144,30 @@ def test_no_link_and_unpaid_retains_checkout_and_never_rebuys(isolated):
 
 def test_manual_payment_link_keeps_existing_confirmation_flow(isolated):
     client = AutoClient(paid=False, pay_url="https://pay.example/manual")
-    kwargs, pending, purchases = _checkout_args(wait_result=True)
+    kwargs, pending, purchases = _checkout_args()
+
+    def _user_paid(**_kwargs):
+        # The user completed the manual payment on BUFF before clicking confirm.
+        client.paid = True
+        return True
+
+    kwargs["wait_payment_confirm"] = _user_paid
     assert steps.lock_and_confirm_payment(client, _item([{"id": "sell", "price": "10.00"}]),
                                           _config(), **kwargs) == 10.0
     assert pending[0]["pay_url"] == "https://pay.example/manual"
     assert len(purchases) == 1
+
+
+def test_manual_confirm_without_buff_proof_never_records_or_clears_gate(isolated):
+    client = AutoClient(paid=False, pay_url="https://pay.example/manual")
+    kwargs, pending, purchases = _checkout_args(wait_result=True)
+    with pytest.raises(steps.PurchaseOrderCreatedPending):
+        steps.lock_and_confirm_payment(client, _item([{"id": "sell", "price": "10.00"}]),
+                                       _config(), **kwargs)
+    assert purchases == []
+    assert client.shipping_calls == []
+    unresolved = guard.get_unresolved_checkout()
+    assert unresolved is not None and unresolved["order_id"] == "bill-auto"
 
 
 def test_verification_after_creation_preserves_order_identity(isolated):

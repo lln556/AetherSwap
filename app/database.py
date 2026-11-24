@@ -1,11 +1,15 @@
 import json
+import logging
 import math
 import os
 import threading
 from pathlib import Path
 from typing import List, Optional
+from sqlalchemy import event
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from app import trading_models, decision_models
+_log = logging.getLogger(__name__)
 _CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
 _DB_PATH = _CONFIG_DIR / "app.db"
 _TRANSACTIONS_JSON = _CONFIG_DIR / "transactions.json"
@@ -123,6 +127,17 @@ def get_engine():
         if url.startswith("sqlite:"):
             kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
         _engine = create_engine(url, **kwargs)
+        if url.startswith("sqlite:"):
+            @event.listens_for(_engine, "connect")
+            def _sqlite_pragmas(dbapi_connection, _connection_record):
+                cursor = dbapi_connection.cursor()
+                try:
+                    if ":memory:" not in url:
+                        cursor.execute("PRAGMA journal_mode=WAL")
+                        cursor.execute("PRAGMA synchronous=NORMAL")
+                    cursor.execute("PRAGMA busy_timeout=30000")
+                finally:
+                    cursor.close()
         return _engine
 def get_session() -> Session:
     return Session(get_engine())
@@ -176,6 +191,21 @@ def init_db() -> None:
                     "WHERE buff_order_id IS NOT NULL AND buff_order_id != ''"
                 )
             )
+    # Legacy databases may already hold duplicate active assetids.  Skipping
+    # this index must never stop startup; the application-level write guard
+    # still rejects new duplicates.
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                sa_text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "ux_purchase_active_assetid ON purchase(assetid) "
+                    "WHERE assetid IS NOT NULL AND assetid != '' "
+                    "AND archived_at IS NULL"
+                )
+            )
+    except (IntegrityError, OperationalError) as exc:
+        _log.warning("跳过活跃 assetid 唯一索引（历史重复数据）: %s", exc)
     with engine.connect() as conn:
         rows = conn.execute(
             sa_text("SELECT id, positive_rate, total_reviews FROM steamdealgame WHERE wilson_score IS NULL")
@@ -316,6 +346,22 @@ _PURCHASE_UPDATABLE = frozenset({
     "account_id",
 })
 _SALE_UPDATABLE = frozenset({"name", "price", "goods_id", "assetid", "at"})
+
+
+def _active_assetid_conflict(session, db_id: int, assetid) -> bool:
+    """True when a different active purchase already owns ``assetid``."""
+    value = str(assetid or "").strip()
+    if not value:
+        return False
+    return session.exec(
+        select(Purchase).where(
+            Purchase.assetid == value,
+            Purchase.archived_at == None,
+            Purchase.id != db_id,
+        )
+    ).first() is not None
+
+
 def db_append_purchase(p: dict) -> None:
     record = {k: v for k, v in p.items() if k != "_db_id"}
     with get_session() as session:
@@ -419,6 +465,8 @@ def db_update_purchase(idx: int, data: dict) -> bool:
         if 0 <= idx < len(rows):
             row = rows[idx]
             before = row.model_dump()
+            if _active_assetid_conflict(session, row.id, data.get("assetid")):
+                return False
             for k, v in data.items():
                 if k in _PURCHASE_UPDATABLE:
                     setattr(row, k, v)
@@ -465,6 +513,8 @@ def db_update_purchase_by_id(db_id: int, data: dict) -> bool:
         if row is None:
             return False
         before = row.model_dump()
+        if _active_assetid_conflict(session, row.id, data.get("assetid")):
+            return False
         for k, v in data.items():
             if k in _PURCHASE_UPDATABLE:
                 setattr(row, k, v)
@@ -483,7 +533,8 @@ def db_apply_receipt_reconciliation(expected: dict, *, assetid: str = "", closed
                 or row.sale_price or row.sold_at
                 or row.buff_order_id != expected.get("buff_order_id")
                 or row.goods_id != expected.get("goods_id")
-                or row.price != expected.get("price") or row.name != expected.get("name")
+                or round(float(row.price or 0) * 100) != round(float(expected.get("price") or 0) * 100)
+                or row.name != expected.get("name")
                 or str(row.account_id or "") != str(expected.get("account_id") or "")):
             return False
         if receipt_evidence and (str(receipt_evidence.get("assetid")) != str(assetid)

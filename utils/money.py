@@ -2,8 +2,10 @@ import json
 import math
 import re
 import time
+from decimal import Decimal, ROUND_FLOOR
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+STEAM_FEE_FACTOR = 1.15
 USD_TO_CNY_DEFAULT = 7.2
 CURRENCY_CNY = "CNY"
 CURRENCY_USD = "USD"
@@ -30,10 +32,50 @@ g_rgWalletInfo = {
 }
 
 
+def _exact_fee(base_amt: int, pct: float, fee_minimum: int) -> int:
+    """Percentage fee floored in exact decimal arithmetic (no float drift)."""
+    if pct is None or float(pct) <= 0:
+        return 0
+    amount = Decimal(int(base_amt)) * Decimal(str(pct))
+    return max(int(fee_minimum), int(amount.to_integral_value(rounding=ROUND_FLOOR)))
+
+
 def calculate_fee(base_amt: int, pct: float, rg_wallet: dict) -> int:
-    if pct > 0:
-        return max(int(rg_wallet['wallet_fee_minimum']), math.floor(base_amt * pct))
-    return 0
+    return _exact_fee(base_amt, pct, int(rg_wallet['wallet_fee_minimum']))
+
+
+def buyer_total_minor(seller_minor: int, *, fee_minimum: int = 7,
+                      publisher_pct: float = 0.10, steam_pct: float = 0.05) -> int:
+    """Total the buyer pays when the seller receives ``seller_minor``."""
+    seller = int(seller_minor)
+    return (seller + _exact_fee(seller, publisher_pct, fee_minimum)
+            + _exact_fee(seller, steam_pct, fee_minimum))
+
+
+def seller_for_budget_minor(buyer_minor: int, *, fee_minimum: int = 7,
+                            market_minimum: int = 1, increment: int = 1,
+                            publisher_pct: float = 0.10,
+                            steam_pct: float = 0.05) -> int:
+    """Largest valid seller price whose buyer total stays within ``buyer_minor``."""
+    budget = int(buyer_minor)
+    step = max(1, int(increment))
+    floor_price = max(1, int(market_minimum))
+
+    def affordable(price: int) -> bool:
+        return buyer_total_minor(price, fee_minimum=fee_minimum,
+                                 publisher_pct=publisher_pct,
+                                 steam_pct=steam_pct) <= budget
+
+    if not affordable(floor_price):
+        return floor_price
+    low, high = 0, max(0, (budget - floor_price) // step)
+    while low < high:
+        mid = (low + high + 1) // 2
+        if affordable(floor_price + mid * step):
+            low = mid
+        else:
+            high = mid - 1
+    return floor_price + low * step
 
 
 def get_total_with_fees(base_amt: int, ppct: float, spct: float, rg_wallet: dict) -> int:
@@ -57,55 +99,68 @@ def to_valid_market_price(n_price: int, rg_wallet: dict) -> int:
 
 
 def get_item_price_from_total(n_total: int, rg_wallet: dict) -> int:
-    ppct = float(rg_wallet['wallet_publisher_fee_percent_default'])
-    spct = float(rg_wallet['wallet_fee_percent'])
-    n_increment = int(rg_wallet['wallet_currency_increment'])
-    n_floor = int(rg_wallet['wallet_market_minimum'])
-    n_fee_min = int(rg_wallet['wallet_fee_minimum'])
-    
-    n_initial_guess = math.floor(n_total / (1.0 + ppct + spct))
-    n_max_base = n_total - (2 * n_fee_min)
-    n_base = to_valid_market_price(min(n_initial_guess, n_max_base), rg_wallet)
-    
-    for _ in range(3):
-        n_calculated = get_total_with_fees(n_base, ppct, spct, rg_wallet)
-        if n_calculated == n_total:
-            return n_base
-        if n_calculated < n_total:
-            n_base += n_increment
-        else:
-            n_base -= n_increment
-            break
-    return max(n_floor, n_base)
+    return seller_for_budget_minor(
+        n_total,
+        fee_minimum=int(rg_wallet['wallet_fee_minimum']),
+        market_minimum=int(rg_wallet['wallet_market_minimum']),
+        increment=max(1, int(rg_wallet.get('wallet_currency_increment') or 1)),
+        publisher_pct=float(rg_wallet['wallet_publisher_fee_percent_default']),
+        steam_pct=float(rg_wallet['wallet_fee_percent']),
+    )
 
 
 def usd_to_cny(amount: float, rate: float = USD_TO_CNY_DEFAULT) -> float:
     return amount * rate
 def parse_price_text(raw: str) -> Optional[float]:
-    """Parse a market price string with either separator convention.
+    """Parse the first amount in a price string.
 
-    Handles "1,234.56" (comma thousands) and "1.234,56" (dot thousands,
-    comma decimals); returns None when no usable number is present.
+    Only the first numeric token is read, so dual-amount cells such as
+    "¥ 1.15 (¥ 1.00)" yield 1.15 instead of concatenating both numbers.
+    Handles "1,234.56" and "1.234,56" separator conventions.
     """
-    text = str(raw or "")
-    cleaned = re.sub(r"[^\d.,]", "", text).strip(".,")
-    if not cleaned or not re.search(r"\d", cleaned):
+    match = re.search(r"\d+(?:[.,]\d+)*", str(raw or ""))
+    if not match:
         return None
-    if "," in cleaned and "." in cleaned:
-        if cleaned.rfind(",") > cleaned.rfind("."):
-            cleaned = cleaned.replace(".", "").replace(",", ".")
+    token = match.group(0)
+    if "," in token and "." in token:
+        if token.rfind(",") > token.rfind("."):
+            token = token.replace(".", "").replace(",", ".")
         else:
-            cleaned = cleaned.replace(",", "")
-    elif "," in cleaned:
-        if re.fullmatch(r"\d{1,3}(,\d{3})+", cleaned):
-            cleaned = cleaned.replace(",", "")
+            token = token.replace(",", "")
+    elif "," in token:
+        if re.fullmatch(r"\d{1,3}(,\d{3})+", token):
+            token = token.replace(",", "")
         else:
-            cleaned = cleaned.replace(",", ".")
+            token = token.replace(",", ".")
     try:
-        value = float(cleaned)
+        value = float(token)
     except ValueError:
         return None
     return value if math.isfinite(value) else None
+
+
+def parse_steam_listing_prices(raw: str) -> Tuple[Optional[float], Optional[float]]:
+    """Return ``(buyer_price, seller_proceeds)`` from a Steam price cell.
+
+    Dual-amount cells show the buyer price outside parentheses and the seller's
+    proceeds inside, e.g. "¥ 1.15 (¥ 1.00)" -> (1.15, 1.00). A single amount is
+    treated as seller proceeds: "¥ 8.21" -> (None, 8.21).
+    """
+    text = str(raw or "")
+    match = re.search(r"[(（]([^()（）]*)[)）]", text)
+    if match:
+        inner = parse_price_text(match.group(1))
+        outer = parse_price_text(text[:match.start()])
+        if outer is not None and inner is not None:
+            return outer, inner
+        fallback = outer if outer is not None else inner
+        return (None, fallback) if fallback is not None else (None, None)
+    amount = parse_price_text(text)
+    if amount is None:
+        return None, None
+    return None, amount
+
+
 def currency_code_from_price_text(text: str) -> str:
     """Infer the currency code from a Steam market price string."""
     s = text or ""

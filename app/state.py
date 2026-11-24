@@ -190,6 +190,14 @@ class State:
     def get_pending_payment(self) -> Optional[dict]:
         with self._lock:
             return self._pending_payment
+    def get_payment_generation(self) -> int:
+        with self._confirm:
+            return self._confirm_generation
+    def clear_pending_payment_if_matches(self, generation: Optional[int] = None) -> None:
+        """Clear the payment prompt only when it belongs to ``generation``."""
+        with self._lock:
+            if generation is None or (self._pending_payment or {}).get("generation") == generation:
+                self._pending_payment = None
     def begin_payment_wait(self) -> int:
         """Open a new payment wait and return its generation token."""
         with self._confirm:
@@ -300,6 +308,10 @@ def set_pending_payment(p: Optional[dict]) -> None:
     get_state().set_pending_payment(p)
 def get_pending_payment() -> Optional[dict]:
     return get_state().get_pending_payment()
+def get_payment_generation() -> int:
+    return get_state().get_payment_generation()
+def clear_pending_payment_if_matches(generation: Optional[int] = None) -> None:
+    get_state().clear_pending_payment_if_matches(generation)
 def begin_payment_wait() -> int:
     return get_state().begin_payment_wait()
 def wait_payment_confirm(timeout_seconds: Optional[float] = None, generation: Optional[int] = None) -> bool:

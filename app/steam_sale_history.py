@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from app.steam_listings import _get_with_retry, _cookies_to_dict, _HOVER_PATTERN, MYHISTORY_RENDER_URL
 from app.trading_ledger import minor
 from app.services.lifecycle import is_shutting_down
-from utils.money import parse_price_text, currency_code_from_price_text
+from utils.money import parse_steam_listing_prices, currency_code_from_price_text
 
 
 def history_day(label, *, now=None, purchased_at=None):
@@ -58,7 +58,7 @@ def parse_history(data, owned):
         if not re.search(r"\bSold\b|已售出|出售", label, re.I) or not price:
             continue
         text = price.get_text(" ", strip=True)
-        amount = parse_price_text(text)
+        _, amount = parse_steam_listing_prices(text)
         if amount is None or amount <= 0:
             continue
         results.append({"external_id": rid, "assetid": aid, "proceeds_minor": minor(amount),

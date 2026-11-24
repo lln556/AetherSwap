@@ -9,7 +9,12 @@ STEAM_REQUEST_TIMEOUT = 25
 STEAM_REQUEST_RETRIES = 2
 STEAM_REQUEST_RETRY_DELAY = 3
 from utils.proxy_manager import get_proxy_manager, mask_proxy_url
-from utils.money import currency_code_from_price_text, parse_price_text
+from utils.money import (
+    STEAM_FEE_FACTOR,
+    buyer_total_minor,
+    currency_code_from_price_text,
+    parse_steam_listing_prices,
+)
 MYLISTINGS_URL = "https://steamcommunity.com/market/mylistings/"
 MYLISTINGS_HTML_URL = "https://steamcommunity.com/market/mylistings/"
 MYHISTORY_RENDER_URL = "https://steamcommunity.com/market/myhistory/render/"
@@ -22,7 +27,7 @@ def _get_with_retry(url: str, params: dict, headers: dict, cookies: dict, debug_
             proxies = pm.get_proxies_for_request(failed=(attempt > 0))
             if proxies:
                 _debug(debug_fn, f"[Steam 请求] 正在使用代理池 {mask_proxy_url(proxies.get('http'))} 访问: {url}")
-            r = http.get(url, params=params, headers=headers, cookies=cookies, proxies=proxies, verify=False, timeout=STEAM_REQUEST_TIMEOUT)
+            r = http.get(url, params=params, headers=headers, cookies=cookies, proxies=proxies, timeout=STEAM_REQUEST_TIMEOUT)
             if r.status_code in RETRY_STATUS_CODES and attempt < STEAM_REQUEST_RETRIES:
                 _debug(debug_fn, f"[Steam 请求] HTTP {r.status_code}，{STEAM_REQUEST_RETRY_DELAY}s 后重试 ({attempt + 1}/{STEAM_REQUEST_RETRIES})")
                 time.sleep(STEAM_REQUEST_RETRY_DELAY)
@@ -270,19 +275,7 @@ def fetch_my_history_sold(cookies, debug_fn: Optional[Callable[[str], None]] = N
                 _debug(debug_fn, f"[myhistory] 汇率读取完成, 可用币种: {list(rate_map.keys())[:5]}")
         except Exception:
             rate_map = {}
-            if "HK" in s and "$" in s:
-                return "HKD"
-            if "₹" in s:
-                return "INR"
-            if "₽" in s:
-                return "RUB"
-            if "€" in s:
-                return "EUR"
-            if "USD" in s or "US$" in s:
-                return "USD"
-            if "$" in s:
-                return "USD"
-            return "CNY"
+            _debug(debug_fn, "[myhistory] 汇率读取失败，使用原币金额")
         soup = BeautifulSoup(html, "html.parser")
         rows = [div for div in soup.find_all("div", class_="market_listing_row") if (div.get("id") or "").startswith("history_row_")]
         _debug(debug_fn, f"[myhistory] results_html 中 history_row_ 行数: {len(rows)}")
@@ -320,15 +313,22 @@ def fetch_my_history_sold(cookies, debug_fn: Optional[Callable[[str], None]] = N
                 continue
             raw_text = price_el.get_text() or ""
             cur_code = currency_code_from_price_text(raw_text)
-            raw = parse_price_text(raw_text)
-            if raw is not None:
-                cny_raw = raw
+            buyer_amt, proceeds_amt = parse_steam_listing_prices(raw_text)
+            source_amt = buyer_amt if buyer_amt is not None else proceeds_amt
+            if source_amt is not None:
+                cny_raw = source_amt
                 if cur_code != "CNY":
                     rate = rate_map.get(cur_code)
                     if rate:
-                        cny_raw = raw * rate
-                        _debug(debug_fn, f"[myhistory] {cur_code} {raw} -> CNY {cny_raw:.4f}")
-                sold[assetid] = round(cny_raw * 1.15, 2)
+                        cny_raw = source_amt * rate
+                        _debug(debug_fn, f"[myhistory] {cur_code} {source_amt} -> CNY {cny_raw:.4f}")
+                if buyer_amt is not None:
+                    buyer_price = cny_raw
+                elif cur_code == "CNY":
+                    buyer_price = buyer_total_minor(round(cny_raw * 100)) / 100
+                else:
+                    buyer_price = round(cny_raw * STEAM_FEE_FACTOR, 2)
+                sold[assetid] = round(buyer_price, 2)
         _debug(debug_fn, f"[myhistory] 行->assetid: hover {hover_hits}, fallback {fallback_hits}; Sold 行 {sold_rows}, sold_map 条数 {len(sold)}, 示例: {list(sold.items())[:5]}")
         return True, sold, ""
     except Exception as e:

@@ -30,6 +30,7 @@ from app.services.buff_offer_support import (
 )
 from app.notify import send_pushplus, build_payment_notify_content, wait_email_command
 from utils.delay import jittered_sleep
+from utils.money import STEAM_FEE_FACTOR
 
 
 def _default_begin_payment_wait() -> int:
@@ -42,7 +43,6 @@ from buff import (
     BuffWriteResultUnknown,
 )
 
-STEAM_FEE_FACTOR = 1.15  # Steam take rate for calculating net proceeds
 BUFF_ORDERS_CACHE_TTL_SECONDS = 3.0
 TIME_WINDOW_CLOSED = object()
 CURRENCY_QUANTUM = Decimal("0.01")
@@ -1086,11 +1086,14 @@ def _do_payment_notify_and_wait(
     Returns True if user confirmed, False on cancel/timeout/stop.
     """
     name = item.get("name", "")
+    begin_wait = begin_payment_wait or _default_begin_payment_wait
+    wait_generation = begin_wait()
     set_pending_payment({
         "pay_url": pay_url,
         "pay_type": pay_type,
         "name": name,
         "order_id": order_id,
+        "generation": wait_generation,
     })
     try:
         if on_entering_payment:
@@ -1129,23 +1132,20 @@ def _do_payment_notify_and_wait(
         email_pass = (notify_cfg.get("email_pass") or "").strip()
         timeout_sec = int(notify_cfg.get("email_timeout_seconds", 300))
         if email_user and email_pass:
-            begin_wait = begin_payment_wait or _default_begin_payment_wait
-            generation = begin_wait()
-
             def _email_waiter() -> None:
                 res = wait_email_command(config, timeout_seconds=timeout_sec, is_stop_requested=is_stop_requested, log_fn=log_fn)
                 # Bind the result to the wait this thread was created for: a
                 # late email from a previous order must never confirm or
                 # cancel the next order's payment wait.
-                confirm_payment(res == "success", generation=generation)
+                confirm_payment(res == "success", generation=wait_generation)
 
             t = threading.Thread(target=_email_waiter, daemon=True)
             t.start()
             # The email waiter posts its final result at timeout_sec; wait a
             # little longer so that result always lands on this wait.
-            ok = wait_payment_confirm(timeout_seconds=timeout_sec + 15, generation=generation)
+            ok = wait_payment_confirm(timeout_seconds=timeout_sec + 15, generation=wait_generation)
         else:
-            ok = wait_payment_confirm(timeout_seconds=timeout_sec)
+            ok = wait_payment_confirm(timeout_seconds=timeout_sec, generation=wait_generation)
         if log_fn:
             log_fn(f"[Buff]   → 用户确认={'成功' if ok else '取消/失败'}", "info")
         return ok
@@ -1465,6 +1465,38 @@ def _do_wait_payment_and_append(
         )
         if is_stop_requested() or not ok:
             return None
+        # A local click is not proof of payment: BUFF must confirm the order
+        # before any position is recorded or the checkout gate is released.
+        if callable(getattr(buff_client, "get_order_payment", None)):
+            try:
+                proof = _poll_single_order_payment(
+                    buff_client, game_buff, str(order_id), goods_id, unit_price,
+                    is_stop_requested,
+                )
+            except (BuffAuthExpired, BuffRequestBlocked):
+                update_checkout(
+                    expected_intent_id=checkout_intent_id,
+                    stage="order_created_pending",
+                    order_id=str(order_id),
+                    reason="本地确认付款后 BUFF 付款状态查询被阻止",
+                )
+                raise
+            except Exception as exc:
+                proof = None
+                if log_fn:
+                    log_fn(f"[Buff]   → 本地确认后 BUFF 付款核实失败 ({type(exc).__name__})", "warn")
+            if proof:
+                payment_verified = True
+                update_checkout(
+                    expected_intent_id=checkout_intent_id,
+                    stage="payment_verified",
+                    order_id=str(order_id),
+                    reason="BUFF 已返回匹配订单的付款记录",
+                )
+            else:
+                if log_fn:
+                    log_fn("本地点击已付款，但 BUFF 未核实到付款记录，保留门禁且不写入持仓", "warn")
+                return None
     # A verified charge must be recorded even if Stop arrived during lookup.
     if market_price is None:
         mhn = (item.get("steam_market_name") or item.get("name") or "").strip()
@@ -1672,7 +1704,7 @@ def lock_and_confirm_payment(
             market_hash_name, ref_price, config, log_fn, app_id=730
         )
         if lowest_price > 0:
-            value_ratio = (lowest_price / ref_price) * 1.15
+            value_ratio = (lowest_price / ref_price) * STEAM_FEE_FACTOR
             if value_ratio >= max_discount:
                 if log_fn:
                     log_fn(f"[Buff]   → 二次验证未通过 (Buff最低价/参考价)×1.15={value_ratio:.4f} 需<{max_discount} (参考价={ref_price:.2f})", "warn")
@@ -1680,7 +1712,7 @@ def lock_and_confirm_payment(
             if log_fn:
                 log_fn(f"[Buff]   → 二次验证通过 (Buff最低价/参考价)×1.15={value_ratio:.4f} 参考价={ref_price:.2f}", "info")
     if ref_price and lowest_price > 0:
-        item["value_ratio"] = (lowest_price / ref_price) * 1.15
+        item["value_ratio"] = (lowest_price / ref_price) * STEAM_FEE_FACTOR
     n_sell_orders = int(scfg.get("sell_pressure_orders_n", 5) or 5)
     if sell_pressure_threshold is not None and sell_pressure_threshold > 0:
         daily_vol = int(item.get("daily_volume", 0) or 0)

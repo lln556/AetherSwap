@@ -120,7 +120,6 @@ def accept_steam_trade_offer(
             cookies=steam_cookies,
             proxies=proxies,
             data=data,
-            verify=False,
             timeout=15,
         )
         if r.status_code != 200:
@@ -147,12 +146,16 @@ def _match_purchase_for_item(
     item: dict,
     pending_purchases: List[dict],
     assigned_db_ids: set,
+    goods_id_offer_counts: Optional[Dict[int, int]] = None,
 ) -> Optional[dict]:
     """Return the best matching purchase record dict (containing _db_id), or None.
     Matching priority:
       1. goods_id exact match (most reliable)
       2. one unique, exact name match when either goods_id is unavailable
     Among candidates, prefer the oldest (smallest ``at`` timestamp).
+    When several same-goods pending purchases have distinct cost bases and
+    this offer delivers fewer copies than that, the binding is ambiguous and
+    is left to Steam trade-asset reconciliation.
     """
     goods_id_buff = item.get("goods_id")
     try:
@@ -191,6 +194,15 @@ def _match_purchase_for_item(
         exact_candidates.sort(
             key=lambda x: (x.get("at") or 0, x.get("_db_id") or 0)
         )
+        if goods_id_offer_counts is not None and normalized_goods_id is not None:
+            copies = goods_id_offer_counts.get(normalized_goods_id, 0)
+            distinct_costs = {
+                round(float(p.get("price") or 0) * 100)
+                for p in exact_candidates
+            } - {0}
+            if (len(exact_candidates) > 1 and len(distinct_costs) > 1
+                    and copies < len(exact_candidates)):
+                return None
         return exact_candidates[0]
     if len(name_candidates) != 1:
         return None
@@ -260,11 +272,18 @@ def try_receive_once(
         assigned_db_ids: set = set()
         pairs: List[Tuple[dict, dict]] = []
         task_items = task.get("items") or []
+        goods_id_offer_counts: Dict[int, int] = Counter()
+        for it in task_items:
+            try:
+                goods_id_offer_counts[int(it.get("goods_id"))] += 1
+            except (TypeError, ValueError):
+                continue
         for it in task_items:
             matched = _match_purchase_for_item(
                 it,
                 pending_records,
                 assigned_db_ids,
+                goods_id_offer_counts=goods_id_offer_counts,
             )
             if matched is not None:
                 assigned_db_ids.add(matched["_db_id"])
@@ -333,6 +352,11 @@ def try_receive_once(
 
         for purchase_rec, it in pairs:
             mhn = (it.get("market_hash_name") or "").strip()
+            if mhn and len(inv_by_name.get(mhn, [])) > required_by_name.get(mhn, 0):
+                # More new copies of this item appeared than this offer
+                # delivers.  Do not guess which asset belongs to which
+                # purchase; leave the rows for trade-proof reconciliation.
+                continue
             our_assetid = None
             if mhn and inv_by_name.get(mhn):
                 for inv_item in inv_by_name[mhn][:]:

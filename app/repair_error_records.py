@@ -8,7 +8,12 @@ from collections import defaultdict
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from utils.money import currency_code_from_price_text, parse_price_text
+from utils.money import (
+    STEAM_FEE_FACTOR,
+    buyer_total_minor,
+    currency_code_from_price_text,
+    parse_steam_listing_prices,
+)
 from utils import http_client as http
 from bs4 import BeautifulSoup
 CREDENTIALS_FILE = ROOT / "config" / "credentials.json"
@@ -40,19 +45,6 @@ def _load_rate_map() -> dict:
     except Exception:
         pass
     return {}
-    if "HK" in s and "$" in s:
-        return "HKD"
-    if "₹" in s:
-        return "INR"
-    if "₽" in s:
-        return "RUB"
-    if "€" in s:
-        return "EUR"
-    if "USD" in s or "US$" in s:
-        return "USD"
-    if "$" in s:
-        return "USD"
-    return "CNY"
 def _parse_sold_history_page(data: dict, rate_map: dict) -> tuple:
     row_to_assetid = {}
     for m in HOVER_PATTERN.finditer(data.get("hovers") or ""):
@@ -103,14 +95,20 @@ def _parse_sold_history_page(data: dict, rate_map: dict) -> tuple:
             continue
         raw_text = price_el.get_text() or ""
         cur_code = currency_code_from_price_text(raw_text)
-        raw = parse_price_text(raw_text)
-        if raw is not None:
-            cny_raw = raw
+        buyer_amt, proceeds_amt = parse_steam_listing_prices(raw_text)
+        source_amt = buyer_amt if buyer_amt is not None else proceeds_amt
+        if source_amt is not None:
+            cny_raw = source_amt
             if cur_code != "CNY":
                 rate = rate_map.get(cur_code)
                 if rate:
-                    cny_raw = raw * rate
-            sale_price = round(cny_raw * 1.15, 2)
+                    cny_raw = source_amt * rate
+            if buyer_amt is not None:
+                sale_price = round(cny_raw, 2)
+            elif cur_code == "CNY":
+                sale_price = round(buyer_total_minor(round(cny_raw * 100)) / 100, 2)
+            else:
+                sale_price = round(cny_raw * STEAM_FEE_FACTOR, 2)
             sold[assetid] = sale_price
             sold_names[assetid] = name
     return sold, sold_names, row_count
@@ -136,7 +134,7 @@ def _fetch_sold_with_names(cookies: dict) -> tuple:
     total_count = None
     for _ in range(HISTORY_MAX_PAGES):
         params = {"query": "", "start": start, "count": HISTORY_PAGE_SIZE, "contextid": 2, "appid": 730}
-        r = http.get(MYHISTORY_RENDER_URL, params=params, headers=headers, cookies=cookies, verify=False, timeout=TIMEOUT)
+        r = http.get(MYHISTORY_RENDER_URL, params=params, headers=headers, cookies=cookies, timeout=TIMEOUT)
         if r.status_code != 200:
             raise RuntimeError(f"HTTP {r.status_code}")
         data = r.json() if r.text else {}

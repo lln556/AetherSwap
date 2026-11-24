@@ -89,20 +89,17 @@ def _capture_reprice_decision(config, item, inputs, result, evaluated_at):
         return
 
 
+from utils.money import buyer_total_minor, seller_for_budget_minor
+
+
 def buyer_total(seller_minor):
-    # CS2, CNY wallet: 5% Steam + 10% publisher, each with a 7-fen minimum.
-    return seller_minor + max(7, seller_minor * 5 // 100) + max(7, seller_minor * 10 // 100)
+    """Buyer-paid total for a seller price; delegates to the canonical fee model."""
+    return buyer_total_minor(int(seller_minor))
 
 
 def seller_for_budget(buyer_minor):
-    low, high = 1, max(1, buyer_minor)
-    while low < high:
-        mid = (low + high + 1) // 2
-        if buyer_total(mid) <= buyer_minor:
-            low = mid
-        else:
-            high = mid - 1
-    return low
+    """Largest seller price within a buyer budget; canonical fee model."""
+    return seller_for_budget_minor(int(buyer_minor))
 
 
 def evaluate_price(*, cost_minor, old_buyer_minor, market_minor, max_loss_percent=30,
