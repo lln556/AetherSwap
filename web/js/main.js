@@ -25,14 +25,17 @@ async function tabSwitch(name) {
     btn.classList.add("active");
     const text = btn.querySelector("span")?.innerText;
     if (text && el("page-title-display")) el("page-title-display").innerText = text;
+    document.title = text ? `${text} · AetherSwap` : "AetherSwap";
   }
   if (name === "debug") refreshLog();
   Dashboard.syncNavigation(name);
   if (name === "inventory") refreshInventory(false);
-  if (name === "purchases" || name === "sales" || name === "purchase-history") {
+  if (name === "purchases") {
     await refreshTransactions();
-    if (name !== "purchases" && typeof refreshTrading === "function") await refreshTrading();
-    if (name === "purchases") refreshMarketPrices();
+    refreshMarketPrices();
+  }
+  if ((name === "sales" || name === "purchase-history") && typeof refreshTrading === "function") {
+    await refreshTrading();
   }
   if (name === "analytics") refreshAnalytics();
   if (name === "accounts") refreshAccounts();
@@ -152,12 +155,10 @@ function renderDashboardProgress(d) {
     set("task-progress-percent", `${pct}%`);
     const bar = el("task-progress-bar");
     if (bar) {
-      bar.setAttribute("aria-valuemax", String(total));
-      bar.setAttribute("aria-valuenow", String(done));
+      bar.max = total;
+      bar.value = done;
       bar.setAttribute("aria-valuetext", `本轮已检查 ${done} 件，共 ${total} 件`);
     }
-    const fill = el("task-progress-fill");
-    if (fill) fill.style.width = `${pct}%`;
   }
   const clean = text => String(text || "").replace(/^\(\d+\/\d+\)\s*/, "");
   let item = clean(d.progress_item);
@@ -174,14 +175,15 @@ function renderDashboardProgress(d) {
   set("task-next-item", clean(d.next_progress_item));
 }
 let statusRefreshPromise = null;
-function refreshStatus() {
+let _lastStatsFetchAt = 0;
+function refreshStatus(opts = {}) {
   if (document.hidden) return Promise.resolve();
   if (!statusRefreshPromise) {
-    statusRefreshPromise = _refreshStatusOnce().finally(() => { statusRefreshPromise = null; });
+    statusRefreshPromise = _refreshStatusOnce(opts).finally(() => { statusRefreshPromise = null; });
   }
   return statusRefreshPromise;
 }
-async function _refreshStatusOnce() {
+async function _refreshStatusOnce(opts = {}) {
   try {
     const d = await fetchJson(API + "/status", { signal: AbortSignal.timeout(10000) });
     Dashboard.renderStatus(d);
@@ -238,35 +240,53 @@ async function _refreshStatusOnce() {
       const t = el("pay-type");
       if (t) t.textContent = p.name ? "订单: " + p.name : "";
       box.dataset.payUrl = p.pay_url;
+      box.dataset.generation = p.generation != null ? String(p.generation) : "";
       const qrWrap = el("pay-qrcode-wrap");
       const qrBox = el("pay-qrcode");
       if (p.pay_type === "wechat" && qrWrap && qrBox && typeof QRCode !== "undefined") {
         qrWrap.classList.remove("hidden");
-        qrBox.innerHTML = "";
-        try {
-          new QRCode(qrBox, { text: p.pay_url, width: 200, height: 200 });
-        } catch (e) {
-          qrWrap.classList.add("hidden");
+        if (qrBox.dataset.qrUrl !== p.pay_url) {
+          qrBox.replaceChildren();
+          try {
+            new QRCode(qrBox, { text: p.pay_url, width: 200, height: 200 });
+            qrBox.dataset.qrUrl = p.pay_url;
+          } catch (e) {
+            qrBox.dataset.qrUrl = "";
+            qrWrap.classList.add("hidden");
+          }
         }
       } else {
         if (qrWrap) qrWrap.classList.add("hidden");
-        if (qrBox) qrBox.innerHTML = "";
+        if (qrBox) {
+          qrBox.replaceChildren();
+          qrBox.dataset.qrUrl = "";
+        }
       }
     } else {
       box.classList.add("hidden");
       box.dataset.payUrl = "";
+      box.dataset.generation = "";
       const qrWrap = el("pay-qrcode-wrap");
       const qrBox = el("pay-qrcode");
       if (qrWrap) qrWrap.classList.add("hidden");
-      if (qrBox) qrBox.innerHTML = "";
+      if (qrBox) {
+        qrBox.replaceChildren();
+        qrBox.dataset.qrUrl = "";
+      }
     }
   } catch {
   }
-  try {
-    const s = await fetchJson(API + "/stats", { signal: AbortSignal.timeout(10000) });
-    Dashboard.renderStats(s);
-  } catch {
-    Dashboard.setText("dashboard-stats-status", "统计暂时无法更新，保留上次数据，稍后自动重试。");
+  const now = Date.now();
+  const dashboardActive = !!document.querySelector("#panel-auto.active");
+  const shouldFetchStats = !opts.fromInterval || dashboardActive || (now - _lastStatsFetchAt >= 10000);
+  if (shouldFetchStats) {
+    try {
+      const s = await fetchJson(API + "/stats", { signal: AbortSignal.timeout(10000) });
+      _lastStatsFetchAt = Date.now();
+      Dashboard.renderStats(s);
+    } catch {
+      Dashboard.setText("dashboard-stats-status", "统计暂时无法更新，保留上次数据，稍后自动重试。");
+    }
   }
 }
 let reloginType = "steam";
@@ -274,8 +294,8 @@ let inventoryRefreshInFlight = false;
 function showReloginModal(type, opts = {}) {
   reloginType = type || "steam";
   const overlay = el("relogin-overlay");
-  const firstShow = overlay ? overlay.classList.contains("hidden") : false;
-  if (overlay) overlay.classList.remove("hidden");
+  const firstShow = overlay ? (typeof overlay.showModal === "function" ? !overlay.open : overlay.classList.contains("hidden")) : false;
+  openNativeDialog(overlay);
   const title = el("relogin-title");
   const msg = el("relogin-message");
   if (reloginType === "buff") {
@@ -308,7 +328,7 @@ function showReloginModal(type, opts = {}) {
 }
 function hideReloginModal() {
   const overlay = el("relogin-overlay");
-  if (overlay) overlay.classList.add("hidden");
+  closeNativeDialog(overlay);
 }
 async function refreshInventory(forceRefresh = true) {
   if (inventoryRefreshInFlight) return;
@@ -631,8 +651,22 @@ function bindEvents() {
   });
   el("btn-start")?.addEventListener("click", startPipeline);
   el("btn-stop")?.addEventListener("click", stopPipeline);
-  el("btn-paid")?.addEventListener("click", () => confirmPayment(true));
-  el("btn-fail")?.addEventListener("click", () => confirmPayment(false));
+  el("btn-paid")?.addEventListener("click", () => {
+    const genRaw = el("pending-payment")?.dataset?.generation;
+    const generation = genRaw ? parseInt(genRaw, 10) : null;
+    confirmPayment(true, Number.isInteger(generation) ? generation : null);
+  });
+  el("btn-fail")?.addEventListener("click", async () => {
+    const ok = await appConfirm("确定放弃本次支付？如果已经扫码付款，请勿点击放弃。", {
+      title: "放弃支付",
+      danger: true,
+      confirmText: "确认放弃",
+    });
+    if (!ok) return;
+    const genRaw = el("pending-payment")?.dataset?.generation;
+    const generation = genRaw ? parseInt(genRaw, 10) : null;
+    confirmPayment(false, Number.isInteger(generation) ? generation : null);
+  });
   el("btn-copy-pay")?.addEventListener("click", copyPayLink);
   el("btn-save-config")?.addEventListener("click", () =>
     saveConfigFromForm()
@@ -701,7 +735,8 @@ function bindEvents() {
   el("btn-toggle-scroll")?.addEventListener("click", toggleAutoScroll);
   el("btn-download-log")?.addEventListener("click", downloadLog);
   el("btn-export-log")?.addEventListener("click", exportLog);
-  el("log-search")?.addEventListener("input", () => renderLogFull());
+  const debouncedLogSearch = typeof debounce === "function" ? debounce(() => renderLogFull(), 180) : () => renderLogFull();
+  el("log-search")?.addEventListener("input", debouncedLogSearch);
   el("log-level")?.addEventListener("change", () => renderLogFull());
   el("cfg-verbose-debug")?.addEventListener("change", async () => {
     try {
@@ -748,10 +783,12 @@ function bindEvents() {
       return;
     }
     try {
-      await fetchJson(API + "/data/init", { method: "POST" });
-      await refreshStatus();
-      toast("数据已清空，即将刷新页面");
-      setTimeout(() => location.reload(), 1500);
+      const r = await fetchJson(API + "/data/init", { method: "POST" });
+      if (r && r.ok === false) {
+        toast("初始化失败", r.error || "数据库重置失败");
+        return;
+      }
+      toast("数据已清空", "服务正在退出，请重启服务后重新访问", 10000);
     } catch (e) {
       toast("初始化失败", e.message || "");
     }
@@ -809,11 +846,17 @@ function bindEvents() {
   el("relogin-btn-open")?.addEventListener("click", openBrowserAndLogin);
   el("relogin-btn-ok")?.addEventListener("click", () => finishRelogin(true));
   el("relogin-btn-fail")?.addEventListener("click", () => finishRelogin(false));
+  const clearEditTxDataset = () => {
+    const ov = el("edit-tx-overlay");
+    if (!ov) return;
+    delete ov.dataset.editType;
+    delete ov.dataset.editIdx;
+    delete ov.dataset.editDbId;
+  };
+  el("edit-tx-overlay")?.addEventListener("close", clearEditTxDataset);
   el("edit-tx-cancel")?.addEventListener("click", () => {
-    el("edit-tx-overlay")?.classList.add("hidden");
-    delete el("edit-tx-overlay")?.dataset.editType;
-    delete el("edit-tx-overlay")?.dataset.editIdx;
-    delete el("edit-tx-overlay")?.dataset.editDbId;
+    closeNativeDialog(el("edit-tx-overlay"));
+    clearEditTxDataset();
   });
   el("edit-tx-save")?.addEventListener("click", async () => {
     const ov = el("edit-tx-overlay");
@@ -849,7 +892,7 @@ function bindEvents() {
         body: JSON.stringify(payload),
       });
       if (r.ok) {
-        ov.classList.add("hidden");
+        closeNativeDialog(ov);
         delete ov.dataset.editType;
         delete ov.dataset.editIdx;
         delete ov.dataset.editDbId;
@@ -862,11 +905,17 @@ function bindEvents() {
       toast("保存失败", e.message || "");
     }
   });
+  const clearSellTxDataset = () => {
+    const ov = el("sell-tx-overlay");
+    if (!ov) return;
+    delete ov.dataset.sellIdx;
+    delete ov.dataset.sellDbId;
+    delete ov.dataset.sellIdxList;
+  };
+  el("sell-tx-overlay")?.addEventListener("close", clearSellTxDataset);
   el("sell-tx-cancel")?.addEventListener("click", () => {
-    el("sell-tx-overlay")?.classList.add("hidden");
-    delete el("sell-tx-overlay")?.dataset.sellIdx;
-    delete el("sell-tx-overlay")?.dataset.sellDbId;
-    delete el("sell-tx-overlay")?.dataset.sellIdxList;
+    closeNativeDialog(el("sell-tx-overlay"));
+    clearSellTxDataset();
   });
   el("sell-tx-confirm")?.addEventListener("click", async () => {
     const ov = el("sell-tx-overlay");
@@ -899,7 +948,7 @@ function bindEvents() {
           return;
         }
       }
-      ov.classList.add("hidden");
+      closeNativeDialog(ov);
       delete ov.dataset.sellIdx;
       delete ov.dataset.sellDbId;
       delete ov.dataset.sellIdxList;
@@ -914,33 +963,6 @@ function bindEvents() {
     holdingsMultiSelectMode = !holdingsMultiSelectMode;
     refreshTransactions();
   });
-  el("btn-history-multiselect")?.addEventListener("click", () => {
-    historyMultiSelectMode = !historyMultiSelectMode;
-    refreshTransactions();
-  });
-  el("btn-history-batch-del")?.addEventListener("click", async () => {
-    const checked = document.querySelectorAll("#transactions-table-purchase-history .history-checkbox:checked");
-    const targets = Array.from(checked).map((cb) => ({ idx: parseInt(cb.dataset.idx, 10), dbId: parseInt(cb.dataset.dbId, 10) || 0 })).filter((t) => Number.isFinite(t.idx));
-    if (!targets.length) {
-      toast("请先勾选要删除的项");
-      return;
-    }
-    if (!(await appConfirm(`确定删除所选 ${targets.length} 条记录？删除后将从持有饰品与操作记录中同时移除。`, { title: "批量删除记录", danger: true, confirmText: "删除" }))) return;
-    try {
-      const sorted = targets.slice().sort((a, b) => b.idx - a.idx);
-      for (const t of sorted) {
-        const params = { type: "purchase", idx: t.idx };
-        if (t.dbId) params.db_id = t.dbId;
-        const r = await fetchJson(API + "/transaction?" + new URLSearchParams(params), { method: "DELETE" });
-        if (!r.ok) { toast("删除失败", r.error || ""); return; }
-      }
-      historyMultiSelectMode = false;
-      refreshTransactions();
-      toast(`已删除 ${targets.length} 条`);
-    } catch (e) {
-      toast("删除失败", e.message || "");
-    }
-  });
   el("btn-holdings-batch-del")?.addEventListener("click", async () => {
     const checked = document.querySelectorAll("#transactions-table-purchases .holding-checkbox:checked");
     const targets = Array.from(checked).map((cb) => ({ idx: parseInt(cb.dataset.idx, 10), dbId: parseInt(cb.dataset.dbId, 10) || 0 })).filter((t) => Number.isFinite(t.idx));
@@ -950,7 +972,7 @@ function bindEvents() {
     }
     if (!(await appConfirm(`确定删除所选 ${targets.length} 条记录？`, { title: "批量删除记录", danger: true, confirmText: "删除" }))) return;
     try {
-      const sorted = targets.slice().sort((a, b) => b.idx - a.idx);
+      const sorted = targets.toSorted((a, b) => b.idx - a.idx);
       for (const t of sorted) {
         const params = { type: "purchase", idx: t.idx };
         if (t.dbId) params.db_id = t.dbId;
@@ -973,10 +995,12 @@ function bindEvents() {
     }
     const nameEl = el("sell-tx-item-name");
     if (nameEl) nameEl.textContent = `批量售出（共 ${targets.length} 条）`;
-    el("sell-tx-overlay").dataset.sellIdxList = JSON.stringify(targets);
-    delete el("sell-tx-overlay").dataset.sellIdx;
+    const ov = el("sell-tx-overlay");
+    if (!ov) return;
+    ov.dataset.sellIdxList = JSON.stringify(targets);
+    delete ov.dataset.sellIdx;
     el("sell-tx-price").value = "";
-    el("sell-tx-overlay").classList.remove("hidden");
+    openNativeDialog(ov);
     el("sell-tx-price")?.focus();
   });
   el("btn-theme")?.addEventListener("click", () => Theme.cycle());
@@ -994,7 +1018,9 @@ function setupScrollToTop() {
   panels.forEach(p => p.addEventListener("scroll", check, { passive: true }));
   btn.addEventListener("click", () => {
     const active = document.querySelector(".panel.active");
-    if (active) active.scrollTo({ top: 0, behavior: "smooth" });
+    if (!active) return;
+    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    active.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
   });
 }
 function setupKeyboardShortcuts() {
@@ -1008,8 +1034,8 @@ function setupKeyboardShortcuts() {
   });
 }
 async function init() {
-  Theme.apply(Theme.get());
-  if (window.matchMedia) {
+  if (typeof Theme !== "undefined") Theme.apply(Theme.get());
+  if (window.matchMedia && typeof Theme !== "undefined") {
     const mm = window.matchMedia("(prefers-color-scheme: dark)");
     mm.addEventListener?.("change", () => {
       if (Theme.get() === "system") Theme.apply("system");
@@ -1017,35 +1043,40 @@ async function init() {
   }
   if (typeof _updateScrollBtn === "function") _updateScrollBtn();
   bindEvents();
+  if (typeof bindProxyEvents === "function") bindProxyEvents();
+  if (typeof bindDialogLightDismiss === "function") {
+    bindDialogLightDismiss(el("account-form-overlay"));
+    bindDialogLightDismiss(el("edit-tx-overlay"));
+    bindDialogLightDismiss(el("sell-tx-overlay"));
+  }
   Dashboard.bind();
   setupScrollToTop();
   setupKeyboardShortcuts();
   setupButtonInteractions();
-  bindUXEvents();
+  if (typeof bindUXEvents === "function") bindUXEvents();
   if (typeof loadRuntimeProfile === "function") {
     await loadRuntimeProfile();
   }
 
   let wizardShown = false;
   try {
-    // 提前执行新手引导检查，避免被后续可能超时的库存请求阻塞
-    wizardShown = await checkAndShowOnboardingWizard();
+    if (typeof checkAndShowOnboardingWizard === "function") {
+      wizardShown = await checkAndShowOnboardingWizard();
+    }
   } catch (e) {
     console.warn("Failed to check onboarding wizard:", e);
   }
 
   try {
     await loadConfig();
-    await loadProxyConfig();
+    if (typeof loadProxyConfig === "function") await loadProxyConfig();
   } catch (e) {
     toast("加载配置失败", e.message || "请检查后端是否可用");
   }
 
   if (wizardShown) {
-    // 如果弹出了引导，则不对无配置的 Steam 发起可能超时的库存请求，仅设置自动刷新
     setupInventoryAutoRefresh();
   } else {
-    // 缓存优先：先展示上次库存（秒开，避免刷新页面时长时间空表），再后台刷新实时库存
     refreshInventory(false).then((d) => {
       setupInventoryAutoRefresh();
       if (d && d.source === "cache" && (d.items || []).length > 0) {
@@ -1055,7 +1086,7 @@ async function init() {
   }
 
   await refreshStatus();
-  setInterval(refreshStatus, 2000);
+  setInterval(() => refreshStatus({ fromInterval: true }), 2000);
   setInterval(() => {
     if (document.querySelector("#panel-debug.active")) refreshLog();
   }, 1500);

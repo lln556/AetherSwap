@@ -43,11 +43,14 @@
         if (_loading) return;
         if (!reset && !_hasMore) return;
         _loading = true;
-        if (reset) { _offset = 0; _hasMore = true; el('steam-deals-grid').innerHTML = ''; }
+        if (reset) { _offset = 0; _hasMore = true; el('steam-deals-grid')?.replaceChildren(); }
         const loadEl = el('steam-deals-loading');
         const emptyEl = el('steam-deals-empty');
+        const errEl = el('steam-deals-error');
         if (loadEl) loadEl.classList.remove('hidden');
         if (emptyEl) emptyEl.classList.add('hidden');
+        if (errEl) errEl.classList.add('hidden');
+        let failed = false;
         try {
             const params = new URLSearchParams({
                 offset: _offset, limit: _limit, search: _search,
@@ -55,6 +58,7 @@
                 deal_status_filter: _dealStatusFilter,
             });
             const resp = await fetch(`/api/steam-deals?${params}`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
             if (data.games && data.games.length > 0) {
                 renderGames(data.games);
@@ -67,15 +71,22 @@
             const tcEl = el('steam-deals-total-count');
             if (tcEl) tcEl.textContent = `共 ${data.total} 款`;
         } catch (err) {
+            failed = true;
+            _hasMore = false;
             console.error('加载失败:', err);
+            const msgEl = el('steam-deals-error-msg');
+            if (msgEl) msgEl.textContent = `加载折扣数据失败（${err.message || '网络错误'}），已暂停自动翻页。`;
+            if (errEl) errEl.classList.remove('hidden');
         } finally {
             _loading = false;
             if (loadEl) loadEl.classList.add('hidden');
-            _checkSentinel();
+            if (!failed) _checkSentinel();
         }
     }
     function _checkSentinel() {
         if (!_hasMore || _loading) return;
+        const panel = el('panel-steam-deals');
+        if (!panel || !panel.classList.contains('active')) return;
         const sentinel = el('steam-deals-sentinel');
         if (!sentinel) return;
         const rect = sentinel.getBoundingClientRect();
@@ -174,7 +185,7 @@
             }
             card.innerHTML = `
         <div class="sg-card-banner">
-          <img src="${safeBanner}" alt="${safeName}" loading="lazy" onerror="this.style.display='none'" />
+          <img src="${safeBanner}" alt="${safeName}" loading="lazy" data-img-fallback="none" />
           ${discBadge}
         </div>
         <div class="sg-card-content">
@@ -185,7 +196,7 @@
             <span class="sg-review-tag">${rateLabel}</span>
             <span class="sg-review-cnt">${fmtReviews(g.total_reviews)}</span>
             <a class="sg-steam-btn" href="https://store.steampowered.com/app/${appId}/" target="_blank" rel="noopener" style="margin-left:auto;padding:2px 8px;font-size: 12px;">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.606 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.455 1.012zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.662 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.252 0-2.265-1.014-2.265-2.265z"/></svg>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.606 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.455 1.012zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.662 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.252 0-2.265-1.014-2.265-2.265z"/></svg>
               Steam 商店
             </a>
           </div>
@@ -193,7 +204,7 @@
             ${pricePills}
             ${diffBadge}
           </div>
-          <button class="sg-expand-toggle" onclick="this.closest('.sg-card').querySelector('.sg-expand-panel').classList.toggle('hidden');this.textContent=this.textContent==='查看全部区域 ▾'?'收起 ▴':'查看全部区域 ▾'">查看全部区域 ▾</button>
+          <button type="button" class="sg-expand-toggle" aria-expanded="false">查看全部区域 ▾</button>
           <div class="sg-expand-panel hidden" id="${uid}">
             <table class="sg-expand-table"><tbody>${allRows}</tbody></table>
           </div>
@@ -296,6 +307,7 @@
                 }
                 if (resetBtn) resetBtn.disabled = true;
             } else {
+                const wasRunning = _fetchRunning;
                 _fetchRunning = false;
                 _pauseRequested = false;
                 if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
@@ -313,7 +325,7 @@
                     btn.innerHTML = REFRESH_SVG + (s.resume?.has_checkpoint ? ' 继续扫描' : ' 获取数据');
                 }
                 if (resetBtn) resetBtn.disabled = false;
-                loadGames(true);
+                if (wasRunning) loadGames(true);
             }
             if (info) {
                 const span = info.querySelector('span') || info;
@@ -371,14 +383,32 @@
             else fetchData(false);
         });
         const resetBtn = el('steam-deals-reset-btn');
-        if (resetBtn) resetBtn.addEventListener('click', () => {
-            const ok = window.confirm('重新扫描会清空当前断点进度和已有 Steam 折扣数据，然后全量重扫。确定继续吗？');
+        if (resetBtn) resetBtn.addEventListener('click', async () => {
+            const ok = await appConfirm('重新扫描会清空当前断点进度和已有 Steam 折扣数据，然后全量重扫。确定继续吗？', {
+                title: '重新全量扫描',
+                danger: true,
+                confirmText: '重新扫描',
+            });
             if (ok) fetchData(true);
+        });
+        const retryBtn = el('btn-steam-deals-retry');
+        if (retryBtn) retryBtn.addEventListener('click', () => {
+            _hasMore = true;
+            loadGames(_offset === 0);
         });
         setupObserver();
 
         const grid = el('steam-deals-grid');
         if (grid) {
+            grid.addEventListener('click', (e) => {
+                const toggle = e.target.closest('.sg-expand-toggle');
+                if (!toggle) return;
+                const panel = toggle.closest('.sg-card')?.querySelector('.sg-expand-panel');
+                if (!panel) return;
+                const expanded = panel.classList.toggle('hidden') === false;
+                toggle.textContent = expanded ? '收起 ▴' : '查看全部区域 ▾';
+                toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+            });
             grid.addEventListener('contextmenu', (e) => {
                 const card = e.target.closest('.sg-card');
                 if (!card) return;

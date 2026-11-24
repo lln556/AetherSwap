@@ -25,6 +25,36 @@ function browserTimezoneLabel(timezone = detectBrowserTimezone()) {
     : "UTC offset unavailable";
   return timezone.name ? `${timezone.name} (${offsetLabel})` : offsetLabel;
 }
+function _secretSentinel() {
+  return typeof REDACTED_SECRET_SENTINEL !== "undefined" ? REDACTED_SECRET_SENTINEL : "••••••••";
+}
+
+function _applySecretInput(id, rawValue) {
+  const node = el(id);
+  if (!node) return;
+  if (!node.dataset.defaultPlaceholder) {
+    node.dataset.defaultPlaceholder = node.placeholder || "";
+  }
+  if (rawValue === _secretSentinel()) {
+    node.value = "";
+    node.dataset.configured = "1";
+    node.placeholder = "已配置，留空保持不变";
+  } else {
+    node.value = rawValue ?? "";
+    node.dataset.configured = "0";
+    node.placeholder = node.dataset.defaultPlaceholder;
+  }
+}
+
+function _readSecretInput(id) {
+  const node = el(id);
+  if (!node) return undefined;
+  const val = node.value.trim();
+  if (val === _secretSentinel()) return undefined;
+  if (val === "" && node.dataset.configured === "1") return undefined;
+  return val;
+}
+
 async function loadConfig() {
   const d = await fetchJson(API + "/config");
   const c = d.config || {};
@@ -131,8 +161,7 @@ async function loadConfig() {
   if (invInput) invInput.value = inv.refresh_seconds ?? "";
   inventoryRefreshSeconds = parseInt(inv.refresh_seconds, 10) || inventoryRefreshSeconds || 600;
   const n = c.notify || {};
-  const gPush = el("cfg-pushplus_token");
-  if (gPush) gPush.value = n.pushplus_token ?? "";
+  _applySecretInput("cfg-pushplus_token", n.pushplus_token);
   const gHoldingsReport = el("cfg-holdings_report_interval_hours");
   if (gHoldingsReport) gHoldingsReport.value = n.holdings_report_interval_hours ?? "";
   const gHoldingsThreshold = el("cfg-holdings_report_change_threshold_pct");
@@ -141,8 +170,7 @@ async function loadConfig() {
   if (gHoldingsDropEnabled) gHoldingsDropEnabled.checked = n.holdings_report_drop_enabled !== false;
   const gEmailUser = el("cfg-email_user");
   if (gEmailUser) gEmailUser.value = n.email_user ?? "";
-  const gEmailPass = el("cfg-email_pass");
-  if (gEmailPass) gEmailPass.value = n.email_pass ?? "";
+  _applySecretInput("cfg-email_pass", n.email_pass);
   const gImap = el("cfg-imap_server");
   if (gImap) gImap.value = n.imap_server ?? "";
   const gTargetSender = el("cfg-target_sender");
@@ -156,15 +184,12 @@ async function loadConfig() {
   const gEmailTimeout = el("cfg-email_timeout_seconds");
   if (gEmailTimeout) gEmailTimeout.value = n.email_timeout_seconds ?? "";
   const sg = c.steam_guard || {};
-  const gSteamSecret = el("cfg-steam-shared-secret");
-  if (gSteamSecret) gSteamSecret.value = sg.shared_secret ?? "";
+  _applySecretInput("cfg-steam-shared-secret", sg.shared_secret);
   const sc = c.steam_confirm || {};
   const gAutoConfirm = el("cfg-steam-auto-confirm");
   if (gAutoConfirm) gAutoConfirm.checked = !!sc.enabled;
-  const gIdentitySecret = el("cfg-steam-identity-secret");
-  if (gIdentitySecret) gIdentitySecret.value = sc.identity_secret ?? "";
-  const gDeviceId = el("cfg-steam-device-id");
-  if (gDeviceId) gDeviceId.value = sc.device_id ?? "";
+  _applySecretInput("cfg-steam-identity-secret", sc.identity_secret);
+  _applySecretInput("cfg-steam-device-id", sc.device_id);
   const gFx = el("cfg-exchange-refresh-hours");
   if (gFx) gFx.value = sys.exchange_rate_refresh_hours ?? "";
   const gBuffKeepalive = el("cfg-buff-session-keepalive-enabled");
@@ -219,15 +244,12 @@ function formToConfig() {
     },
     buff: {
       pay_method: el("cfg-pay_method") ? el("cfg-pay_method").value : undefined,
-      game: el("cfg-buff-game") ? el("cfg-buff-game").value.trim() : undefined,
-      price_tolerance: el("cfg-price_tolerance") ? parseFloat(el("cfg-price_tolerance").value) || undefined : undefined,
     },
     pipeline: {
       target_balance: el("cfg-target_balance") ? parseFloat(el("cfg-target_balance").value) || undefined : undefined,
       max_discount: el("cfg-max_discount") ? parseFloat(el("cfg-max_discount").value) || undefined : undefined,
       huge_profit_offset: el("cfg-huge_profit_offset") ? parseFloat(el("cfg-huge_profit_offset").value) : undefined,
       iflow_top_n: el("cfg-iflow_top_n") ? parseInt(el("cfg-iflow_top_n").value, 10) || undefined : undefined,
-      sell_price_ratio: el("cfg-sell_ratio") ? parseFloat(el("cfg-sell_ratio").value) || undefined : undefined,
       retry_interval_seconds: el("cfg-retry_interval_seconds") ? parseInt(el("cfg-retry_interval_seconds").value, 10) || undefined : undefined,
       exclude_keywords: el("cfg-exclude_keywords") ? Array.from(
         new Set(
@@ -260,7 +282,6 @@ function formToConfig() {
       end_time_hour: el("cfg-end-time-hour") ? (parseInt(el("cfg-end-time-hour").value, 10) >= 0 && parseInt(el("cfg-end-time-hour").value, 10) <= 23 ? parseInt(el("cfg-end-time-hour").value, 10) : undefined) : undefined,
     },
     stability: {
-      days: el("cfg-stability-days") ? parseInt(el("cfg-stability-days").value, 10) || undefined : undefined,
       cv_threshold: el("cfg-cv_threshold") ? parseFloat(el("cfg-cv_threshold").value) || undefined : undefined,
       r2_threshold: el("cfg-r2_threshold") ? parseFloat(el("cfg-r2_threshold").value) || undefined : undefined,
       price_percentile_ceil: el("cfg-price_percentile_ceil") ? parseFloat(el("cfg-price_percentile_ceil").value) : undefined,
@@ -276,12 +297,12 @@ function formToConfig() {
       refresh_seconds: el("cfg-inv-refresh") ? parseInt(el("cfg-inv-refresh").value, 10) || undefined : undefined,
     },
     notify: {
-      pushplus_token: el("cfg-pushplus_token") ? el("cfg-pushplus_token").value.trim() : undefined,
+      pushplus_token: _readSecretInput("cfg-pushplus_token"),
       holdings_report_interval_hours: el("cfg-holdings_report_interval_hours") ? parseInt(el("cfg-holdings_report_interval_hours").value, 10) : undefined,
       holdings_report_change_threshold_pct: el("cfg-holdings_report_change_threshold_pct") ? parseFloat(el("cfg-holdings_report_change_threshold_pct").value) : undefined,
       holdings_report_drop_enabled: el("cfg-holdings-drop-enabled") ? !!el("cfg-holdings-drop-enabled").checked : undefined,
       email_user: el("cfg-email_user") ? el("cfg-email_user").value.trim() : undefined,
-      email_pass: el("cfg-email_pass") ? el("cfg-email_pass").value.trim() : undefined,
+      email_pass: _readSecretInput("cfg-email_pass"),
       imap_server: el("cfg-imap_server") ? el("cfg-imap_server").value.trim() : undefined,
       target_sender: el("cfg-target_sender") ? el("cfg-target_sender").value.trim() : undefined,
       allowed_sender: el("cfg-allowed_sender") ? el("cfg-allowed_sender").value.trim() : undefined,
@@ -290,12 +311,12 @@ function formToConfig() {
       email_timeout_seconds: el("cfg-email_timeout_seconds") ? parseInt(el("cfg-email_timeout_seconds").value, 10) || undefined : undefined,
     },
     steam_guard: {
-      shared_secret: el("cfg-steam-shared-secret") ? el("cfg-steam-shared-secret").value.trim() : undefined,
+      shared_secret: _readSecretInput("cfg-steam-shared-secret"),
     },
     steam_confirm: {
       enabled: !!el("cfg-steam-auto-confirm")?.checked,
-      identity_secret: el("cfg-steam-identity-secret") ? el("cfg-steam-identity-secret").value.trim() : undefined,
-      device_id: el("cfg-steam-device-id") ? el("cfg-steam-device-id").value.trim() : undefined,
+      identity_secret: _readSecretInput("cfg-steam-identity-secret"),
+      device_id: _readSecretInput("cfg-steam-device-id"),
     },
     system: {
       exchange_rate_refresh_hours: el("cfg-exchange-refresh-hours") ? parseFloat(el("cfg-exchange-refresh-hours").value) || undefined : undefined,
@@ -422,9 +443,11 @@ async function stopPipeline() {
     Dashboard.renderButtons();
   }
 }
-async function confirmPayment(ok) {
+async function confirmPayment(ok, generation = null) {
   try {
-    await fetchJson(API + "/confirm_payment", { method: "POST", body: JSON.stringify({ ok }) });
+    const payload = { ok };
+    if (Number.isInteger(generation)) payload.generation = generation;
+    await fetchJson(API + "/confirm_payment", { method: "POST", body: JSON.stringify(payload) });
     el("pending-payment")?.classList.add("hidden");
     toast(ok ? "已确认付款" : "已标记为失败");
     refreshStatus();
@@ -542,11 +565,9 @@ async function checkAndShowOnboardingWizard() {
 }
 
 function _showWizard(startAtBuffStep = false) {
-  // startAtBuffStep=true 仅当「其他已配置、仅 Buff Cookie 缺失」时才成立
-
   const overlay = el("onboard-wizard-overlay");
   if (!overlay) return;
-  overlay.classList.remove("hidden");
+  openNativeDialog(overlay);
 
   let currentStep = 0;
   const TOTAL_STEPS = 4; // steps 1-4 (0 is welcome)
@@ -617,7 +638,7 @@ function _showWizard(startAtBuffStep = false) {
         if (!isFullBackup(json)) throw new Error("所选文件不是完整备份，请确认文件正确");
         const r = await fetchJson(API + "/import_full", { method: "POST", body: JSON.stringify(json) });
         if (!r.ok) throw new Error(r.error || "导入失败");
-        if (wizRestoreStatus) { wizRestoreStatus.textContent = "✅ 数据已恢复！正在刷新…"; wizRestoreStatus.style.color = "#4ade80"; }
+        if (wizRestoreStatus) { wizRestoreStatus.textContent = "数据已恢复！正在刷新…"; wizRestoreStatus.style.color = "var(--success-text)"; }
         await loadConfig();
         try { await refreshTransactions(); } catch { }
         try { await refreshAccounts(); } catch { }
@@ -625,7 +646,7 @@ function _showWizard(startAtBuffStep = false) {
         toast("已从备份恢复全部数据", "配置、账号、交易记录均已导入");
         setTimeout(() => closeWizard(null), 900);
       } catch (e) {
-        if (wizRestoreStatus) { wizRestoreStatus.textContent = "❌ " + (e.message || "导入失败，请确认 JSON 格式正确"); wizRestoreStatus.style.color = "#f87171"; }
+        if (wizRestoreStatus) { wizRestoreStatus.textContent = e.message || "导入失败，请确认 JSON 格式正确"; wizRestoreStatus.style.color = "var(--danger-text)"; }
         wizRestoreBtn.disabled = false;
       } finally {
         wizRestoreFile.value = "";
@@ -723,10 +744,7 @@ function _showWizard(startAtBuffStep = false) {
           method: "POST",
           body: JSON.stringify({ config: { ...cfg, steam_guard: sg, steam_confirm: sc } }),
         });
-        const gSteamSecret = el("cfg-steam-shared-secret");
-        if (gSteamSecret && ss) gSteamSecret.value = ss;
-        const gIdentSec = el("cfg-steam-identity-secret");
-        if (gIdentSec && is) gIdentSec.value = is;
+        await loadConfig();
       } else if (currentStep === 2) {
         const tok = (el("wiz-pushplus-token")?.value || "").trim();
         if (!tok) return;
@@ -735,10 +753,8 @@ function _showWizard(startAtBuffStep = false) {
           method: "POST",
           body: JSON.stringify({ config: { ...cfg, notify } }),
         });
-        const gPush = el("cfg-pushplus_token");
-        if (gPush) gPush.value = tok;
+        await loadConfig();
       }
-      // step 3 (Buff) is handled by its own buttons; step 4 is info-only
       try { updateUXStatus(((await fetchJson(API + "/config")).config || {})); } catch { }
     } catch (e) {
       toast("保存失败", e.message || "请稍后手动在设置页填写");
@@ -746,7 +762,6 @@ function _showWizard(startAtBuffStep = false) {
   }
 
   function closeWizard(goToTab) {
-    // 如果用户在 Buff 步骤打开了浏览器但没点「已完成」，发送 cancel
     if (_buffReloginStarted) {
       fetchJson(API + "/auth/buff/relogin_finish", {
         method: "POST",
@@ -757,12 +772,17 @@ function _showWizard(startAtBuffStep = false) {
     if (noRemindCb && noRemindCb.checked) {
       localStorage.setItem(WIZARD_SKIP_KEY, "1");
     }
-    overlay.classList.add("hidden");
+    closeNativeDialog(overlay);
     if (goToTab) {
       const tabEl = document.querySelector(`[data-tab="${goToTab}"]`);
       if (tabEl) tabEl.click();
     }
   }
+
+  overlay.oncancel = (e) => {
+    e.preventDefault();
+    closeWizard(null);
+  };
 
   btnNext.onclick = async () => {
     if (currentStep === 3) {
@@ -799,7 +819,6 @@ function _showWizard(startAtBuffStep = false) {
 }
 
 
-// ---- UX 状态统一更新入口 ----
 async function updateUXStatus(cfg) {
   let accounts = [];
   try {
@@ -807,7 +826,6 @@ async function updateUXStatus(cfg) {
     accounts = d.accounts || [];
   } catch (e) { }
   updateNavBadges(cfg, accounts);
-  renderGettingStartedCard(cfg, accounts);
 }
 
 function updateNavBadges(cfg, accounts) {
@@ -824,71 +842,7 @@ function updateNavBadges(cfg, accounts) {
   if (badgeAccounts) badgeAccounts.classList.toggle("hidden", accountOk);
 }
 
-function renderGettingStartedCard(cfg, accounts) {
-  const card = el("getting-started-card");
-  if (!card) return;
-
-  // 已被用户手动关闭时不再显示
-  if (localStorage.getItem("aetherswap_gs_card_closed") === "1") {
-    card.style.display = "none";
-    return;
-  }
-
-  const sg = cfg.steam_guard || {};
-  const sc = cfg.steam_confirm || {};
-  const n = cfg.notify || {};
-
-  const steps = [
-    {
-      done: !!sg.shared_secret && !!sc.identity_secret,
-      label: "填写 Steam 令牌密钥（<span class='gs-link' onclick='document.querySelector(\"[data-tab=settings]\").click()'>系统设置 → Steam 令牌</span>）",
-    },
-    {
-      done: !!n.pushplus_token,
-      label: "填写 PushPlus 推送 Token（<span class='gs-link' onclick='document.querySelector(\"[data-tab=settings]\").click()'>系统设置 → 推送与邮箱</span>）",
-    },
-    {
-      done: accounts.length > 0,
-      label: "添加 Steam 账号并登录（<span class='gs-link' onclick='document.querySelector(\"[data-tab=accounts]\").click()'>账号管理</span>）",
-    },
-    {
-      done: accounts.length > 0 && !!sg.shared_secret && !!sc.identity_secret && !!n.pushplus_token,
-      label: "返回仪表盘点击「启动任务」🚀",
-    },
-  ];
-
-  const allDone = steps.every((s) => s.done);
-  if (allDone) {
-    card.style.display = "none";
-    return;
-  }
-
-  card.style.display = "";
-  const stepsEl = el("gs-steps");
-  if (!stepsEl) return;
-  stepsEl.innerHTML = steps
-    .map(
-      (s) =>
-        `<div class="gs-step ${s.done ? "done" : ""}">
-          <span class="gs-icon">${s.done ? "✅" : "⬜"}</span>
-          <span>${s.label}</span>
-        </div>`
-    )
-    .join("");
-
-  // 绑定关闭按钮（只绑一次）
-  const closeBtn = el("btn-gs-close");
-  if (closeBtn && !closeBtn._bound) {
-    closeBtn._bound = true;
-    closeBtn.addEventListener("click", () => {
-      localStorage.setItem("aetherswap_gs_card_closed", "1");
-      card.style.display = "none";
-    });
-  }
-}
-
 function bindUXEvents() {
-  // 账号面板操作提示关闭按钮
   const aguClose = el("btn-agu-close");
   if (aguClose) {
     aguClose.addEventListener("click", () => {

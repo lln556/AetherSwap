@@ -178,7 +178,7 @@
   }
 
   function renderSalePrice(steps) {
-    const output = [...(steps || [])].reverse().find(step => step.output?.estimated_proceeds != null)?.output;
+    const output = (steps || []).findLast(step => step.output?.estimated_proceeds != null)?.output;
     if (!output) return "";
     const buyer = Number(output.display_price);
     const net = Number(output.estimated_proceeds);
@@ -260,10 +260,10 @@
       list.innerHTML = `<div class="decision-list-loading" role="status">正在读取检查记录…</div>`;
       setVisible(empty, false);
     } else if (failed) {
-      list.innerHTML = "";
+      list.replaceChildren();
       setVisible(empty, false);
     } else if (!state.items.length) {
-      list.innerHTML = "";
+      list.replaceChildren();
       setVisible(empty, true);
       if (empty) {
         empty.innerHTML = `

@@ -116,6 +116,7 @@ function handleSteamGuardClick() {
     steamGuardHideTimer = setTimeout(() => {
       steamGuardVisible = false;
       steamGuardHideTimer = null;
+      stopSteamGuardTimer();
       updateSteamGuardDisplay();
     }, 5000);
   } else {

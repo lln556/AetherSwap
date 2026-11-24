@@ -2,6 +2,7 @@ const Dashboard = {
   actionPending: false,
   connected: false,
   lastStatus: null,
+  primaryTabs: ["auto", "purchase-history", "purchases", "settings"],
   setText(id, text) {
     const node = el(id);
     if (node) node.textContent = text;
@@ -33,7 +34,10 @@ const Dashboard = {
     if (start) {
       start.disabled = !this.connected || this.actionPending || !!active;
       start.classList.toggle("hidden", !!active);
-      start.textContent = stopping ? "正在停止…" : active ? "任务运行中" : "启动任务";
+      const startLabel = start.querySelector(".btn-label");
+      const startText = stopping ? "正在停止…" : active ? "任务运行中" : "启动任务";
+      if (startLabel) startLabel.textContent = startText;
+      else start.textContent = startText;
     }
     if (stop) {
       stop.disabled = !this.connected || this.actionPending || !active || stopping;
@@ -79,8 +83,6 @@ const Dashboard = {
     el("health-buff")?.classList.toggle("text-bad", !!buffNeedsAction);
     const region = d.account_region || {};
     this.setText("health-region", region.region_check_ok ? [region.currency_code, region.region_code].filter(Boolean).join(" / ") : "地区尚未确认");
-    // BUFF session history has its own cache endpoint. Keep replacement
-    // protection fresh without probing BUFF or conflating it with live flags.
     window.BuffSession?.refreshCachedSession?.();
   },
   renderStats(s) {
@@ -127,13 +129,18 @@ const Dashboard = {
   },
   bind() {
     document.querySelectorAll("[data-dashboard-tab]").forEach(button => button.addEventListener("click", () => tabSwitch(button.dataset.dashboardTab)));
-    const overlay = el("mobile-more-overlay");
+    const dialog = el("mobile-more-overlay");
     const more = el("btn-nav-more");
     const close = () => {
-      if (overlay?.classList.contains("hidden")) return;
-      overlay?.classList.add("hidden"); more?.setAttribute("aria-expanded", "false"); more?.focus();
+      if (!dialog) return;
+      if (typeof dialog.close === "function") {
+        if (dialog.open) dialog.close();
+      } else {
+        dialog.classList.add("hidden");
+      }
+      more?.setAttribute("aria-expanded", "false");
     };
-    const primary = ["auto", "inventory", "purchases", "debug"];
+    const primary = this.primaryTabs;
     const links = el("mobile-more-links");
     document.querySelectorAll(".nav-menu [data-tab]").forEach(button => {
       button.classList.toggle("mobile-primary", primary.includes(button.dataset.tab));
@@ -144,20 +151,20 @@ const Dashboard = {
         copy.addEventListener("click", async () => { if (await tabSwitch(copy.dataset.tab)) close(); }); links?.append(copy);
       }
     });
+    if (dialog) {
+      if (typeof bindDialogLightDismiss === "function") bindDialogLightDismiss(dialog, close);
+      dialog.addEventListener("close", () => more?.setAttribute("aria-expanded", "false"));
+    }
     more?.addEventListener("click", () => {
-      overlay?.classList.remove("hidden"); more.setAttribute("aria-expanded", "true"); el("btn-nav-close")?.focus();
+      if (!dialog) return;
+      if (typeof dialog.showModal === "function") {
+        if (!dialog.open) dialog.showModal();
+      } else {
+        dialog.classList.remove("hidden");
+      }
+      more.setAttribute("aria-expanded", "true");
     });
     el("btn-nav-close")?.addEventListener("click", close);
-    overlay?.addEventListener("click", e => { if (e.target === overlay) close(); });
-    overlay?.addEventListener("keydown", e => {
-      if (e.key === "Escape") { e.preventDefault(); close(); }
-      if (e.key === "Tab") {
-        const nodes = [...overlay.querySelectorAll("button")].filter(node => !node.disabled);
-        const first = nodes[0], last = nodes[nodes.length - 1];
-        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
-        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
-      }
-    });
     const mobileQuery = window.matchMedia("(max-width: 768px)");
     mobileQuery.addEventListener("change", () => { close(); this.applyScale(); });
     el("btn-mobile-theme")?.addEventListener("click", () => Theme.cycle());
@@ -172,6 +179,6 @@ const Dashboard = {
   },
   syncNavigation(name) {
     document.querySelectorAll(".mobile-menu-link").forEach(node => node.classList.toggle("active", node.dataset.tab === name));
-    el("btn-nav-more")?.classList.toggle("active", !["auto", "inventory", "purchases", "debug"].includes(name));
+    el("btn-nav-more")?.classList.toggle("active", !this.primaryTabs.includes(name));
   },
 };

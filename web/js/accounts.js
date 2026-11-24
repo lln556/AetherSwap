@@ -355,7 +355,18 @@ async function refreshAccounts() {
   }
 }
 
+let accountFormSeq = 0;
+
+function _applyAccountToForm(a, un, pw, sid, dn) {
+  if (!a) return;
+  if (un && un.dataset.touched !== "1") un.value = a.username || "";
+  if (pw) pw.placeholder = a.has_password ? "已保存，留空不修改" : "保存后仅用于自动填充";
+  if (sid && sid.dataset.touched !== "1") sid.value = a.steam_id || "";
+  if (dn && dn.dataset.touched !== "1") dn.value = a.display_name || "";
+}
+
 function openAccountForm(editId = null) {
+  const seq = ++accountFormSeq;
   accountEditId = editId;
   const title = el("account-form-title");
   const un = el("acc-username");
@@ -363,29 +374,33 @@ function openAccountForm(editId = null) {
   const sid = el("acc-steam-id");
   const dn = el("acc-display-name");
   if (title) title.textContent = editId ? "编辑账号" : "添加账号";
-  if (un) un.value = "";
-  if (pw) pw.value = "";
-  if (sid) sid.value = "";
-  if (dn) dn.value = "";
+  for (const field of [un, pw, sid, dn]) {
+    if (!field) continue;
+    field.value = "";
+    field.dataset.touched = "";
+    if (!field._touchBound) {
+      field._touchBound = true;
+      field.addEventListener("input", () => { field.dataset.touched = "1"; });
+    }
+  }
+  if (pw) pw.placeholder = "保存后仅用于自动填充";
   if (editId) {
-    const accs = [];
+    const cached = (accountsCache || []).find((x) => x.id === editId);
+    if (cached) _applyAccountToForm(cached, un, pw, sid, dn);
     fetchJson(API + "/accounts").then((d) => {
+      if (seq !== accountFormSeq || accountEditId !== editId) return;
       const a = (d.accounts || []).find((x) => x.id === editId);
-      if (a) {
-        if (un) un.value = a.username || "";
-        if (pw) pw.placeholder = "已保存，留空不修改";
-        if (sid) sid.value = a.steam_id || "";
-        if (dn) dn.value = a.display_name || "";
-      }
+      _applyAccountToForm(a, un, pw, sid, dn);
     }).catch(() => { });
-  } else if (pw) pw.placeholder = "保存后仅用于自动填充";
+  }
   const ov = el("account-form-overlay");
-  if (ov) ov.classList.remove("hidden");
+  openNativeDialog(ov);
 }
 function closeAccountForm() {
+  accountFormSeq += 1;
   accountEditId = null;
   const ov = el("account-form-overlay");
-  if (ov) ov.classList.add("hidden");
+  closeNativeDialog(ov);
 }
 async function saveAccountForm() {
   const un = (el("acc-username")?.value || "").trim();

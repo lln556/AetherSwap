@@ -7,12 +7,25 @@ router = APIRouter()
 WEB_DIR = Path(__file__).resolve().parent.parent.parent / "web"
 
 
+_HTML_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' https: data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'self'"
+)
+
+
 def _web_file_response(path: Path) -> FileResponse:
     headers = {}
-    if path.suffix.lower() in {".html", ".js"}:
-        # Local Chromium/WebView profiles survive application updates. Force
-        # executable UI assets to revalidate instead of mixing old and new JS.
+    suffix = path.suffix.lower()
+    if suffix in {".html", ".js"}:
         headers["Cache-Control"] = "no-cache"
+    if suffix == ".html":
+        headers["Content-Security-Policy"] = _HTML_CSP
     return FileResponse(path, headers=headers)
 
 

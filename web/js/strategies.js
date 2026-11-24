@@ -41,7 +41,7 @@ const STRATEGY_SELL_DEFAULT_PRICING_MODULE = "pricing.steam_wall_price";
 
 function strategyClone(v) {
   if (v === undefined) return undefined;
-  return JSON.parse(JSON.stringify(v));
+  return structuredClone(v);
 }
 
 function strategyModulesById() {
@@ -533,7 +533,10 @@ function renderStrategies() {
 
 function renderStrategyTabs() {
   document.querySelectorAll(".strategy-tab").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.strategyView === strategiesState.view);
+    const active = btn.dataset.strategyView === strategiesState.view;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+    btn.tabIndex = active ? 0 : -1;
   });
 }
 
@@ -684,8 +687,8 @@ function renderStrategyEditor() {
     if (nameEl) nameEl.textContent = "选择一个策略";
     if (originEl) originEl.textContent = "—";
     if (descEl) descEl.textContent = "";
-    if (stepsEl) stepsEl.innerHTML = "";
-    if (el("strategy-policy-summary")) el("strategy-policy-summary").innerHTML = "";
+    if (stepsEl) stepsEl.replaceChildren();
+    if (el("strategy-policy-summary")) el("strategy-policy-summary").replaceChildren();
     if (addFoot) addFoot.classList.add("hidden");
     return;
   }
@@ -1154,8 +1157,7 @@ function addStep(moduleId) {
     ? Math.min(...status.replacementIndexes)
     : strategyDefaultInsertIndex(strategiesState.draft);
   (status.replacementIndexes || [])
-    .slice()
-    .sort((a, b) => b - a)
+    .toSorted((a, b) => b - a)
     .forEach((idx) => {
       strategiesState.draft.steps.splice(idx, 1);
       if (idx < insertIndex) insertIndex -= 1;
@@ -1253,19 +1255,6 @@ function strategyModuleDataSummary(module) {
   const keys = Object.keys(outputs);
   if (!keys.length) return "";
   return `<small class="strategy-module-data">输出 ${keys.slice(0, 4).map(escapeHtml).join(" / ")}${keys.length > 4 ? " ..." : ""}</small>`;
-}
-
-function strategyAvailableDataSummary() {
-  const data = strategiesState.availableData || {};
-  const stages = data.stages || {};
-  const ops = data.operators || [];
-  return `
-    <div class="strategy-module-help">
-      <strong>用户声明式模块</strong>
-      <span>可读取 item、buy_record、listing、config 和前置模块 outputs；支持 ${escapeHtml(ops.slice(0, 8).join(" / "))}${ops.length > 8 ? " ..." : ""}。</span>
-      <span>可挂载阶段：购入 ${escapeHtml((stages.buy || []).join(" / ") || "-")}；出售 ${escapeHtml((stages.sell || []).join(" / ") || "-")}。</span>
-    </div>
-  `;
 }
 
 function renderModulesView() {
@@ -1687,8 +1676,22 @@ async function importStrategyModuleFile(file) {
 }
 
 function bindStrategyEvents() {
-  document.querySelectorAll(".strategy-tab").forEach((btn) => {
+  const tabs = Array.from(document.querySelectorAll(".strategy-tab"));
+  tabs.forEach((btn, idx) => {
     btn.addEventListener("click", () => switchStrategyView(btn.dataset.strategyView));
+    btn.addEventListener("keydown", (e) => {
+      let nextIdx = -1;
+      if (e.key === "ArrowRight") nextIdx = (idx + 1) % tabs.length;
+      else if (e.key === "ArrowLeft") nextIdx = (idx - 1 + tabs.length) % tabs.length;
+      else if (e.key === "Home") nextIdx = 0;
+      else if (e.key === "End") nextIdx = tabs.length - 1;
+      if (nextIdx >= 0) {
+        e.preventDefault();
+        const target = tabs[nextIdx];
+        target.focus();
+        switchStrategyView(target.dataset.strategyView);
+      }
+    });
   });
   el("strategy-btn-refresh")?.addEventListener("click", async () => {
     if (await strategyConfirmLeave()) loadStrategies(true);

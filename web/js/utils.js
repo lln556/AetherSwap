@@ -1,23 +1,92 @@
-
 const API = '/api';
 const REFRESH_INTERVAL_DEFAULT = 60;
+const REDACTED_SECRET_SENTINEL = "••••••••";
 window.RUNTIME_PROFILE = null;
+
 function el(id) {
   return document.getElementById(id);
 }
-function toast(title, detail = "", ttl = 3500) {
+
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function toast(title, detail = "", ttl = 3500, variant = "info") {
   const host = el("toast-host");
   if (!host) return;
+  if (typeof host.showPopover === "function" && host.hasAttribute("popover")) {
+    try {
+      if (!host.matches(":popover-open")) host.showPopover();
+    } catch {
+    }
+  }
   const node = document.createElement("div");
-  node.className = "toast";
+  const safeVariant = ["info", "success", "error", "warn"].includes(variant) ? variant : "info";
+  node.className = `toast toast--${safeVariant}`;
   node.style.setProperty("--toast-ttl", `${ttl}ms`);
   node.innerHTML = `<div class="t">${escapeHtml(title)}</div>${detail ? `<div class="d">${escapeHtml(compactErrorText(detail, 220))}</div>` : ""}`;
   host.appendChild(node);
   setTimeout(() => {
     node.classList.add("toast-exit");
   }, Math.max(ttl - 400, 100));
-  setTimeout(() => node.remove(), ttl);
+  setTimeout(() => {
+    node.remove();
+    if (!host.children.length && typeof host.hidePopover === "function" && host.hasAttribute("popover")) {
+      try {
+        if (host.matches(":popover-open")) host.hidePopover();
+      } catch {
+      }
+    }
+  }, ttl);
 }
+
+function _isClickOutsideDialog(e, dialog) {
+  const r = dialog.getBoundingClientRect();
+  return e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+}
+
+function bindDialogLightDismiss(dialog, onDismiss = null) {
+  if (!dialog || dialog._lightDismissBound) return;
+  dialog._lightDismissBound = true;
+  if ("closedBy" in HTMLDialogElement.prototype) return;
+  let pressedOutside = false;
+  dialog.addEventListener("pointerdown", (e) => {
+    pressedOutside = _isClickOutsideDialog(e, dialog);
+  });
+  dialog.addEventListener("pointerup", (e) => {
+    if (pressedOutside && _isClickOutsideDialog(e, dialog)) {
+      if (typeof onDismiss === "function") onDismiss();
+      else if (dialog.open) dialog.close();
+    }
+    pressedOutside = false;
+  });
+}
+
+function openNativeDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.showModal === "function") {
+    if (!dialog.open) dialog.showModal();
+  } else {
+    dialog.classList.remove("hidden");
+  }
+}
+
+function closeNativeDialog(dialog) {
+  if (!dialog) return;
+  if (typeof dialog.close === "function") {
+    if (dialog.open) dialog.close();
+  } else {
+    dialog.classList.add("hidden");
+  }
+}
+
+let _modalSeq = 0;
+
 function appModal(options = {}) {
   const {
     title = "确认操作",
@@ -33,8 +102,11 @@ function appModal(options = {}) {
     exportFileName = "",
   } = options;
   return new Promise((resolve) => {
-    const host = document.createElement("div");
-    host.className = "app-modal-host";
+    const titleId = `app-modal-title-${++_modalSeq}`;
+    const dialog = document.createElement("dialog");
+    dialog.className = "app-modal-dialog";
+    dialog.setAttribute("aria-labelledby", titleId);
+    dialog.setAttribute("closedby", "any");
     const actionList = actions || [
       { label: "取消", value: false, kind: "secondary" },
       { label: "确认", value: true, kind: "primary" },
@@ -50,11 +122,10 @@ function appModal(options = {}) {
     ` : "";
     const hasCustomContent = !!content;
     const contentHtml = content instanceof HTMLElement ? "" : String(content || "");
-    host.innerHTML = `
-      <div class="app-modal-backdrop"></div>
-      <section class="app-modal app-modal--${escapeHtml(variant)}" role="dialog" aria-modal="true" style="max-width:${escapeHtml(width)}">
+    dialog.innerHTML = `
+      <section class="app-modal app-modal--${escapeHtml(variant)}" style="width:min(calc(100vw - 32px), ${escapeHtml(width)})">
         <div class="app-modal-head">
-          <h3>${escapeHtml(title)}</h3>
+          <h3 id="${titleId}">${escapeHtml(title)}</h3>
           <button type="button" class="app-modal-close" aria-label="关闭">×</button>
         </div>
         ${message ? `<div class="app-modal-message">${escapeHtml(message).replace(/\n/g, "<br>")}</div>` : ""}
@@ -66,45 +137,57 @@ function appModal(options = {}) {
         </div>
       </section>
     `;
-    document.body.appendChild(host);
-    const modal = host.querySelector(".app-modal");
-    const contentBox = host.querySelector(".app-modal-content");
+    document.body.appendChild(dialog);
+    const contentBox = dialog.querySelector(".app-modal-content");
     if (content instanceof HTMLElement && contentBox) contentBox.appendChild(content);
-    host.querySelector("[data-export-error]")?.addEventListener("click", () => {
+    dialog.querySelector("[data-export-error]")?.addEventListener("click", () => {
       downloadTextFile(exportFileName || buildErrorExportName("aetherswap-error"), exportText);
       toast("错误信息已导出");
     });
-    const close = (value) => {
-      host.classList.add("closing");
-      setTimeout(() => host.remove(), 160);
+
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      if (dialog.open && typeof dialog.close === "function") dialog.close();
+      dialog.remove();
       resolve(value);
     };
-    host.querySelector(".app-modal-close")?.addEventListener("click", () => close(false));
-    host.querySelector(".app-modal-backdrop")?.addEventListener("click", () => close(false));
-    host.querySelectorAll("[data-action]").forEach((btn) => {
+
+    dialog.addEventListener("close", () => finish(false));
+    bindDialogLightDismiss(dialog, () => finish(false));
+    dialog.querySelector(".app-modal-close")?.addEventListener("click", () => finish(false));
+    dialog.querySelectorAll("[data-action]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const action = actionList[Number(btn.dataset.action)];
         if (input && action.value !== false) {
-          close(host.querySelector(".app-modal-input")?.value ?? "");
+          finish(dialog.querySelector(".app-modal-input")?.value ?? "");
         } else {
-          close(action.value);
+          finish(action.value);
         }
       });
     });
-    host.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") close(false);
+    dialog.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && input && !e.shiftKey && e.target?.tagName !== "TEXTAREA") {
         e.preventDefault();
-        close(host.querySelector(".app-modal-input")?.value ?? "");
+        if (e.isComposing || e.keyCode === 229) return;
+        finish(dialog.querySelector(".app-modal-input")?.value ?? "");
       }
     });
-    requestAnimationFrame(() => {
-      host.classList.add("shown");
-      if (autofocus) (host.querySelector(".app-modal-input") || host.querySelector(".app-modal-actions .btn-primary") || host.querySelector(".app-modal-actions button"))?.focus();
-    });
-    if (typeof options.onOpen === "function") options.onOpen(host, close);
+
+    if (typeof dialog.showModal === "function") {
+      dialog.showModal();
+    }
+    if (autofocus) {
+      const target = dialog.querySelector(".app-modal-input")
+        || dialog.querySelector(".app-modal-actions .btn-secondary")
+        || dialog.querySelector(".app-modal-actions button");
+      target?.focus();
+    }
+    if (typeof options.onOpen === "function") options.onOpen(dialog, finish);
   });
 }
+
 function appConfirm(message, options = {}) {
   return appModal({
     title: options.title || "确认操作",
@@ -117,6 +200,7 @@ function appConfirm(message, options = {}) {
     width: options.width || "460px",
   });
 }
+
 function appPrompt(title, defaultValue = "", options = {}) {
   return appModal({
     title,
@@ -132,11 +216,7 @@ function appPrompt(title, defaultValue = "", options = {}) {
     exportFileName: options.exportFileName || "",
   });
 }
-function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = String(s ?? "");
-  return div.innerHTML;
-}
+
 async function fetchJson(url, opts = {}) {
   const res = await fetch(url, {
     ...opts,
@@ -161,6 +241,7 @@ async function fetchJson(url, opts = {}) {
   }
   return data;
 }
+
 async function loadRuntimeProfile() {
   try {
     const data = await fetchJson(API + "/runtime");
@@ -171,13 +252,16 @@ async function loadRuntimeProfile() {
   applyRuntimeUiHints();
   return window.RUNTIME_PROFILE;
 }
+
 function getRuntimeProfile() {
   return window.RUNTIME_PROFILE || {};
 }
+
 function runtimeCanLaunchBrowser() {
   const profile = getRuntimeProfile();
   return profile.can_launch_headful_browser !== false;
 }
+
 function runtimeManualLoginMessage(type = "steam") {
   const label = type === "buff" ? "Buff" : "Steam";
   const profile = getRuntimeProfile();
@@ -186,6 +270,7 @@ function runtimeManualLoginMessage(type = "steam") {
   }
   return `请从已登录的浏览器复制 ${label} Cookie 后粘贴到下方。`;
 }
+
 function compactErrorText(reason, limit = 260) {
   let text = String(reason || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
@@ -198,13 +283,16 @@ function compactErrorText(reason, limit = 260) {
   }
   return text;
 }
+
 function compactLoginError(reason) {
   return compactErrorText(reason, 220);
 }
+
 function buildErrorExportName(prefix = "aetherswap-error") {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   return `${prefix}-${stamp}.txt`;
 }
+
 function downloadTextFile(filename, text) {
   const blob = new Blob([String(text || "")], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -216,6 +304,7 @@ function downloadTextFile(filename, text) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
 function applyRuntimeUiHints() {
   const canLaunch = runtimeCanLaunchBrowser();
   const reloginOpen = el("relogin-btn-open");
@@ -237,16 +326,18 @@ function applyRuntimeUiHints() {
     accountGuideStep.innerHTML = '<span class="agu-num">2</span> 点击账号卡片上的「<strong>验证</strong>」，若服务器无法自动处理则手动粘贴 Cookie';
   }
 }
+
 function buildAccountAvatar(name, avatarUrl, size = 40) {
   const initial = (name || "?").trim().charAt(0).toUpperCase() || "?";
   if (avatarUrl) {
     return `<div class="account-avatar-wrap" style="width:${size}px;height:${size}px">
-      <img class="account-avatar" style="width:${size}px;height:${size}px" src="${escapeHtml(avatarUrl)}" alt="" onerror="this.style.display='none';var s=this.nextElementSibling;if(s)s.style.display='flex';" />
+      <img class="account-avatar" style="width:${size}px;height:${size}px" src="${escapeHtml(avatarUrl)}" alt="" data-img-fallback="next" />
       <div class="account-avatar placeholder" style="display:none;width:${size}px;height:${size}px">${escapeHtml(initial)}</div>
     </div>`;
   }
   return `<div class="account-avatar placeholder" style="width:${size}px;height:${size}px">${escapeHtml(initial)}</div>`;
 }
+
 function deepMerge(a, b) {
   const out = { ...a };
   for (const k of Object.keys(b)) {
@@ -258,6 +349,7 @@ function deepMerge(a, b) {
   }
   return out;
 }
+
 function animateValue(elem, end, duration = 600) {
   if (!elem) return;
   const text = elem.textContent || "0";
@@ -298,7 +390,7 @@ function buildItemMetaLine(typeText, exteriorText, wearValue) {
 function itemThumbCellHtml(iconUrl) {
   const src = steamItemImageUrl(iconUrl, 62);
   if (!src) return '<td class="item-thumb-cell"></td>';
-  return `<td class="item-thumb-cell"><img class="item-thumb" loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="" onerror="this.style.visibility='hidden'"></td>`;
+  return `<td class="item-thumb-cell"><img class="item-thumb" loading="lazy" decoding="async" src="${escapeHtml(src)}" alt="" data-img-fallback="hide"></td>`;
 }
 
 function formatDateTime(ts) {
@@ -306,6 +398,14 @@ function formatDateTime(ts) {
   if (!d || isNaN(d.getTime())) return "—";
   const pad = (v) => String(v).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatMoney(value, currency = "") {
+  const n = Number(value);
+  if (value == null || !Number.isFinite(n)) return "—";
+  const formatted = n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (!currency) return formatted;
+  return currency === "CNY" ? `¥${formatted}` : `${currency} ${formatted}`;
 }
 
 function debounce(fn, wait = 300) {
@@ -319,3 +419,17 @@ function debounce(fn, wait = 300) {
   };
 }
 
+document.addEventListener("error", (e) => {
+  const target = e.target;
+  if (!(target instanceof HTMLImageElement)) return;
+  const mode = target.dataset.imgFallback;
+  if (mode === "next") {
+    target.style.display = "none";
+    const next = target.nextElementSibling;
+    if (next) next.style.display = "flex";
+  } else if (mode === "hide") {
+    target.style.visibility = "hidden";
+  } else if (mode === "none") {
+    target.style.display = "none";
+  }
+}, true);
